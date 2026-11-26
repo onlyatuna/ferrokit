@@ -1485,25 +1485,25 @@ mod native {
     macro_rules! ns_event_imp {
         ($name:ident, $kind:expr) => {
             extern "C" fn $name(this: *mut c_void, cmd: *const c_void, event: *mut c_void) {
-                // SAFETY: AppKit sends this method (installed for `$kind`'s selector) with the
-                // `NSEvent` it is dispatching, nil or live for the call, so `event` is an event
-                // of the kind `$kind` names [inferred: AppKit documentation of the NSResponder
-                // event methods].
-                let handled = guarded(true, || unsafe {
-                    input::handle_ns_event(Id(this), $kind, Id(event))
-                });
-                if !handled {
-                    // SAFETY: `this` is a `QNSView` (an `NSView` subclass); `cmd`/`event` are the
-                    // selector and argument AppKit passed to this method.
-                    unsafe {
-                        objc2_bridge::send_super_msg::<(*mut c_void,), ()>(
-                            this,
-                            objc_get_class("NSView"),
-                            cmd,
-                            (event,),
-                        );
+                guarded((), || {
+                    // SAFETY: AppKit sends this method (installed for `$kind`'s selector) with the
+                    // `NSEvent` it is dispatching, nil or live for the call, so `event` is an event
+                    // of the kind `$kind` names [inferred: AppKit documentation of the NSResponder
+                    // event methods].
+                    let handled = unsafe { input::handle_ns_event(Id(this), $kind, Id(event)) };
+                    if !handled {
+                        // SAFETY: `this` is a `QNSView` (an `NSView` subclass); `cmd`/`event` are
+                        // the selector and argument AppKit passed to this method.
+                        unsafe {
+                            objc2_bridge::send_super_msg::<(*mut c_void,), ()>(
+                                this,
+                                objc_get_class("NSView"),
+                                cmd,
+                                (event,),
+                            );
+                        }
                     }
-                }
+                });
             }
         };
     }
@@ -1545,50 +1545,60 @@ mod native {
         _cmd: *const c_void,
         _sender: *mut c_void,
     ) -> BOOL {
-        let window = Id(this);
-        // The handler may drop the `CocoaNativeWindow`, releasing its reference to the window
-        // while AppKit is still inside this very message; this reference keeps it alive.
-        // SAFETY: `this` is the live window AppKit is sending `windowShouldClose:` to; the
-        // `retain` is balanced by the `release` below.
-        unsafe { retain(window) };
-        let close = guarded(true, || input::window_should_close(window));
-        // SAFETY: balances the `retain` above.
-        unsafe { release(window) };
+        let close = guarded(true, || {
+            let window = Id(this);
+            // The handler may drop the `CocoaNativeWindow`, releasing its reference to the window
+            // while AppKit is still inside this very message; this reference keeps it alive.
+            // SAFETY: `this` is the live window AppKit is sending `windowShouldClose:` to; the
+            // `retain` is balanced by the `release` below.
+            unsafe { retain(window) };
+            let close = guarded(true, || input::window_should_close(window));
+            // SAFETY: balances the `retain` above.
+            unsafe { release(window) };
+            close
+        });
         if close { YES } else { NO }
     }
 
     extern "C" fn update_tracking_areas(this: *mut c_void, cmd: *const c_void) {
         guarded((), || input::update_tracking_area(Id(this)));
-        // SAFETY: `this` is a `QNSView`, an `NSView` subclass; `updateTrackingAreas` takes no
-        // arguments and returns nothing; `cmd` is the selector AppKit passed.
-        unsafe {
-            objc2_bridge::send_super_msg::<(), ()>(this, objc_get_class("NSView"), cmd, ());
-        }
+        guarded((), || {
+            // SAFETY: `this` is a `QNSView`, an `NSView` subclass; `updateTrackingAreas` takes no
+            // arguments and returns nothing; `cmd` is the selector AppKit passed.
+            unsafe {
+                objc2_bridge::send_super_msg::<(), ()>(this, objc_get_class("NSView"), cmd, ());
+            }
+        });
     }
 
     extern "C" fn reset_cursor_rects(this: *mut c_void, cmd: *const c_void) {
         let applied = guarded(false, || input::reset_cursor_rects(Id(this)));
         if !applied {
-            // SAFETY: same as `update_tracking_areas`: `this` is a `QNSView` (`NSView` subclass).
-            unsafe {
-                objc2_bridge::send_super_msg::<(), ()>(this, objc_get_class("NSView"), cmd, ());
-            }
+            guarded((), || {
+                // SAFETY: same as `update_tracking_areas`: `this` is a `QNSView` (`NSView`
+                // subclass).
+                unsafe {
+                    objc2_bridge::send_super_msg::<(), ()>(this, objc_get_class("NSView"), cmd, ());
+                }
+            });
         }
     }
 
     extern "C" fn cursor_update(this: *mut c_void, cmd: *const c_void, event: *mut c_void) {
         let applied = guarded(false, || input::cursor_update(Id(this)));
         if !applied {
-            // SAFETY: `this` is a `QNSView` (`NSView` subclass); `cursorUpdate:` takes the event
-            // and returns nothing.
-            unsafe {
-                objc2_bridge::send_super_msg::<(*mut c_void,), ()>(
-                    this,
-                    objc_get_class("NSView"),
-                    cmd,
-                    (event,),
-                );
-            }
+            guarded((), || {
+                // SAFETY: `this` is a `QNSView` (`NSView` subclass); `cursorUpdate:` takes the
+                // event and returns nothing.
+                unsafe {
+                    objc2_bridge::send_super_msg::<(*mut c_void,), ()>(
+                        this,
+                        objc_get_class("NSView"),
+                        cmd,
+                        (event,),
+                    );
+                }
+            });
         }
     }
 
@@ -1660,7 +1670,9 @@ mod native {
         // `send_class_0`; the class is looked up by name and a nil class would only yield nil.
         // The result is autoreleased [inferred: Foundation convention for class factory methods],
         // which is what a `validAttributesForMarkedText` getter returns.
-        unsafe { ObjcMsg::send_class_0(objc_get_class("NSArray"), Sel::register("array")).0 }
+        guarded(std::ptr::null_mut(), || unsafe {
+            ObjcMsg::send_class_0(objc_get_class("NSArray"), Sel::register("array")).0
+        })
     }
 
     extern "C" fn first_rect_for_character_range(

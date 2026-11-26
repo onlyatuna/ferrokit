@@ -730,6 +730,9 @@ impl Worker {
                 return Err(Error::InvalidOutline);
             }
             let last_ix = last as usize;
+            if last_ix >= points.len() || last_ix >= tags.len() {
+                return Err(Error::InvalidOutline);
+            }
             let mut limit = last_ix as isize;
 
             let mut v_start = points[first];
@@ -1237,5 +1240,16 @@ mod tests {
     fn a_glyph_beyond_the_bitmap_limit_is_refused() {
         let o = outline(&[(0, 0), (0, 64 << 15), (64 << 15, 0)], &[ON; 3], &[2], 0);
         assert!(render(&o, (16, 16)).is_err());
+    }
+
+    #[test]
+    fn out_of_bounds_contour_endpoint_returns_invalid_outline() {
+        // Contour endpoint exceeds both points and tags length.
+        let o = outline(&[(0, 0), (0, 64), (64, 64)], &[ON; 3], &[5], 0);
+        assert_eq!(render(&o, (16, 16)).unwrap_err(), Error::InvalidOutline);
+
+        // Contour endpoint exceeds tags length while within points length.
+        let o = outline(&[(0, 0), (0, 64), (64, 64)], &[ON; 2], &[2], 0);
+        assert_eq!(render(&o, (16, 16)).unwrap_err(), Error::InvalidOutline);
     }
 }

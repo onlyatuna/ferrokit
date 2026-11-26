@@ -91,7 +91,7 @@ impl<'a> Painter<'a> {
 
     // Draws a rectangle using current brush and pen.
     pub fn draw_rect(&mut self, rect: RectF) {
-        if let Some(r) = tiny_skia::Rect::from_xywh(rect.x, rect.y, rect.width, rect.height) {
+        if let Some(r) = rect.to_tiny_skia_rect() {
             let path = PathBuilder::from_rect(r);
             self.fill_path(&path);
             self.stroke_path(&path);
@@ -103,7 +103,7 @@ impl<'a> Painter<'a> {
         let old_pen = self.state.pen.clone();
         self.set_brush(Brush::from_color(color));
         self.set_pen(None);
-        if let Some(r) = tiny_skia::Rect::from_xywh(rect.x, rect.y, rect.width, rect.height) {
+        if let Some(r) = rect.to_tiny_skia_rect() {
             let path = PathBuilder::from_rect(r);
             self.fill_path(&path);
         }
@@ -154,7 +154,7 @@ impl<'a> Painter<'a> {
 
     // Draws an ellipse.
     pub fn draw_ellipse(&mut self, rect: RectF) {
-        if let Some(r) = tiny_skia::Rect::from_xywh(rect.x, rect.y, rect.width, rect.height)
+        if let Some(r) = rect.to_tiny_skia_rect()
             && let Some(path) = PathBuilder::from_oval(r)
         {
             self.fill_path(&path);

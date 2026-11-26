@@ -139,15 +139,76 @@ pub fn fill_path_source_over(
         for row in 0..h as usize {
             let y = y0 as usize + row;
             let cov = &mut coverage[row * stride..row * stride + w as usize];
-            // The clip mask is drawn without anti-aliasing, so it holds only 0 and 255.
             if let Some((data, cw)) = clip_data {
                 let clip_row = &data[y * cw + x0 as usize..y * cw + x1 as usize];
-                for (c, &k) in cov.iter_mut().zip(clip_row) {
-                    *c &= k;
-                }
+                apply_clip_mask(cov, clip_row);
             }
             let start = y * pstride + x0 as usize * 4;
             blend_row(&mut dest[start..start + w as usize * 4], cov, color);
         }
     });
+}
+
+#[inline]
+fn apply_clip_mask(cov: &mut [u8], clip_row: &[u8]) {
+    // The clip mask can contain anti-aliased coverage (0..=255), e.g. from rotated clip quads.
+    for (c, &k) in cov.iter_mut().zip(clip_row) {
+        *c = ((u16::from(*c) * u16::from(k) + 127) / 255) as u8;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tiny_skia::{PathBuilder, Pixmap, Rect};
+
+    #[test]
+    fn apply_clip_mask_multiplies_antialiased_coverage() {
+        let mut cov = [128u8, 255, 255, 255];
+        let clip_row = [127u8, 127, 0, 255];
+        apply_clip_mask(&mut cov, &clip_row);
+        assert_eq!(cov[0], 64);
+        assert_eq!(cov[1], 127);
+        assert_eq!(cov[2], 0);
+        assert_eq!(cov[3], 255);
+    }
+
+    // Exercising tiny-skia's rasterizer under Miri hits issue #105 (tiny-skia 0.11.4 compares fn
+    // pointers to pick tail-stage load/store, which zeroes tail pixels on some Miri seeds).
+    #[cfg(not(miri))]
+    #[test]
+    fn fill_path_source_over_multiplies_antialiased_clip_mask_coverage() {
+        let mut pixmap = Pixmap::new(4, 2).unwrap();
+        let mut mask = Mask::new(4, 2).unwrap();
+        // Row 0: x=0 has partial clip (127), x=1 has partial clip (127), x=2 has 0, x=3 has 255.
+        let m = mask.data_mut();
+        m[0] = 127;
+        m[1] = 127;
+        m[2] = 0;
+        m[3] = 255;
+
+        // Rect starting at x=0.5 gives ~128 anti-aliased coverage at x=0 and 255 at x=1..=3.
+        // Bitwise AND (128 & 127) would wrongly produce 0 at x=0; coverage multiplication gives ~64.
+        let path = PathBuilder::from_rect(Rect::from_xywh(0.5, 0.0, 3.5, 1.0).unwrap());
+        let white = PremultipliedColorU8::from_rgba(255, 255, 255, 255).unwrap();
+        fill_path_source_over(
+            &mut pixmap.as_mut(),
+            &path,
+            FillRule::Winding,
+            true,
+            Transform::identity(),
+            white,
+            Some(&mask),
+        );
+
+        let px = pixmap.data();
+        assert!(
+            (60..=68).contains(&px[3]),
+            "expected ~64 alpha at partially covered & partially clipped pixel, got {}",
+            px[3]
+        );
+        assert_eq!(px[7], 127, "full path coverage * 127 clip mask");
+        assert_eq!(px[11], 0, "clipped-out pixel must remain transparent");
+        assert_eq!(px[15], 255, "unclipped full-coverage pixel must be opaque");
+    }
 }

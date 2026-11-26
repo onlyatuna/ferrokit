@@ -177,11 +177,13 @@ pub(super) unsafe extern "system" fn native_window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    // SAFETY: catches unwinding from native_window_proc_inner and falls back to DefWindowProcW.
+    // SAFETY: catches unwinding from startup_trace and native_window_proc_inner and falls back to
+    // DefWindowProcW.
     unsafe {
-        let _t = ferrokit_gui::startup_trace::span_min(3.0, || format!("wndproc msg=0x{msg:04X}"));
         // Python/PySide6 contains a raising handler; unwinding out of an extern "system" fn aborts.
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _t =
+                ferrokit_gui::startup_trace::span_min(3.0, || format!("wndproc msg=0x{msg:04X}"));
             native_window_proc_inner(hwnd, msg, wparam, lparam)
         })) {
             Ok(result) => result,

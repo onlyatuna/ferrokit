@@ -1019,9 +1019,13 @@ fn face_writing_systems(face: &IDWriteFontFace) -> u64 {
             .is_ok()
             && exists.as_bool();
     if found {
-        // SAFETY: `TryGetFontTable` reported `size` readable bytes at `data`, valid until
-        // `ReleaseFontTable`.
-        let table = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size as usize) };
+        let table = if !data.is_null() && size > 0 {
+            // SAFETY: `TryGetFontTable` reported `size` (> 0) readable bytes at non-null `data`,
+            // valid until `ReleaseFontTable`.
+            unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size as usize) }
+        } else {
+            &[]
+        };
         systems = if table.len() >= 86 {
             let be = |at: usize| {
                 u32::from_be_bytes([table[at], table[at + 1], table[at + 2], table[at + 3]])

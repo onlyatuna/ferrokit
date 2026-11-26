@@ -196,6 +196,10 @@ fn run_no_target_call(receiver: ObjectId, task: crate::event::MetaCallNoTargetFn
 /// receiver type fails. A registered receiver never gets it: `notify_helper` rejects or defers a
 /// receiver that a running callback has borrowed before this call.
 fn run_target_call(receiver: ObjectId, task: crate::event::MetaCallFn) -> bool {
+    if receiver == ObjectId(0) {
+        task(&mut ());
+        return true;
+    }
     if !queued_call_receiver_alive(receiver) {
         return false;
     }
@@ -205,12 +209,7 @@ fn run_target_call(receiver: ObjectId, task: crate::event::MetaCallFn) -> bool {
             task(obj);
         }
     });
-    if handled.is_none()
-        && let Some(task) = task_opt.take()
-    {
-        task(&mut ());
-    }
-    true
+    handled.is_some()
 }
 
 thread_local! {
@@ -1023,6 +1022,77 @@ fn pump_posted_events(queue: &Arc<Mutex<EventQueue>>, modal: bool) -> (usize, Op
 impl Default for EventLoop {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod run_target_call_tests {
+    use super::*;
+
+    struct DummyReceiver {
+        data: ObjectData,
+    }
+
+    impl QObject for DummyReceiver {
+        fn object_data(&self) -> &ObjectData {
+            &self.data
+        }
+        fn object_data_mut(&mut self) -> crate::object::ObjectDataMut<'_> {
+            crate::object::ObjectDataMut::new(&mut self.data)
+        }
+    }
+
+    #[test]
+    fn zero_receiver_gets_unit_target_and_borrowed_nonzero_receiver_does_not_fallback() {
+        let saw_unit = Arc::new(AtomicBool::new(false));
+        let saw_unit_clone = Arc::clone(&saw_unit);
+        let handled = run_target_call(
+            ObjectId(0),
+            Box::new(move |target| {
+                assert!(target.is::<()>());
+                saw_unit_clone.store(true, Ordering::SeqCst);
+            }),
+        );
+        assert!(handled);
+        assert!(saw_unit.load(Ordering::SeqCst));
+
+        // SAFETY: `DummyReceiver` is a fresh value with no outstanding references, owned and
+        // dropped by `owned` on this thread after all callbacks return.
+        let owned = unsafe {
+            crate::object::register_owned_qobject(DummyReceiver {
+                data: ObjectData::with_auto_id(),
+            })
+        };
+        let id = crate::object::OwnedObject::object_id(&owned);
+
+        let fallback_called = Arc::new(AtomicBool::new(false));
+        let fallback_clone = Arc::clone(&fallback_called);
+        let nested_handled = crate::object::with_object_mut(id, |_| {
+            run_target_call(
+                id,
+                Box::new(move |_| {
+                    fallback_clone.store(true, Ordering::SeqCst);
+                }),
+            )
+        });
+        assert_eq!(nested_handled, Some(false));
+        assert!(
+            !fallback_called.load(Ordering::SeqCst),
+            "non-zero receiver must never fall back to &mut () when with_object_mut returns None"
+        );
+
+        let saw_receiver = Arc::new(AtomicBool::new(false));
+        let saw_receiver_clone = Arc::clone(&saw_receiver);
+        let ok = run_target_call(
+            id,
+            Box::new(move |target| {
+                assert!(!target.is::<()>());
+                saw_receiver_clone.store(true, Ordering::SeqCst);
+            }),
+        );
+        assert!(ok);
+        assert!(saw_receiver.load(Ordering::SeqCst));
+        drop(owned);
     }
 }
 

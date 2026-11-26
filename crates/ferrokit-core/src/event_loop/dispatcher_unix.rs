@@ -276,8 +276,15 @@ impl EpollReactor {
 
     pub fn register_timer(&self, id: TimerId, interval: Duration, single_shot: bool) {
         let tfd = Arc::new(TimerFd::new(id, interval, single_shot));
-        crate::poison::lock_unpoisoned(&self.timer_fds).insert(id, tfd);
-        self.notify_sleeper();
+        {
+            let _guard = crate::poison::lock_unpoisoned(&self.lock);
+            crate::poison::lock_unpoisoned(&self.timer_fds).insert(id, tfd);
+            self.cond.notify_all();
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(poller) = &self.poller {
+            poller.wake();
+        }
     }
 
     pub fn unregister_timer(&self, id: TimerId) {
@@ -360,8 +367,15 @@ impl EpollReactor {
     }
 
     pub fn trigger_socket_event(&self, fd: SocketDescriptor, event: SocketEvent) {
-        crate::poison::lock_unpoisoned(&self.pending_socket_events).push((fd, event));
-        self.notify_sleeper();
+        {
+            let _guard = crate::poison::lock_unpoisoned(&self.lock);
+            crate::poison::lock_unpoisoned(&self.pending_socket_events).push((fd, event));
+            self.cond.notify_all();
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(poller) = &self.poller {
+            poller.wake();
+        }
     }
 
     /// Waits until a descriptor is ready, `wake_up` is called, a timer is due or `timeout`
@@ -446,39 +460,27 @@ impl EpollReactor {
         &self,
         timeout: Option<Duration>,
     ) -> (bool, Vec<TimerId>, Vec<(SocketDescriptor, SocketEvent)>) {
+        // Hold `self.lock` across the readiness checks and condvar wait so concurrent
+        // `wake_up`, `trigger_socket_event`, and `register_timer` calls cannot lose a wakeup.
+        let guard = crate::poison::lock_unpoisoned(&self.lock);
         let start = Instant::now();
         let pending_sockets = std::mem::take(&mut *crate::poison::lock_unpoisoned(
             &self.pending_socket_events,
         ));
-
-        // Check if eventfd is readable
-        if self.event_fd.is_readable() {
+        let awoken = if self.event_fd.is_readable() {
             self.event_fd.read();
-            return (true, self.collect_expired_timers(start), pending_sockets);
-        }
-
-        // Return immediately if there are pending socket events
-        if !pending_sockets.is_empty() {
-            return (false, self.collect_expired_timers(start), pending_sockets);
-        }
-
-        // Check if any timers expired
+            true
+        } else {
+            false
+        };
         let expired = self.collect_expired_timers(start);
-        if !expired.is_empty() {
-            return (false, expired, Vec::new());
+        if awoken || !pending_sockets.is_empty() || !expired.is_empty() {
+            return (awoken, expired, pending_sockets);
         }
+
         let sleep_duration = self.sleep_duration(timeout, start);
         if sleep_duration.is_zero() {
             return (false, Vec::new(), Vec::new());
-        }
-
-        // Wait on condition variable or timeout
-        let guard = crate::poison::lock_unpoisoned(&self.lock);
-        if self.event_fd.is_readable() {
-            self.event_fd.read();
-            let now = Instant::now();
-            let expired = self.collect_expired_timers(now);
-            return (true, expired, pending_sockets);
         }
 
         let (guard, _timeout_res) =
@@ -489,13 +491,13 @@ impl EpollReactor {
         } else {
             false
         };
-        drop(guard);
-
         let now = Instant::now();
         let expired = self.collect_expired_timers(now);
         let pending_sockets = std::mem::take(&mut *crate::poison::lock_unpoisoned(
             &self.pending_socket_events,
         ));
+        drop(guard);
+
         (was_awoken, expired, pending_sockets)
     }
 
@@ -843,5 +845,48 @@ mod tests {
         #[cfg(not(target_os = "linux"))]
         assert!(registered.is_err());
         dispatcher.unregister_socket_notifier(&notifier);
+    }
+
+    #[test]
+    fn test_wait_on_condvar_wakes_on_cross_thread_socket_event() {
+        let reactor = Arc::new(EpollReactor::new());
+        let trigger_reactor = Arc::clone(&reactor);
+        let fd = 99;
+
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            trigger_reactor.trigger_socket_event(fd, SocketEvent::Read);
+        });
+
+        let start = Instant::now();
+        let (awoken, _expired, sockets) = reactor.wait_on_condvar(Some(Duration::from_secs(5)));
+        handle.join().unwrap();
+
+        assert!(!awoken);
+        assert_eq!(sockets, vec![(fd, SocketEvent::Read)]);
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "wait_on_condvar should wake promptly on trigger_socket_event"
+        );
+    }
+
+    #[test]
+    fn test_wait_on_condvar_wakes_on_newly_registered_timer() {
+        let reactor = Arc::new(EpollReactor::new());
+        let timer_reactor = Arc::clone(&reactor);
+
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            timer_reactor.register_timer(TimerId(999), Duration::from_millis(10), true);
+        });
+
+        let start = Instant::now();
+        let _ = reactor.wait_on_condvar(Some(Duration::from_secs(5)));
+        handle.join().unwrap();
+
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "wait_on_condvar should wake promptly when a new timer is registered"
+        );
     }
 }

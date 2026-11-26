@@ -89,9 +89,13 @@ mod ffi {
     unsafe extern "C" {
         pub fn objc_getClass(name: *const c_char) -> Id;
         pub fn sel_registerName(name: *const c_char) -> Sel;
-        pub fn objc_msgSend();
         pub fn objc_autoreleasePoolPush() -> *mut c_void;
         pub fn objc_autoreleasePoolPop(pool: *mut c_void);
+    }
+
+    #[link(name = "objc")]
+    unsafe extern "C-unwind" {
+        pub fn objc_msgSend();
     }
 }
 
@@ -171,7 +175,7 @@ unsafe fn send0<R>(receiver: Id, sel: Sel) -> R {
     // function's contract). The transmute turns the function's address (`*const ()`) into a
     // function pointer of the same size, which is defined; the call is sound by the contract.
     unsafe {
-        let f: unsafe extern "C" fn(Id, Sel) -> R =
+        let f: unsafe extern "C-unwind" fn(Id, Sel) -> R =
             std::mem::transmute(ffi::objc_msgSend as *const ());
         f(receiver, sel)
     }
@@ -186,7 +190,7 @@ unsafe fn send1<A, R>(receiver: Id, sel: Sel, a: A) -> R {
     // SAFETY: as in `send0`: the caller guarantees `(Id, Sel, A) -> R` is the signature of the
     // method `sel` names on `receiver`.
     unsafe {
-        let f: unsafe extern "C" fn(Id, Sel, A) -> R =
+        let f: unsafe extern "C-unwind" fn(Id, Sel, A) -> R =
             std::mem::transmute(ffi::objc_msgSend as *const ());
         f(receiver, sel, a)
     }
@@ -200,7 +204,7 @@ unsafe fn send2<A, B, R>(receiver: Id, sel: Sel, a: A, b: B) -> R {
     // SAFETY: as in `send0`: the caller guarantees `(Id, Sel, A, B) -> R` is the signature of
     // the method `sel` names on `receiver`.
     unsafe {
-        let f: unsafe extern "C" fn(Id, Sel, A, B) -> R =
+        let f: unsafe extern "C-unwind" fn(Id, Sel, A, B) -> R =
             std::mem::transmute(ffi::objc_msgSend as *const ());
         f(receiver, sel, a, b)
     }
@@ -244,7 +248,7 @@ fn next_event(app: Id, until: Id) -> Id {
     // live `NSDate`, both supplied by this module's callers on the main thread
     // (`process_events` asserts it); `NSDefaultRunLoopMode` is an AppKit constant.
     unsafe {
-        let f: unsafe extern "C" fn(Id, Sel, usize, Id, Id, i8) -> Id =
+        let f: unsafe extern "C-unwind" fn(Id, Sel, usize, Id, Id, i8) -> Id =
             std::mem::transmute(ffi::objc_msgSend as *const ());
         f(
             app,
@@ -272,7 +276,7 @@ fn post_wakeup_event() {
     // event; this function runs on the main thread (from the run loop source callback, the
     // launch timer, and `wait_for_more_events`' caller), as Qt's `cancelWaitForMoreEvents`.
     unsafe {
-        let make: unsafe extern "C" fn(
+        let make: unsafe extern "C-unwind" fn(
             Id,
             Sel,
             usize,
@@ -423,6 +427,56 @@ impl Default for CocoaEventDispatcher {
     }
 }
 
+/// RAII guard that clears `INITIALIZING_NSAPP` and flushes any deferred wake-up on scope exit,
+/// including unwinding.
+struct InitializingNsAppGuard<'a> {
+    wake: &'a WakeSource,
+}
+
+impl Drop for InitializingNsAppGuard<'_> {
+    fn drop(&mut self) {
+        INITIALIZING_NSAPP.store(false, Ordering::SeqCst);
+        if WAKE_DEFERRED.swap(false, Ordering::SeqCst) {
+            self.wake.signal();
+        }
+    }
+}
+
+/// RAII guard that invalidates and releases a `CFRunLoopTimer` on scope exit, including unwinding.
+struct LaunchTimerGuard(CFTypeRef);
+
+impl Drop for LaunchTimerGuard {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` is the non-null `CFRunLoopTimer` created in
+        // `ensure_nsapp_initialized`, owned solely by this guard, so it is invalidated and its
+        // single retain released exactly once.
+        unsafe {
+            ffi::CFRunLoopTimerInvalidate(self.0);
+            ffi::CFRelease(self.0);
+        }
+    }
+}
+
+/// RAII guard that restores `WAIT_FOR_MORE_EVENTS` to its outer value on scope exit, including
+/// unwinding.
+struct WaitForMoreEventsGuard {
+    outer_wait: bool,
+}
+
+impl WaitForMoreEventsGuard {
+    fn enter(can_wait: bool) -> Self {
+        Self {
+            outer_wait: WAIT_FOR_MORE_EVENTS.swap(can_wait, Ordering::SeqCst),
+        }
+    }
+}
+
+impl Drop for WaitForMoreEventsGuard {
+    fn drop(&mut self) {
+        WAIT_FOR_MORE_EVENTS.store(self.outer_wait, Ordering::SeqCst);
+    }
+}
+
 impl CocoaEventDispatcher {
     pub fn new() -> Self {
         Self {
@@ -450,12 +504,13 @@ impl CocoaEventDispatcher {
         }
         NSAPP_RUN_CALLED.store(true, Ordering::SeqCst);
         INITIALIZING_NSAPP.store(true, Ordering::SeqCst);
+        let _init_guard = InitializingNsAppGuard { wake: &self.wake };
         // SAFETY: [inferred] Runs on the main thread (`process_events` asserts it before
         // calling this). `CFRunLoopTimerCreate` gets a null allocator (default), a plain
         // `extern "C"` callout of the declared `TimerCallback` type and a null context;
-        // its result is checked non-null before use, and the timer is invalidated and released
-        // once after `[NSApp run]` returns (`stop_nsapp_after_launch` stops it on the first
-        // run-loop turn). `run` takes no arguments, matching `send0::<()>`.
+        // its result is checked non-null before use, and `_timer_guard` invalidates and releases
+        // the timer when the scope exits (normally or via unwind). `run` takes no arguments,
+        // matching `send0::<()>`.
         unsafe {
             let main = ffi::CFRunLoopGetMain();
             let now = ffi::CFAbsoluteTimeGetCurrent();
@@ -469,14 +524,9 @@ impl CocoaEventDispatcher {
                 std::ptr::null_mut(),
             );
             assert!(!timer.is_null(), "CFRunLoopTimerCreate");
+            let _timer_guard = LaunchTimerGuard(timer);
             ffi::CFRunLoopAddTimer(main, timer, ffi::kCFRunLoopCommonModes);
             send0::<()>(app, rt.run);
-            ffi::CFRunLoopTimerInvalidate(timer);
-            ffi::CFRelease(timer);
-        }
-        INITIALIZING_NSAPP.store(false, Ordering::SeqCst);
-        if WAKE_DEFERRED.swap(false, Ordering::SeqCst) {
-            self.wake.signal();
         }
     }
 
@@ -567,7 +617,7 @@ impl EventDispatcher for CocoaEventDispatcher {
 
         let _pool = AutoreleasePool::new();
         let app = ns_app();
-        let outer_wait = WAIT_FOR_MORE_EVENTS.swap(can_wait, Ordering::SeqCst);
+        let _wait_guard = WaitForMoreEventsGuard::enter(can_wait);
         self.ensure_nsapp_initialized(app);
 
         let mut wait = can_wait;
@@ -582,7 +632,7 @@ impl EventDispatcher for CocoaEventDispatcher {
             WAIT_FOR_MORE_EVENTS.store(false, Ordering::SeqCst);
             wait = false;
         };
-        WAIT_FOR_MORE_EVENTS.store(outer_wait, Ordering::SeqCst);
+        drop(_wait_guard);
 
         if sent {
             DispatchResult::Normal

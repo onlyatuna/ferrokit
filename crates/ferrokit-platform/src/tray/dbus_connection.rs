@@ -907,6 +907,7 @@ impl DbusConnection {
             serial,
         );
         msg.append_string(service_name);
+        msg.append_u32(0);
         self.send_message(msg)?;
         self.registered_names.push(service_name.to_string());
         Ok(serial)
@@ -1745,5 +1746,26 @@ mod tests {
                 Err(SocketNotifierError::Unsupported { .. })
             ));
         }
+    }
+
+    #[test]
+    fn request_name_sends_service_name_and_zero_flags() {
+        let (mut conn, bus) = connect(":1.42");
+        let serial = conn
+            .request_name("org.kde.StatusNotifierItem-Test-1")
+            .unwrap();
+        let received = bus.received();
+        let req = received
+            .iter()
+            .find(|m| m.serial == serial)
+            .expect("RequestName message must be recorded by the bus");
+        assert_eq!(req.member.as_deref(), Some("RequestName"));
+        assert_eq!(req.signature, "su");
+        let mut reader = req.body_reader();
+        assert_eq!(
+            reader.string().unwrap(),
+            "org.kde.StatusNotifierItem-Test-1"
+        );
+        assert_eq!(reader.u32().unwrap(), 0);
     }
 }
