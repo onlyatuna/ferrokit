@@ -422,9 +422,9 @@ pub struct CoreTextFace {
     os2_avg_char_width: Option<f32>,
     /// `CTFontRef` per pixel size (bits of the `f32`), `null` when CoreText made none.
     ct_cache: Mutex<HashMap<u32, *const c_void>>,
-    /// `QFontEngine::m_subPixelPositionCount` per pixel size (bits of the `f32`); absent until a
-    /// glyph with an outline has been positioned.
-    subpixel_counts: Mutex<HashMap<u32, i64>>,
+    /// `QFontEngine::m_subPixelPositionCount` per `(size, scale)` (bits of each `f32`); absent
+    /// until a glyph with an outline has been positioned.
+    subpixel_counts: Mutex<HashMap<(u32, u32), i64>>,
 }
 
 // SAFETY: All CoreFoundation/CoreText/CoreGraphics objects referenced (CTFontDescriptor, CGFont,
@@ -737,7 +737,7 @@ impl CoreTextFace {
     /// that is positioned (`QTextureGlyphCache::calculateSubPixelPositionCount`, `populate`).
     /// 0 while no such glyph has been seen.
     fn subpixel_count(&self, glyph_id: u16, size: f32, scale: f32) -> i64 {
-        let key = size.to_bits();
+        let key = (size.to_bits(), scale.to_bits());
         let mut counts = self
             .subpixel_counts
             .lock()

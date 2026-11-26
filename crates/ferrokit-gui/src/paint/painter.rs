@@ -605,7 +605,7 @@ impl<'a> Painter<'a> {
         let dpr = self.device.device_pixel_ratio();
         let t = self.state.transform;
         let mapped = (|| {
-            let r = tiny_skia::Rect::from_xywh(rect.x, rect.y, rect.width, rect.height)?;
+            let r = rect.to_tiny_skia_rect()?;
             if t.kx == 0.0 && t.ky == 0.0 {
                 let m = r.transform(t)?;
                 let bounds = tiny_skia::Rect::from_ltrb(
@@ -1023,9 +1023,7 @@ impl<'a> Painter<'a> {
             ..Default::default()
         };
 
-        if let Some(target_r) =
-            tiny_skia::Rect::from_xywh(target.x, target.y, target.width, target.height)
-        {
+        if let Some(target_r) = target.to_tiny_skia_rect() {
             let path = PathBuilder::from_rect(target_r);
             let transform = self.state.transform;
             self.update_clip_mask_if_needed();

@@ -43,6 +43,13 @@ const IID_IUNKNOWN: GUID = GUID {
     data4: [0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46],
 };
 
+const IID_IDXGI_DEVICE: GUID = GUID {
+    data1: 0x54ec77fa,
+    data2: 0x1377,
+    data3: 0x44e6,
+    data4: [0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x44, 0xc8, 0x4c],
+};
+
 const IID_IDXGI_FACTORY2: GUID = GUID {
     data1: 0x50c83a1c,
     data2: 0xe072,
@@ -129,6 +136,31 @@ type PfnDCompositionCreateDevice = unsafe extern "system" fn(
 // -----------------------------------------------------------------------------
 // COM Helper Utilities
 // -----------------------------------------------------------------------------
+
+/// Queries a COM interface (`IUnknown::QueryInterface`, vtable slot 0).
+///
+/// # Safety
+/// `ptr` must be a live COM interface pointer.
+unsafe fn com_query_interface(ptr: *mut c_void, riid: &GUID) -> Result<*mut c_void, HRESULT> {
+    type PfnQueryInterface = unsafe extern "system" fn(
+        this: *mut c_void,
+        riid: *const GUID,
+        ppv_object: *mut *mut c_void,
+    ) -> HRESULT;
+    let mut out: *mut c_void = ptr::null_mut();
+    // SAFETY: caller guarantees `ptr` is a live COM interface pointer whose vtable slot 0 is
+    // `IUnknown::QueryInterface`.
+    let hr = unsafe {
+        let vtbl = *(ptr as *mut *mut usize);
+        let qi_fn: PfnQueryInterface = std::mem::transmute(*vtbl);
+        qi_fn(ptr, riid, &mut out)
+    };
+    if hr < 0 || out.is_null() {
+        Err(hr)
+    } else {
+        Ok(out)
+    }
+}
 
 /// Releases one reference of a COM object (`IUnknown::Release`, vtable slot 2); null is ignored.
 ///
@@ -429,9 +461,20 @@ impl DCompSurface {
                 return Err("CreateSwapChainForComposition failed");
             }
 
-            // 6. Create DirectComposition Device
+            // 6. Query IDXGIDevice from ID3D11Device and create DirectComposition Device
+            let Ok(dxgi_device) = com_query_interface(d3d_device, &IID_IDXGI_DEVICE) else {
+                com_release(swap_chain);
+                com_release(d3d_context);
+                com_release(d3d_device);
+                FreeLibrary(dcomp_mod);
+                FreeLibrary(dxgi_mod);
+                FreeLibrary(d3d11_mod);
+                return Err("QueryInterface(IDXGIDevice) failed");
+            };
+
             let mut dcomp_device: *mut c_void = ptr::null_mut();
-            let hr = dcomp_create_device(d3d_device, &IID_IDCOMPOSITION_DEVICE, &mut dcomp_device);
+            let hr = dcomp_create_device(dxgi_device, &IID_IDCOMPOSITION_DEVICE, &mut dcomp_device);
+            com_release(dxgi_device);
             if hr < 0 || dcomp_device.is_null() {
                 com_release(swap_chain);
                 com_release(d3d_context);
@@ -1137,5 +1180,82 @@ mod tests {
             "WindowsSurface present_dirty failed: {:?}",
             res.err()
         );
+    }
+
+    #[test]
+    fn test_com_query_interface_invokes_slot_zero_with_iid() {
+        const E_NOINTERFACE: HRESULT = -2147467262; // 0x80004002
+
+        #[repr(C)]
+        struct FakeComObject {
+            vtbl: *const [usize; 3],
+            qi_calls: u32,
+            release_calls: u32,
+        }
+
+        unsafe extern "system" fn fake_qi(
+            this: *mut c_void,
+            riid: *const GUID,
+            ppv: *mut *mut c_void,
+        ) -> HRESULT {
+            // SAFETY: test passes a valid `FakeComObject`, `GUID`, and out-pointer.
+            unsafe {
+                let obj = &mut *(this as *mut FakeComObject);
+                obj.qi_calls += 1;
+                let guid = *riid;
+                let matches = (guid.data1, guid.data2, guid.data3, guid.data4)
+                    == (
+                        IID_IDXGI_DEVICE.data1,
+                        IID_IDXGI_DEVICE.data2,
+                        IID_IDXGI_DEVICE.data3,
+                        IID_IDXGI_DEVICE.data4,
+                    );
+                if matches {
+                    *ppv = this;
+                    0
+                } else {
+                    *ppv = ptr::null_mut();
+                    E_NOINTERFACE
+                }
+            }
+        }
+
+        unsafe extern "system" fn fake_add_ref(_this: *mut c_void) -> u32 {
+            1
+        }
+
+        unsafe extern "system" fn fake_release(this: *mut c_void) -> u32 {
+            // SAFETY: test passes a valid `FakeComObject`.
+            unsafe {
+                let obj = &mut *(this as *mut FakeComObject);
+                obj.release_calls += 1;
+                0
+            }
+        }
+
+        let vtbl: [usize; 3] = [
+            fake_qi as *const () as usize,
+            fake_add_ref as *const () as usize,
+            fake_release as *const () as usize,
+        ];
+        let mut obj = FakeComObject {
+            vtbl: &vtbl,
+            qi_calls: 0,
+            release_calls: 0,
+        };
+        let obj_ptr = (&raw mut obj).cast::<c_void>();
+
+        // SAFETY: `obj_ptr` points to a valid `FakeComObject` whose vtable matches `IUnknown`.
+        unsafe {
+            let dxgi_dev = com_query_interface(obj_ptr, &IID_IDXGI_DEVICE)
+                .expect("QueryInterface for IID_IDXGI_DEVICE should succeed");
+            assert_eq!(dxgi_dev, obj_ptr);
+            com_release(dxgi_dev);
+
+            let err = com_query_interface(obj_ptr, &IID_IUNKNOWN);
+            assert_eq!(err, Err(E_NOINTERFACE));
+        }
+        assert_eq!(obj.qi_calls, 2);
+        assert_eq!(obj.release_calls, 1);
     }
 }

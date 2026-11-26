@@ -891,11 +891,42 @@ impl<T: Clone + Send + 'static> Signal<T> {
         let slot_for_queued = Arc::clone(&slot_arc);
 
         let direct_slot = Arc::clone(&slot_arc);
+        let blocking = conn_type == ConnectionType::BlockingQueued;
         let queued_fn = Arc::new(
             move |value: &T,
                   target_receiver: Option<ObjectId>,
                   dest_thread: Option<ThreadId>,
                   emitter: Option<ObjectId>| {
+                if blocking {
+                    let current_thread = ThreadId::current();
+                    let is_same_thread = dest_thread.is_none_or(|d| d == current_thread);
+                    if is_same_thread {
+                        let _inner_guard = SenderGuard::new(emitter);
+                        slot_for_queued(value);
+                        return;
+                    }
+
+                    let value_clone = value.clone();
+                    let slot = Arc::clone(&slot_for_queued);
+                    let receiver_id = target_receiver.unwrap_or(ObjectId(0));
+                    let (tx, rx) = std::sync::mpsc::channel();
+
+                    let meta_event = Event::new(EventKind::MetaCallNoTarget(Box::new(move || {
+                        let _inner_guard = SenderGuard::new(emitter);
+                        slot(&value_clone);
+                        let _ = tx.send(());
+                    })));
+
+                    if let Some(dest) = dest_thread {
+                        post_event_to_thread(dest, receiver_id, meta_event);
+                    } else {
+                        post_event_to_thread(ThreadId::current(), receiver_id, meta_event);
+                    }
+
+                    let _ = rx.recv();
+                    return;
+                }
+
                 let value_clone = value.clone();
                 let slot = Arc::clone(&slot_for_queued);
                 let receiver_id = target_receiver.unwrap_or(ObjectId(0));
@@ -995,72 +1026,12 @@ impl<T: Clone + Send + 'static> Signal<T> {
     where
         F: Fn(&T) + Send + Sync + 'static,
     {
-        let mut inner = self.inner.lock();
-        let id = ConnectionId::next();
-
-        let slot_arc = Arc::new(slot);
-        let slot_for_blocking = Arc::clone(&slot_arc);
-
-        let direct_slot = Arc::clone(&slot_arc);
-        let queued_fn = Arc::new(
-            move |value: &T,
-                  target_receiver: Option<ObjectId>,
-                  dest_thread: Option<ThreadId>,
-                  emitter: Option<ObjectId>| {
-                let current_thread = ThreadId::current();
-                let is_same_thread = dest_thread.map_or(true, |d| d == current_thread);
-                if is_same_thread {
-                    let _inner_guard = SenderGuard::new(emitter);
-                    slot_for_blocking(value);
-                } else {
-                    let value_clone = value.clone();
-                    let slot = Arc::clone(&slot_for_blocking);
-                    let receiver_id = target_receiver.unwrap_or(ObjectId(0));
-                    let (tx, rx) = std::sync::mpsc::channel();
-
-                    let meta_event = Event::new(EventKind::MetaCallNoTarget(Box::new(move || {
-                        let _inner_guard = SenderGuard::new(emitter);
-                        slot(&value_clone);
-                        let _ = tx.send(());
-                    })));
-
-                    if let Some(dest) = dest_thread {
-                        post_event_to_thread(dest, receiver_id, meta_event);
-                    } else {
-                        post_event_to_thread(ThreadId::current(), receiver_id, meta_event);
-                    }
-
-                    let _ = rx.recv();
-                }
-            },
-        );
-        let dispatcher = SlotDispatcher::Queued {
-            direct_slot,
-            queued_fn,
-        };
-
-        inner.subscribers.push(Subscriber {
-            id,
-            receiver_id: Some(receiver_id),
-            receiver_thread: Some(receiver_thread),
-            conn_type: ConnectionType::BlockingQueued,
-            connected: Arc::new(AtomicBool::new(true)),
-            slot_key: None,
-            single_shot: false,
-            thread_bound: None,
-            dispatcher,
-        });
-
-        let inner_weak = Arc::downgrade(&self.inner);
-        let disconnect_fn = Arc::new(move || {
-            if let Some(inner_arc) = inner_weak.upgrade() {
-                let removed = inner_arc.lock().remove_where(|sub| sub.id == id);
-                drop(removed);
-            }
-        });
-        register_connection(id, self.emitter_id(), Some(receiver_id), disconnect_fn);
-
-        id
+        self.connect_object(
+            receiver_id,
+            receiver_thread,
+            ConnectionType::BlockingQueued,
+            slot,
+        )
     }
 }
 
@@ -1389,5 +1360,68 @@ mod tests {
 
         // 1 + 2 + ... + 10 = 55
         assert_eq!(sum.load(Ordering::SeqCst), 55);
+    }
+
+    #[test]
+    fn test_connect_object_blocking_queued_cross_thread_waits_for_slot() {
+        use crate::event_loop::EventLoop;
+
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+
+        let worker = std::thread::spawn(move || {
+            let event_loop = EventLoop::new();
+            let thread_id = ThreadId::current();
+            ready_tx.send(thread_id).unwrap();
+            while !worker_stop.load(Ordering::Acquire) {
+                event_loop.process_events(false);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+
+        let worker_thread = ready_rx.recv().unwrap();
+        let signal: Signal<i32> = Signal::new();
+        let completed = Arc::new(AtomicBool::new(false));
+        let completed_slot = Arc::clone(&completed);
+
+        signal.connect_object(
+            ObjectId(0),
+            worker_thread,
+            ConnectionType::BlockingQueued,
+            move |&v| {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+                assert_eq!(v, 77);
+                completed_slot.store(true, Ordering::Release);
+            },
+        );
+
+        signal.emit(&77);
+        assert!(
+            completed.load(Ordering::Acquire),
+            "connect_object(BlockingQueued) must block emitter until cross-thread slot finishes"
+        );
+
+        stop.store(true, Ordering::Release);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn test_connect_object_blocking_queued_same_thread_runs_inline() {
+        let signal: Signal<i32> = Signal::new();
+        let ran = Arc::new(AtomicUsize::new(0));
+        let ran_slot = Arc::clone(&ran);
+
+        signal.connect_object(
+            ObjectId(0),
+            ThreadId::current(),
+            ConnectionType::BlockingQueued,
+            move |&v| {
+                ran_slot.fetch_add(v as usize, Ordering::SeqCst);
+            },
+        );
+
+        signal.emit(&5);
+        assert_eq!(ran.load(Ordering::SeqCst), 5);
     }
 }

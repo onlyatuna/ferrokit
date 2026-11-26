@@ -59,6 +59,9 @@ impl IccProfile {
         }
 
         let profile_size = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+        if profile_size < 128 || (profile_size as usize) > data.len() {
+            return None;
+        }
         let cmm_type = [data[4], data[5], data[6], data[7]];
         let version_major = data[8];
         let version_minor = data[9];
@@ -310,8 +313,9 @@ impl IccProfile {
         Self::classify_gamma(y.ln() / 0.5f32.ln())
     }
 
-    /// Bradford-adapts a D50 XYZ colour to D65 and returns its xy chromaticity.
-    fn d50_xyz_to_d65_xy(xyz: [f32; 3]) -> PointF {
+    /// Bradford-adapts a D50 XYZ colour to D65 and returns its xy chromaticity,
+    /// or `None` if the adapted colour is degenerate or non-finite.
+    fn d50_xyz_to_d65_xy(xyz: [f32; 3]) -> Option<PointF> {
         const BFD: [[f32; 3]; 3] = [
             [0.8951, 0.2664, -0.1614],
             [-0.7502, 1.7135, 0.0367],
@@ -327,6 +331,9 @@ impl IccProfile {
         let wp = |p: PointF| [p.x / p.y, 1.0, (1.0 - p.x - p.y) / p.y];
         let s = mul(&BFD, wp(PrimaryPoints::D50));
         let d = mul(&BFD, wp(PrimaryPoints::D65));
+        if s.iter().any(|&v| !v.is_finite() || v == 0.0) {
+            return None;
+        }
         let c = mul(&BFD, xyz);
         let c = [c[0] * d[0] / s[0], c[1] * d[1] / s[1], c[2] * d[2] / s[2]];
         // Inverse Bradford.
@@ -337,10 +344,12 @@ impl IccProfile {
         ];
         let o = mul(&inv, c);
         let sum = o[0] + o[1] + o[2];
-        PointF {
-            x: o[0] / sum,
-            y: o[1] / sum,
+        if !sum.is_finite() || sum <= 0.0 {
+            return None;
         }
+        let x = o[0] / sum;
+        let y = o[1] / sum;
+        (x.is_finite() && y.is_finite()).then_some(PointF { x, y })
     }
 
     /// Attempts to convert this profile to a `ColorSpace`.
@@ -384,10 +393,12 @@ impl IccProfile {
     /// Chromaticity of an XYZ colorant; `None` when it is not a usable colour (sum <= 0).
     fn xyz_to_xy(v: [f32; 3]) -> Option<PointF> {
         let s = v[0] + v[1] + v[2];
-        (s.is_finite() && s > 0.0).then(|| PointF {
-            x: v[0] / s,
-            y: v[1] / s,
-        })
+        if !s.is_finite() || s <= 0.0 {
+            return None;
+        }
+        let x = v[0] / s;
+        let y = v[1] / s;
+        (x.is_finite() && y.is_finite()).then_some(PointF { x, y })
     }
 
     fn rgb_color_space(&self) -> Option<ColorSpace> {
@@ -431,9 +442,9 @@ impl IccProfile {
             Self::xyz_to_xy(b)?,
         ];
         let d65 = [
-            Self::d50_xyz_to_d65_xy(r),
-            Self::d50_xyz_to_d65_xy(g),
-            Self::d50_xyz_to_d65_xy(b),
+            Self::d50_xyz_to_d65_xy(r)?,
+            Self::d50_xyz_to_d65_xy(g)?,
+            Self::d50_xyz_to_d65_xy(b)?,
         ];
 
         // A standard gamut is recognised by comparing the colorants in that gamut's own white
@@ -555,6 +566,8 @@ mod tests {
             }
         }
         data.extend_from_slice(&body);
+        let len = data.len() as u32;
+        data[0..4].copy_from_slice(&len.to_be_bytes());
         IccProfile::from_bytes(&data).unwrap()
     }
 
@@ -1657,5 +1670,34 @@ mod tests {
         // Missing colorants altogether.
         let bare = build(b"RGB ", &[(*b"rTRC", srgb_para_tag())]);
         assert_eq!(bare.to_color_space().unwrap(), ColorSpace::srgb());
+    }
+
+    #[test]
+    fn icc_from_bytes_validates_profile_size() {
+        let mut raw = vec![0u8; 128];
+        raw[16..20].copy_from_slice(b"RGB ");
+        raw[36..40].copy_from_slice(b"acsp");
+
+        // profile_size < 128 rejected
+        raw[0..4].copy_from_slice(&0u32.to_be_bytes());
+        assert!(IccProfile::from_bytes(&raw).is_none());
+        raw[0..4].copy_from_slice(&127u32.to_be_bytes());
+        assert!(IccProfile::from_bytes(&raw).is_none());
+
+        // profile_size > data.len() rejected
+        raw[0..4].copy_from_slice(&129u32.to_be_bytes());
+        assert!(IccProfile::from_bytes(&raw).is_none());
+
+        // exact header size accepted
+        raw[0..4].copy_from_slice(&128u32.to_be_bytes());
+        assert!(IccProfile::from_bytes(&raw).is_some());
+    }
+
+    #[test]
+    fn icc_bradford_rejects_degenerate_xyz() {
+        assert!(IccProfile::d50_xyz_to_d65_xy([0.0, 0.0, 0.0]).is_none());
+        assert!(IccProfile::d50_xyz_to_d65_xy([f32::NAN, 0.5, 0.5]).is_none());
+        assert!(IccProfile::d50_xyz_to_d65_xy([f32::INFINITY, 0.5, 0.5]).is_none());
+        assert!(IccProfile::d50_xyz_to_d65_xy([-1.0, -1.0, -1.0]).is_none());
     }
 }

@@ -950,6 +950,12 @@ impl RectF {
             height: self.height.round() as i32,
         }
     }
+
+    /// Converts to a `tiny_skia::Rect`, returning `None` if negative or non-finite.
+    #[inline]
+    pub fn to_tiny_skia_rect(&self) -> Option<tiny_skia::Rect> {
+        tiny_skia::Rect::from_xywh(self.x, self.y, self.width, self.height)
+    }
 }
 
 impl From<Rect> for RectF {
@@ -1793,6 +1799,34 @@ mod tests {
         let skia_r: tiny_skia::Rect = r.into();
         assert_eq!(skia_r.x(), 5.0);
         assert_eq!(skia_r.width(), 50.0);
+
+        let valid = RectF::new(1.0, 2.0, 30.0, 40.0)
+            .to_tiny_skia_rect()
+            .unwrap();
+        assert_eq!(valid.x(), 1.0);
+        assert_eq!(valid.y(), 2.0);
+        assert_eq!(valid.width(), 30.0);
+        assert_eq!(valid.height(), 40.0);
+        assert!(
+            RectF::new(0.0, 0.0, -5.0, 10.0)
+                .to_tiny_skia_rect()
+                .is_none()
+        );
+        assert!(
+            RectF::new(0.0, 0.0, 10.0, -5.0)
+                .to_tiny_skia_rect()
+                .is_none()
+        );
+        assert!(
+            RectF::new(f32::NAN, 0.0, 10.0, 10.0)
+                .to_tiny_skia_rect()
+                .is_none()
+        );
+        assert!(
+            RectF::new(0.0, 0.0, f32::INFINITY, 10.0)
+                .to_tiny_skia_rect()
+                .is_none()
+        );
     }
 
     #[test]

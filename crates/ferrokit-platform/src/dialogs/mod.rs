@@ -104,6 +104,10 @@ impl SystemDialogs {
     }
 }
 
+/// Serializes calls into `tinyfiledialogs`, which stores dialog results in an internal C static
+/// buffer that is not safe for concurrent access across worker threads.
+static TINYFILEDIALOGS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 impl PlatformDialogs for SystemDialogs {
     fn message_box(
         &self,
@@ -113,6 +117,7 @@ impl PlatformDialogs for SystemDialogs {
         buttons: MessageBoxButtons,
     ) -> MessageBoxResult {
         let icon = Self::native_icon(icon);
+        let _guard = ferrokit_core::poison::lock_unpoisoned(&TINYFILEDIALOGS_LOCK);
         match buttons {
             MessageBoxButtons::Ok => {
                 tinyfiledialogs::message_box_ok(title, message, icon);
@@ -150,6 +155,7 @@ impl PlatformDialogs for SystemDialogs {
         filter: Option<&FileFilter>,
     ) -> Option<PathBuf> {
         let filter = Self::filter_parts(filter);
+        let _guard = ferrokit_core::poison::lock_unpoisoned(&TINYFILEDIALOGS_LOCK);
         tinyfiledialogs::open_file_dialog(
             title,
             initial_path,
@@ -165,6 +171,7 @@ impl PlatformDialogs for SystemDialogs {
         filter: Option<&FileFilter>,
     ) -> Option<Vec<PathBuf>> {
         let filter = Self::filter_parts(filter);
+        let _guard = ferrokit_core::poison::lock_unpoisoned(&TINYFILEDIALOGS_LOCK);
         tinyfiledialogs::open_file_dialog_multi(
             title,
             initial_path,
@@ -180,6 +187,7 @@ impl PlatformDialogs for SystemDialogs {
         filter: Option<&FileFilter>,
     ) -> Option<PathBuf> {
         let filter = Self::filter_parts(filter);
+        let _guard = ferrokit_core::poison::lock_unpoisoned(&TINYFILEDIALOGS_LOCK);
         tinyfiledialogs::save_file_dialog_with_filter(
             title,
             initial_path,
@@ -190,6 +198,7 @@ impl PlatformDialogs for SystemDialogs {
     }
 
     fn select_folder(&self, title: &str, initial_path: &str) -> Option<PathBuf> {
+        let _guard = ferrokit_core::poison::lock_unpoisoned(&TINYFILEDIALOGS_LOCK);
         tinyfiledialogs::select_folder_dialog(title, initial_path).map(PathBuf::from)
     }
 }

@@ -974,12 +974,16 @@ impl Drop for ObjectData {
             .store(true, Ordering::Release);
         // `destroyed` goes out before the parent is told or a child is deleted (Qt `~QObject`,
         // qobject.cpp:1086-1105). The object is dead by now: the token is false and the memory
-        // counts as destroyed, so no slot reaches it through the registry.
-        self.borrow_state.emit_destroyed_once(self.id);
+        // counts as destroyed, so no slot reaches it through the registry. Any panic is held
+        // until teardown completes so `delete_children()` and `unregister_qobject()` always run.
+        let mut held_panic: Option<Box<dyn std::any::Any + Send>> =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.borrow_state.emit_destroyed_once(self.id);
+            }))
+            .err();
         // 1. If we have a parent, unlink from parent and notify it. A panic from a filter or
         // `event()` during the ChildRemoved send is held until the teardown below has run, then
         // resumed (swallowed if the thread is already unwinding, since a second panic aborts).
-        let mut held_panic: Option<Box<dyn std::any::Any + Send>> = None;
         if let Some(parent_id) = self.parent() {
             if registered_and_borrowed(parent_id) {
                 // The parent's borrow is held, so its child lists cannot be edited now. The
@@ -999,10 +1003,11 @@ impl Drop for ObjectData {
                         .retain(|c| OwnedObject::object_id(c) != self.id);
                 });
                 let mut ev = Event::new(EventKind::ChildRemoved { child_id: self.id });
-                held_panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     crate::event_loop::notify_helper(parent_id, &mut ev);
-                }))
-                .err();
+                })) {
+                    held_panic.get_or_insert(payload);
+                }
             }
         }
         // 2. Cascade deletion to all children (deleteChildren)
@@ -1075,4 +1080,62 @@ pub fn install_event_filter(target: &mut ObjectData, filter: ObjectId) -> bool {
 
 pub fn remove_event_filter(target: &mut ObjectData, filter: ObjectId) {
     target.event_filters.remove(filter);
+}
+
+#[cfg(test)]
+mod drop_unwind_tests {
+    use super::*;
+
+    struct TestNode {
+        data: ObjectData,
+    }
+
+    impl QObject for TestNode {
+        fn object_data(&self) -> &ObjectData {
+            &self.data
+        }
+        fn object_data_mut(&mut self) -> ObjectDataMut<'_> {
+            ObjectDataMut::new(&mut self.data)
+        }
+    }
+
+    #[test]
+    fn panicking_destroyed_slot_still_deletes_children_and_unregisters() {
+        // SAFETY: `TestNode` is a fresh value with no outstanding references, owned and dropped
+        // by `parent` on this thread.
+        let parent = unsafe {
+            crate::object::register_owned_qobject(TestNode {
+                data: ObjectData::with_auto_id(),
+            })
+        };
+        let parent_id = OwnedObject::object_id(&parent);
+
+        let child = Box::new(TestNode {
+            data: ObjectData::with_auto_id(),
+        });
+        let child_id = child.data.id();
+        // SAFETY: `child` is a fresh box with no references taken from it; `parent` is registered
+        // on this thread and no callback runs.
+        let _ = unsafe { crate::object::add_owned_child(parent_id, child) }
+            .unwrap_or_else(|(e, _)| panic!("attach refused: {e:?}"));
+
+        let _ = with_object(parent_id, |obj| {
+            obj.object_data().destroyed().connect(|_| {
+                panic!("boom in destroyed slot");
+            });
+        });
+
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            drop(parent);
+        }));
+
+        assert!(
+            !crate::object::qobject::registered_on_current_thread(child_id),
+            "child must be deleted even if parent's destroyed slot panics"
+        );
+        assert!(
+            !crate::object::qobject::registered_on_current_thread(parent_id),
+            "parent must be unregistered even if its destroyed slot panics"
+        );
+    }
 }
