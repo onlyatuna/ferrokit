@@ -78,8 +78,22 @@ jobs:
       - name: Install nightly Miri toolchain
         run: |
           rustup toolchain install nightly-2026-10-16 --profile minimal -c miri -c rust-src
-          cargo +nightly-2026-10-16 miri setup
           rustc +nightly-2026-10-16 -V
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "miri-nightly-2026-10-16"
+          cache-on-failure: true
+
+      - name: Cache Miri sysroot
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/miri
+          key: miri-sysroot-nightly-2026-10-16-${{ runner.os }}
+
+      - name: Set up Miri sysroot
+        run: cargo +nightly-2026-10-16 miri setup
 
       - name: Set up Python
         uses: actions/setup-python@v7
