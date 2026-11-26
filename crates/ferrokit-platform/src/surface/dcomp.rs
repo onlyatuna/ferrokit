@@ -10,174 +10,29 @@ use crate::surface::PlatformSurface;
 use crate::win32_handles::{DibTarget, MemDc, create_dib_section};
 use ferrokit_gui::geometry::Rect;
 use ferrokit_gui::paint::Pixmap;
-use std::ffi::c_void;
 use std::ptr;
-use windows_sys::Win32::Foundation::{HMODULE, HWND, POINT, RECT};
-use windows_sys::Win32::Graphics::Gdi::HDC;
-use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
-use windows_sys::core::{GUID, HRESULT};
-
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    fn FreeLibrary(hLibModule: HMODULE) -> i32;
-}
-// -----------------------------------------------------------------------------
-// Constants and GUIDs
-// -----------------------------------------------------------------------------
-
-const DXGI_FORMAT_B8G8R8A8_UNORM: u32 = 87;
-const DXGI_USAGE_RENDER_TARGET_OUTPUT: u32 = 0x00000020;
-const DXGI_SCALING_STRETCH: u32 = 0;
-const DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL: u32 = 3;
-const DXGI_ALPHA_MODE_PREMULTIPLIED: u32 = 1;
-const DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE: u32 = 0x4;
-
-const D3D_DRIVER_TYPE_HARDWARE: u32 = 1;
-const D3D11_CREATE_DEVICE_BGRA_SUPPORT: u32 = 0x20;
-const D3D11_SDK_VERSION: u32 = 7;
-
-const IID_IUNKNOWN: GUID = GUID {
-    data1: 0x00000000,
-    data2: 0x0000,
-    data3: 0x0000,
-    data4: [0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46],
+use windows::Win32::Foundation::{HWND as WinHwnd, RECT};
+use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
+use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+use windows::Win32::Graphics::Direct3D11::{
+    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device,
+    ID3D11DeviceContext,
 };
-
-const IID_IDXGI_DEVICE: GUID = GUID {
-    data1: 0x54ec77fa,
-    data2: 0x1377,
-    data3: 0x44e6,
-    data4: [0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x44, 0xc8, 0x4c],
+use windows::Win32::Graphics::DirectComposition::{
+    DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget, IDCompositionVisual,
 };
-
-const IID_IDXGI_FACTORY2: GUID = GUID {
-    data1: 0x50c83a1c,
-    data2: 0xe072,
-    data3: 0x4c48,
-    data4: [0x87, 0xb0, 0x36, 0x30, 0xfa, 0x36, 0xa6, 0xd0],
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
 };
-
-const IID_IDXGI_SWAP_CHAIN1: GUID = GUID {
-    data1: 0x790a45f7,
-    data2: 0x0d42,
-    data3: 0x4876,
-    data4: [0x98, 0x3a, 0x0a, 0x55, 0xcf, 0xe6, 0xf4, 0xaa],
+use windows::Win32::Graphics::Dxgi::{
+    CreateDXGIFactory1, DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_PRESENT,
+    DXGI_PRESENT_PARAMETERS, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
+    DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+    DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIDevice, IDXGIFactory2, IDXGISurface1, IDXGISwapChain1,
 };
-
-const IID_IDXGI_SURFACE1: GUID = GUID {
-    data1: 0x4AE63092,
-    data2: 0x6327,
-    data3: 0x4c1b,
-    data4: [0x80, 0xAE, 0xBF, 0xE1, 0x2E, 0xA3, 0x2B, 0x86],
-};
-
-const IID_IDCOMPOSITION_DEVICE: GUID = GUID {
-    data1: 0xC37EA93A,
-    data2: 0xE7AA,
-    data3: 0x450D,
-    data4: [0xB1, 0x6F, 0x97, 0x46, 0xCB, 0x04, 0x07, 0xF3],
-};
-
-// -----------------------------------------------------------------------------
-// DXGI / Direct3D / DirectComposition Structs
-// -----------------------------------------------------------------------------
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct DXGI_SWAP_CHAIN_DESC1 {
-    pub Width: u32,
-    pub Height: u32,
-    pub Format: u32,
-    pub Stereo: i32,
-    pub SampleDesc_Count: u32,
-    pub SampleDesc_Quality: u32,
-    pub BufferUsage: u32,
-    pub BufferCount: u32,
-    pub Scaling: u32,
-    pub SwapEffect: u32,
-    pub AlphaMode: u32,
-    pub Flags: u32,
-}
-
-#[repr(C)]
-pub struct DXGI_PRESENT_PARAMETERS {
-    pub DirtyRectsCount: u32,
-    pub pDirtyRects: *const RECT,
-    pub pScrollRect: *const RECT,
-    pub pScrollOffset: *const POINT,
-}
-
-// -----------------------------------------------------------------------------
-// Function Pointer Types
-// -----------------------------------------------------------------------------
-
-type PfnD3D11CreateDevice = unsafe extern "system" fn(
-    pAdapter: *mut c_void,
-    DriverType: u32,
-    Software: *mut c_void,
-    Flags: u32,
-    pFeatureLevels: *const u32,
-    FeatureLevels: u32,
-    SDKVersion: u32,
-    ppDevice: *mut *mut c_void,
-    pFeatureLevel: *mut u32,
-    ppImmediateContext: *mut *mut c_void,
-) -> HRESULT;
-
-type PfnCreateDXGIFactory1 =
-    unsafe extern "system" fn(riid: *const GUID, ppFactory: *mut *mut c_void) -> HRESULT;
-
-type PfnDCompositionCreateDevice = unsafe extern "system" fn(
-    dxgiDevice: *mut c_void,
-    riid: *const GUID,
-    pDCompositionDevice: *mut *mut c_void,
-) -> HRESULT;
-
-// -----------------------------------------------------------------------------
-// COM Helper Utilities
-// -----------------------------------------------------------------------------
-
-/// Queries a COM interface (`IUnknown::QueryInterface`, vtable slot 0).
-///
-/// # Safety
-/// `ptr` must be a live COM interface pointer.
-unsafe fn com_query_interface(ptr: *mut c_void, riid: &GUID) -> Result<*mut c_void, HRESULT> {
-    type PfnQueryInterface = unsafe extern "system" fn(
-        this: *mut c_void,
-        riid: *const GUID,
-        ppv_object: *mut *mut c_void,
-    ) -> HRESULT;
-    let mut out: *mut c_void = ptr::null_mut();
-    // SAFETY: caller guarantees `ptr` is a live COM interface pointer whose vtable slot 0 is
-    // `IUnknown::QueryInterface`.
-    let hr = unsafe {
-        let vtbl = *(ptr as *mut *mut usize);
-        let qi_fn: PfnQueryInterface = std::mem::transmute(*vtbl);
-        qi_fn(ptr, riid, &mut out)
-    };
-    if hr < 0 || out.is_null() {
-        Err(hr)
-    } else {
-        Ok(out)
-    }
-}
-
-/// Releases one reference of a COM object (`IUnknown::Release`, vtable slot 2); null is ignored.
-///
-/// # Safety
-/// `ptr` must be null or a live COM interface pointer whose reference the caller owns and gives
-/// up here; the caller must not use that reference afterwards.
-unsafe fn com_release(ptr: *mut c_void) {
-    // SAFETY: caller guarantees ptr is null or a live COM interface pointer.
-    unsafe {
-        if !ptr.is_null() {
-            let vtbl = *(ptr as *mut *mut usize);
-            let release_fn: unsafe extern "system" fn(*mut c_void) -> u32 =
-                std::mem::transmute(*vtbl.add(2));
-            release_fn(ptr);
-        }
-    }
-}
+use windows::core::Interface as _;
+use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::Graphics::Gdi::{BitBlt, HDC, SRCCOPY};
 
 // -----------------------------------------------------------------------------
 // DirectComposition Surface Implementation
@@ -209,35 +64,37 @@ pub struct DCompStats {
     pub commit_count: u64,
 }
 
-/// `IDCompositionVisual::SetClip(const D2D_RECT_F&)` (vtable slot 14; slot 13 is the
-/// `IDCompositionClip*` overload) with the rect `[0, w) x [0, h)`.
+/// Sets `clip_visual` clip rect `[0, w) x [0, h)` via `IDCompositionVisual::SetClip(D2D_RECT_F)`.
 ///
 /// # Safety
-/// `clip_visual` must be a live `IDCompositionVisual*`.
-unsafe fn set_clip_rect(clip_visual: *mut c_void, w: u32, h: u32) -> HRESULT {
-    #[repr(C)]
-    struct D2dRectF {
-        left: f32,
-        top: f32,
-        right: f32,
-        bottom: f32,
-    }
-    type PfnSetClipRect =
-        unsafe extern "system" fn(this: *mut c_void, rect: *const D2dRectF) -> HRESULT;
-
-    let rect = D2dRectF {
+/// `clip_visual` must be a live `IDCompositionVisual` belonging to the active device.
+unsafe fn set_clip_rect(
+    clip_visual: &IDCompositionVisual,
+    w: u32,
+    h: u32,
+) -> Result<(), &'static str> {
+    let rect = D2D_RECT_F {
         left: 0.0,
         top: 0.0,
         right: w as f32,
         bottom: h as f32,
     };
+    // SAFETY: `rect` is a valid local `D2D_RECT_F` and `clip_visual` is a live COM visual.
+    unsafe { clip_visual.SetClip2(&rect) }.map_err(|_| "SetClip failed on clip visual")
+}
 
-    // SAFETY: caller guarantees clip_visual is a live IDCompositionVisual*.
-    unsafe {
-        let vtbl = *(clip_visual as *mut *mut usize);
-        let f: PfnSetClipRect = std::mem::transmute(*vtbl.add(14));
-        f(clip_visual, &rect)
-    }
+/// Owned D3D11 / DXGI / DirectComposition COM objects.
+///
+/// Field declaration order matches drop order: visuals and target drop before the DComp device,
+/// and the swap chain drops before the D3D11 context and device.
+struct DCompComState {
+    dcomp_clip_visual: IDCompositionVisual,
+    dcomp_visual: IDCompositionVisual,
+    _dcomp_target: IDCompositionTarget,
+    dcomp_device: IDCompositionDevice,
+    swap_chain: IDXGISwapChain1,
+    _d3d_context: ID3D11DeviceContext,
+    _d3d_device: ID3D11Device,
 }
 
 /// Visual tree: `Target -> ClipVisual (clip = visible rect) -> ContentVisual (swap chain)`.
@@ -250,16 +107,7 @@ pub struct DCompSurface {
     /// Allocated swap chain / staging DIB size (>= visible).
     alloc_w: u32,
     alloc_h: u32,
-    d3d11_mod: HMODULE,
-    dxgi_mod: HMODULE,
-    dcomp_mod: HMODULE,
-    d3d_device: *mut c_void,
-    d3d_context: *mut c_void,
-    dcomp_device: *mut c_void,
-    dcomp_target: *mut c_void,
-    dcomp_clip_visual: *mut c_void,
-    dcomp_visual: *mut c_void,
-    swap_chain: *mut c_void,
+    com: Option<DCompComState>,
     // Staging CPU GDI DIB for format blit (allocated size)
     staging: Option<DibTarget>,
     staging_w: u32,
@@ -305,7 +153,7 @@ pub fn convert_rgba_to_staging_bgra(src: &[u8], dst: &mut [u8], opacity: f32) {
     }
 }
 
-// Deliberately neither `Send` nor `Sync`: owns raw D3D11/DXGI/DirectComposition COM pointers
+// Deliberately neither `Send` nor `Sync`: owns D3D11/DXGI/DirectComposition COM pointers
 // whose immediate context and visual tree may only be driven from the window's thread.
 
 impl DCompSurface {
@@ -318,289 +166,96 @@ impl DCompSurface {
             return Err("Width and height must be greater than 0");
         }
 
-        // SAFETY: the whole block is raw FFI against D3D11/DXGI/DirectComposition, each call
-        // following the documented COM contract (per the Microsoft documentation):
-        // - Entry points come from `LoadLibraryA`/`GetProcAddress` on the DLLs loaded at the top;
-        //   they are null-checked (`is_none`) before being `transmute`d to the `Pfn*` types, whose
-        //   signatures are copied from the documented C prototypes.
-        // - Every interface pointer used (`d3d_device`, `dxgi_factory2`, `swap_chain`,
-        //   `dcomp_device`, `dcomp_target`, visuals) was returned by a successful call a few
-        //   lines above and null-checked, so it points at a live COM object whose first word is
-        //   its vtable; the vtable slot numbers are the documented interface layouts [inferred
-        //   from the interface IDL order; not checkable here].
-        // - Out-pointers (`&mut d3d_device`, `&desc`, ...) are locals that outlive the call.
-        // - Each early-return path releases exactly the objects created so far and frees the
-        //   libraries, so no COM pointer outlives its DLL; on success ownership of all pointers
-        //   and module handles moves into `Self`, whose `Drop` releases them once.
-        // - `hwnd` is only passed to `CreateTargetForHwnd`, which validates it.
+        // SAFETY: `D3D11CreateDevice`, `CreateDXGIFactory1`, `CreateSwapChainForComposition`,
+        // `DCompositionCreateDevice`, and `IDComposition*` calls follow the documented COM
+        // contracts; `hwnd` is only passed to `CreateTargetForHwnd`, which validates it, and all
+        // returned COM interfaces are owned by smart pointers in `DCompComState`.
         unsafe {
-            // 1. Dynamically load runtime DLLs
-            let d3d11_mod = LoadLibraryA(c"d3d11.dll".as_ptr() as *const u8);
-            if d3d11_mod.is_null() {
-                return Err("Failed to load d3d11.dll");
-            }
-
-            let dxgi_mod = LoadLibraryA(c"dxgi.dll".as_ptr() as *const u8);
-            if dxgi_mod.is_null() {
-                FreeLibrary(d3d11_mod);
-                return Err("Failed to load dxgi.dll");
-            }
-
-            let dcomp_mod = LoadLibraryA(c"dcomp.dll".as_ptr() as *const u8);
-            if dcomp_mod.is_null() {
-                FreeLibrary(dxgi_mod);
-                FreeLibrary(d3d11_mod);
-                return Err("Failed to load dcomp.dll (DirectComposition unsupported)");
-            }
-
-            // 2. Resolve entry points
-            let d3d11_create_device_ptr =
-                GetProcAddress(d3d11_mod, c"D3D11CreateDevice".as_ptr() as *const u8);
-            let create_dxgi_factory_ptr =
-                GetProcAddress(dxgi_mod, c"CreateDXGIFactory1".as_ptr() as *const u8);
-            let dcomp_create_device_ptr =
-                GetProcAddress(dcomp_mod, c"DCompositionCreateDevice".as_ptr() as *const u8);
-
-            if d3d11_create_device_ptr.is_none()
-                || create_dxgi_factory_ptr.is_none()
-                || dcomp_create_device_ptr.is_none()
-            {
-                FreeLibrary(dcomp_mod);
-                FreeLibrary(dxgi_mod);
-                FreeLibrary(d3d11_mod);
-                return Err("Failed to resolve DirectComposition entry points");
-            }
-
-            let d3d11_create_device: PfnD3D11CreateDevice =
-                std::mem::transmute(d3d11_create_device_ptr);
-            let create_dxgi_factory: PfnCreateDXGIFactory1 =
-                std::mem::transmute(create_dxgi_factory_ptr);
-            let dcomp_create_device: PfnDCompositionCreateDevice =
-                std::mem::transmute(dcomp_create_device_ptr);
-
-            // 3. Create Direct3D11 Device
-            let mut d3d_device: *mut c_void = ptr::null_mut();
-            let mut d3d_context: *mut c_void = ptr::null_mut();
-            let hr = d3d11_create_device(
-                ptr::null_mut(),
+            // 1. Create Direct3D11 Device
+            let mut d3d_device: Option<ID3D11Device> = None;
+            let mut d3d_context: Option<ID3D11DeviceContext> = None;
+            D3D11CreateDevice(
+                None,
                 D3D_DRIVER_TYPE_HARDWARE,
-                ptr::null_mut(),
+                Default::default(),
                 D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                ptr::null(),
-                0,
+                None,
                 D3D11_SDK_VERSION,
-                &mut d3d_device,
-                ptr::null_mut(),
-                &mut d3d_context,
-            );
-            if hr < 0 || d3d_device.is_null() {
-                FreeLibrary(dcomp_mod);
-                FreeLibrary(dxgi_mod);
-                FreeLibrary(d3d11_mod);
-                return Err("D3D11CreateDevice failed");
-            }
+                Some(&mut d3d_device),
+                None,
+                Some(&mut d3d_context),
+            )
+            .map_err(|_| "D3D11CreateDevice failed")?;
+            let d3d_device = d3d_device.ok_or("D3D11CreateDevice failed")?;
+            let d3d_context = d3d_context.ok_or("D3D11CreateDevice failed")?;
 
-            // 4. Create IDXGIFactory2
-            let mut dxgi_factory2: *mut c_void = ptr::null_mut();
-            let hr = create_dxgi_factory(&IID_IDXGI_FACTORY2, &mut dxgi_factory2);
-            if hr < 0 || dxgi_factory2.is_null() {
-                com_release(d3d_context);
-                com_release(d3d_device);
-                FreeLibrary(dcomp_mod);
-                FreeLibrary(dxgi_mod);
-                FreeLibrary(d3d11_mod);
-                return Err("CreateDXGIFactory1 failed for IDXGIFactory2");
-            }
+            // 2. Create IDXGIFactory2
+            let dxgi_factory2: IDXGIFactory2 =
+                CreateDXGIFactory1().map_err(|_| "CreateDXGIFactory1 failed for IDXGIFactory2")?;
 
-            // 5. Create SwapChain for DirectComposition
+            // 3. Create SwapChain for DirectComposition
             let (alloc_w, alloc_h) = (capacity_for(width), capacity_for(height));
             let desc = DXGI_SWAP_CHAIN_DESC1 {
                 Width: alloc_w,
                 Height: alloc_h,
                 Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                Stereo: 0,
-                SampleDesc_Count: 1,
-                SampleDesc_Quality: 0,
+                Stereo: false.into(),
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                 BufferCount: 2,
                 Scaling: DXGI_SCALING_STRETCH,
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
                 AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
-                Flags: DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE,
+                Flags: DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE.0 as u32,
             };
 
-            let fac_vtbl = *(dxgi_factory2 as *mut *mut usize);
-            // CreateSwapChainForComposition is slot 24 in IDXGIFactory2
-            type PfnCreateSwapChainForComposition = unsafe extern "system" fn(
-                this: *mut c_void,
-                pDevice: *mut c_void,
-                pDesc: *const DXGI_SWAP_CHAIN_DESC1,
-                pRestrictToOutput: *mut c_void,
-                ppSwapChain: *mut *mut c_void,
-            )
-                -> HRESULT;
-            let create_swap_chain_fn: PfnCreateSwapChainForComposition =
-                std::mem::transmute(*fac_vtbl.add(24));
+            let swap_chain = dxgi_factory2
+                .CreateSwapChainForComposition(&d3d_device, &desc, None)
+                .map_err(|_| "CreateSwapChainForComposition failed")?;
 
-            let mut swap_chain: *mut c_void = ptr::null_mut();
-            let hr = create_swap_chain_fn(
-                dxgi_factory2,
-                d3d_device,
-                &desc,
-                ptr::null_mut(),
-                &mut swap_chain,
-            );
-            com_release(dxgi_factory2);
+            // 4. Query IDXGIDevice from ID3D11Device and create DirectComposition Device
+            let dxgi_device: IDXGIDevice = d3d_device
+                .cast()
+                .map_err(|_| "QueryInterface(IDXGIDevice) failed")?;
+            let dcomp_device: IDCompositionDevice = DCompositionCreateDevice(&dxgi_device)
+                .map_err(|_| "DCompositionCreateDevice failed")?;
 
-            if hr < 0 || swap_chain.is_null() {
-                com_release(d3d_context);
-                com_release(d3d_device);
-                FreeLibrary(dcomp_mod);
-                FreeLibrary(dxgi_mod);
-                FreeLibrary(d3d11_mod);
-                return Err("CreateSwapChainForComposition failed");
-            }
+            // 5. Create Target for HWND
+            let dcomp_target = dcomp_device
+                .CreateTargetForHwnd(WinHwnd(hwnd), false)
+                .map_err(|_| "CreateTargetForHwnd failed")?;
 
-            // 6. Query IDXGIDevice from ID3D11Device and create DirectComposition Device
-            let Ok(dxgi_device) = com_query_interface(d3d_device, &IID_IDXGI_DEVICE) else {
-                com_release(swap_chain);
-                com_release(d3d_context);
-                com_release(d3d_device);
-                FreeLibrary(dcomp_mod);
-                FreeLibrary(dxgi_mod);
-                FreeLibrary(d3d11_mod);
-                return Err("QueryInterface(IDXGIDevice) failed");
-            };
+            // 6. Create clip visual (root) and content visual (swap chain).
+            let dcomp_visual = dcomp_device
+                .CreateVisual()
+                .map_err(|_| "CreateVisual failed")?;
+            let dcomp_clip_visual = dcomp_device
+                .CreateVisual()
+                .map_err(|_| "CreateVisual (clip) failed")?;
 
-            let mut dcomp_device: *mut c_void = ptr::null_mut();
-            let hr = dcomp_create_device(dxgi_device, &IID_IDCOMPOSITION_DEVICE, &mut dcomp_device);
-            com_release(dxgi_device);
-            if hr < 0 || dcomp_device.is_null() {
-                com_release(swap_chain);
-                com_release(d3d_context);
-                com_release(d3d_device);
-                FreeLibrary(dcomp_mod);
-                FreeLibrary(dxgi_mod);
-                FreeLibrary(d3d11_mod);
-                return Err("DCompositionCreateDevice failed");
-            }
+            dcomp_visual
+                .SetContent(&swap_chain)
+                .map_err(|_| "SetContent failed on visual")?;
+            dcomp_clip_visual
+                .AddVisual(&dcomp_visual, true, None)
+                .map_err(|_| "AddVisual failed on clip visual")?;
+            set_clip_rect(&dcomp_clip_visual, width, height)?;
 
-            // 7. Create Target for HWND
-            let dev_vtbl = *(dcomp_device as *mut *mut usize);
-            // CreateTargetForHwnd is slot 6 on IDCompositionDevice
-            type PfnCreateTargetForHwnd = unsafe extern "system" fn(
-                this: *mut c_void,
-                hwnd: HWND,
-                topmost: i32,
-                target: *mut *mut c_void,
-            ) -> HRESULT;
-            let create_target_fn: PfnCreateTargetForHwnd = std::mem::transmute(*dev_vtbl.add(6));
+            dcomp_target
+                .SetRoot(&dcomp_clip_visual)
+                .map_err(|_| "SetRoot failed on target")?;
+            let _ = dcomp_device.Commit();
 
-            let mut dcomp_target: *mut c_void = ptr::null_mut();
-            let hr = create_target_fn(dcomp_device, hwnd, 0, &mut dcomp_target);
-            if hr < 0 || dcomp_target.is_null() {
-                com_release(dcomp_device);
-                com_release(swap_chain);
-                com_release(d3d_context);
-                com_release(d3d_device);
-                FreeLibrary(dcomp_mod);
-                FreeLibrary(dxgi_mod);
-                FreeLibrary(d3d11_mod);
-                return Err("CreateTargetForHwnd failed");
-            }
-
-            // 8. Create clip visual (root) and content visual (swap chain).
-            // CreateVisual is slot 7 on IDCompositionDevice
-            type PfnCreateVisual =
-                unsafe extern "system" fn(this: *mut c_void, visual: *mut *mut c_void) -> HRESULT;
-            let create_visual_fn: PfnCreateVisual = std::mem::transmute(*dev_vtbl.add(7));
-
-            let cleanup = |extras: &[*mut c_void]| {
-                for p in extras {
-                    com_release(*p);
-                }
-                com_release(dcomp_target);
-                com_release(dcomp_device);
-                com_release(swap_chain);
-                com_release(d3d_context);
-                com_release(d3d_device);
-                FreeLibrary(dcomp_mod);
-                FreeLibrary(dxgi_mod);
-                FreeLibrary(d3d11_mod);
-            };
-
-            let mut dcomp_visual: *mut c_void = ptr::null_mut();
-            let hr = create_visual_fn(dcomp_device, &mut dcomp_visual);
-            if hr < 0 || dcomp_visual.is_null() {
-                cleanup(&[]);
-                return Err("CreateVisual failed");
-            }
-            let mut dcomp_clip_visual: *mut c_void = ptr::null_mut();
-            let hr = create_visual_fn(dcomp_device, &mut dcomp_clip_visual);
-            if hr < 0 || dcomp_clip_visual.is_null() {
-                cleanup(&[dcomp_visual]);
-                return Err("CreateVisual (clip) failed");
-            }
-
-            // 9. Content visual shows the swap chain: SetContent is slot 15 on IDCompositionVisual
-            let vis_vtbl = *(dcomp_visual as *mut *mut usize);
-            type PfnSetContent =
-                unsafe extern "system" fn(this: *mut c_void, content: *mut c_void) -> HRESULT;
-            let set_content_fn: PfnSetContent = std::mem::transmute(*vis_vtbl.add(15));
-            let hr = set_content_fn(dcomp_visual, swap_chain);
-            if hr < 0 {
-                cleanup(&[dcomp_clip_visual, dcomp_visual]);
-                return Err("SetContent failed on visual");
-            }
-
-            // Clip visual: AddVisual is slot 16, SetClip(const D2D_RECT_F&) is slot 14.
-            let clip_vtbl = *(dcomp_clip_visual as *mut *mut usize);
-            type PfnAddVisual = unsafe extern "system" fn(
-                this: *mut c_void,
-                visual: *mut c_void,
-                insert_above: i32,
-                reference: *mut c_void,
-            ) -> HRESULT;
-            let add_visual_fn: PfnAddVisual = std::mem::transmute(*clip_vtbl.add(16));
-            let hr = add_visual_fn(dcomp_clip_visual, dcomp_visual, 1, ptr::null_mut());
-            if hr < 0 {
-                cleanup(&[dcomp_clip_visual, dcomp_visual]);
-                return Err("AddVisual failed on clip visual");
-            }
-            let hr = set_clip_rect(dcomp_clip_visual, width, height);
-            if hr < 0 {
-                cleanup(&[dcomp_clip_visual, dcomp_visual]);
-                return Err("SetClip failed on clip visual");
-            }
-
-            // 10. Set root visual: SetRoot is slot 3 on IDCompositionTarget
-            let target_vtbl = *(dcomp_target as *mut *mut usize);
-            type PfnSetRoot =
-                unsafe extern "system" fn(this: *mut c_void, visual: *mut c_void) -> HRESULT;
-            let set_root_fn: PfnSetRoot = std::mem::transmute(*target_vtbl.add(3));
-            let hr = set_root_fn(dcomp_target, dcomp_clip_visual);
-            if hr < 0 {
-                cleanup(&[dcomp_clip_visual, dcomp_visual]);
-                return Err("SetRoot failed on target");
-            }
-
-            // 11. Commit device: Commit is slot 3 on IDCompositionDevice
-            type PfnCommit = unsafe extern "system" fn(this: *mut c_void) -> HRESULT;
-            let commit_fn: PfnCommit = std::mem::transmute(*dev_vtbl.add(3));
-            let _ = commit_fn(dcomp_device);
-
-            // 12. Allocate staging GDI DIB (allocated size) for software pixel translation
-            let Some(staging_dc) = MemDc::create_compatible(ptr::null_mut()) else {
-                cleanup(&[dcomp_clip_visual, dcomp_visual]);
-                return Err("CreateCompatibleDC failed for the staging DIB");
-            };
+            // 7. Allocate staging GDI DIB (allocated size) for software pixel translation
+            let staging_dc = MemDc::create_compatible(ptr::null_mut())
+                .ok_or("CreateCompatibleDC failed for the staging DIB")?;
             // A failed DIB drops `staging_dc` (DeleteDC) on the way out.
-            let Some((staging_bitmap, staging_bits)) =
+            let (staging_bitmap, staging_bits) =
                 create_dib_section(staging_dc.as_raw(), alloc_w, alloc_h)
-            else {
-                cleanup(&[dcomp_clip_visual, dcomp_visual]);
-                return Err("CreateDIBSection failed for the staging DIB");
-            };
+                    .ok_or("CreateDIBSection failed for the staging DIB")?;
             let staging = DibTarget::select(staging_dc, staging_bitmap, staging_bits);
 
             Ok(Self {
@@ -609,16 +264,15 @@ impl DCompSurface {
                 height,
                 alloc_w,
                 alloc_h,
-                d3d11_mod,
-                dxgi_mod,
-                dcomp_mod,
-                d3d_device,
-                d3d_context,
-                dcomp_device,
-                dcomp_target,
-                dcomp_clip_visual,
-                dcomp_visual,
-                swap_chain,
+                com: Some(DCompComState {
+                    dcomp_clip_visual,
+                    dcomp_visual,
+                    _dcomp_target: dcomp_target,
+                    dcomp_device,
+                    swap_chain,
+                    _d3d_context: d3d_context,
+                    _d3d_device: d3d_device,
+                }),
                 staging: Some(staging),
                 staging_w: alloc_w,
                 staging_h: alloc_h,
@@ -634,6 +288,7 @@ impl DCompSurface {
             })
         }
     }
+
     /// Creates a mock DCompSurface for deterministic unit/integration testing of
     /// failure recovery and downgrade pathways without requiring real DXGI/DComp hardware.
     #[cfg(any(test, feature = "test-hooks"))]
@@ -644,16 +299,7 @@ impl DCompSurface {
             height,
             alloc_w: width,
             alloc_h: height,
-            d3d11_mod: ptr::null_mut(),
-            dxgi_mod: ptr::null_mut(),
-            dcomp_mod: ptr::null_mut(),
-            d3d_device: ptr::null_mut(),
-            d3d_context: ptr::null_mut(),
-            dcomp_device: ptr::null_mut(),
-            dcomp_target: ptr::null_mut(),
-            dcomp_clip_visual: ptr::null_mut(),
-            dcomp_visual: ptr::null_mut(),
-            swap_chain: ptr::null_mut(),
+            com: None,
             staging: None,
             staging_w: width,
             staging_h: height,
@@ -713,6 +359,7 @@ impl DCompSurface {
     pub fn stats(&self) -> DCompStats {
         self.stats
     }
+
     /// Injects a synthetic present failure for testing downgrade paths.
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn set_fail_present_for_test(&mut self, fail: bool) {
@@ -724,6 +371,7 @@ impl DCompSurface {
     pub fn set_fail_resize_for_test(&mut self, fail: bool) {
         self.fail_resize_for_test = fail;
     }
+
     /// Changes the visible size. Inside the allocated capacity this only moves the clip:
     /// no `ResizeBuffers`, no staging reallocation. Swap chain buffers are reallocated only
     /// when the capacity is too small, or more than 2x too large (hysteresis: the new
@@ -733,8 +381,7 @@ impl DCompSurface {
         if self.fail_resize_for_test {
             return Err("Injected DirectComposition resize failure");
         }
-        #[cfg(any(test, feature = "test-hooks"))]
-        if self.dcomp_device.is_null() {
+        if self.com.is_none() {
             if width == 0 || height == 0 {
                 return Err("Width and height must be greater than 0");
             }
@@ -769,13 +416,9 @@ impl DCompSurface {
         self.stats.visible_resize_count += 1;
         // Content outside the previous visible area is stale: repaint all visible pixels.
         self.force_full = true;
-        // SAFETY: `self.dcomp_clip_visual` is a live `IDCompositionVisual` created in `new` and
-        //   released only in `Drop`; the mock surface (null visual) returned early above because
-        //   `dcomp_device` is null, so this point is only reached by a real surface.
-        unsafe {
-            if set_clip_rect(self.dcomp_clip_visual, width, height) < 0 {
-                return Err("SetClip failed on clip visual");
-            }
+        if let Some(com) = self.com.as_ref() {
+            // SAFETY: `com.dcomp_clip_visual` is a live `IDCompositionVisual` owned by `self.com`.
+            unsafe { set_clip_rect(&com.dcomp_clip_visual, width, height)? };
         }
         self.stats.clip_update_count += 1;
         crate::resize_trace::record(
@@ -789,66 +432,51 @@ impl DCompSurface {
 
     /// Reallocates swap chain buffers and the staging DIB to `alloc_w x alloc_h`.
     fn resize_buffers(&mut self, alloc_w: u32, alloc_h: u32) -> Result<(), &'static str> {
-        // SAFETY: `resize_buffers` is reached only from `resize`, after the mock early-return, so
-        //   `self.swap_chain` is the live `IDXGISwapChain` created in `new` (released only in
-        //   `Drop`) and slot 13 is `ResizeBuffers` per the IDXGISwapChain vtable layout [inferred
-        //   from interface order]. `&mut self` guarantees no other call uses the swap chain, and
-        //   `ResizeBuffers` requires that no back-buffer references are outstanding: `present`
-        //   releases its `GetBuffer` surface before returning, so none are. `staging_dc()` is
-        //   the staging DC owned by `self.staging` (non-null for a real surface).
-        unsafe {
-            // ResizeBuffers is slot 13 on IDXGISwapChain
-            let sc_vtbl = *(self.swap_chain as *mut *mut usize);
-            type PfnResizeBuffers = unsafe extern "system" fn(
-                this: *mut c_void,
-                bufferCount: u32,
-                width: u32,
-                height: u32,
-                newFormat: u32,
-                swapChainFlags: u32,
-            ) -> HRESULT;
-            let resize_fn: PfnResizeBuffers = std::mem::transmute(*sc_vtbl.add(13));
-            // Allocate the new staging DIB first: if it fails nothing has changed yet (the swap
-            // chain keeps its size, the old DIB stays selected).
-            // The mock surface has no staging DIB, so none is allocated for it.
-            let new_dib = if self.staging.is_some() {
-                match create_dib_section(self.staging_dc(), alloc_w, alloc_h) {
-                    Some(dib) => Some(dib),
-                    None => return Err("CreateDIBSection failed for the staging DIB"),
-                }
-            } else {
-                None
-            };
+        let Some(com) = self.com.as_ref() else {
+            return Ok(());
+        };
+        // Allocate the new staging DIB first: if it fails nothing has changed yet (the swap
+        // chain keeps its size, the old DIB stays selected).
+        let new_dib = if self.staging.is_some() {
+            match create_dib_section(self.staging_dc(), alloc_w, alloc_h) {
+                Some(dib) => Some(dib),
+                None => return Err("CreateDIBSection failed for the staging DIB"),
+            }
+        } else {
+            None
+        };
 
-            let hr = resize_fn(
-                self.swap_chain,
+        // SAFETY: `com.swap_chain` is live, `&mut self` guarantees exclusive access, and no
+        // back-buffer references remain outstanding after `present_dirty_ref` returns.
+        let res = unsafe {
+            com.swap_chain.ResizeBuffers(
                 2,
                 alloc_w,
                 alloc_h,
                 DXGI_FORMAT_B8G8R8A8_UNORM,
                 DXGI_SWAP_CHAIN_FLAG_GDI_COMPATIBLE,
-            );
-            if hr < 0 {
-                let u_hr = hr as u32;
-                if u_hr == 0x887A0005 || u_hr == 0x887A0007 {
-                    return Err("DXGI_ERROR_DEVICE_LOST");
-                }
-                return Err("ResizeBuffers failed on swap chain");
+            )
+        };
+        if let Err(err) = res {
+            let hr = err.code();
+            if hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET {
+                return Err("DXGI_ERROR_DEVICE_LOST");
             }
-            self.stats.resize_buffers_count += 1;
-
-            // Swap the staging DIB: restore the previous object, delete the old DIB, select the
-            // new one. The mock surface has no staging DIB and keeps its (empty) staging size.
-            if let (Some(staging), Some((new_bmp, bits))) = (&mut self.staging, new_dib) {
-                staging.replace_deselecting(new_bmp, bits);
-                self.staging_w = alloc_w;
-                self.staging_h = alloc_h;
-            }
-            self.alloc_w = alloc_w;
-            self.alloc_h = alloc_h;
-            // Fresh buffers + staging: the next present must repaint everything visible.
-            self.force_full = true;
+            return Err("ResizeBuffers failed on swap chain");
         }
+        self.stats.resize_buffers_count += 1;
+
+        // Swap the staging DIB: restore the previous object, delete the old DIB, select the
+        // new one.
+        if let (Some(staging), Some((new_bmp, bits))) = (&mut self.staging, new_dib) {
+            staging.replace_deselecting(new_bmp, bits);
+            self.staging_w = alloc_w;
+            self.staging_h = alloc_h;
+        }
+        self.alloc_w = alloc_w;
+        self.alloc_h = alloc_h;
+        // Fresh buffers + staging: the next present must repaint everything visible.
+        self.force_full = true;
 
         Ok(())
     }
@@ -863,9 +491,7 @@ impl DCompSurface {
         if self.fail_present_for_test {
             return Err("Injected DirectComposition present failure");
         }
-        #[cfg(any(test, feature = "test-hooks"))]
-        if self.dcomp_device.is_null() {
-            // Mock surface for unit testing: if present failure is not requested, mock success
+        if self.com.is_none() {
             self.width = pixmap.physical_width();
             self.height = pixmap.physical_height();
             return Ok(());
@@ -891,16 +517,17 @@ impl DCompSurface {
             return Ok(());
         }
 
-        // SAFETY: only reached for a real surface (the mock returned early on null
-        //   `dcomp_device`), so `swap_chain`, `dcomp_device` and `staging` are live objects from
-        //   `new`. The row copy stays in bounds: `resize` above made `pixmap` dimensions equal
-        //   `self.width/height`, `clipped` lies inside `[0, width) x [0, height)`, so source rows
-        //   are within the tightly-packed pixmap, and `staging_w >= width`, `staging_h >= height`
-        //   (alloc >= visible) keeps the destination rows inside the staging DIB
-        //   (`staging_w * staging_h * 4` bytes). Source and destination are distinct allocations.
-        //   COM calls follow the documented IDXGISwapChain/IDXGISurface1 protocol: `GetDC` is
-        //   paired with `ReleaseDC`, and the surface reference from `GetBuffer` is released on
-        //   every path that obtained it; vtable slots are [inferred from interface order].
+        let staging_dc = self.staging_dc();
+        let staging_bits = self.staging_bits();
+        let Some(com) = self.com.as_ref() else {
+            return Ok(());
+        };
+
+        // SAFETY: only reached for a real surface with live `com` and `staging`:
+        // - `resize` above matched `pixmap` dimensions to `self.width/height`; `clipped` lies
+        //   inside `[0, width) x [0, height)` and `staging_w/h >= width/height`, so row slices
+        //   stay in bounds on distinct allocations.
+        // - `GetBuffer`, `GetDC`, `ReleaseDC`, `Present1`, and `Commit` follow DXGI/DComp docs.
         unsafe {
             // 1. Copy dirty rect pixels from Pixmap (RGBA) into staging DIB (BGRA)
             let src_stride = (self.width * 4) as usize;
@@ -917,43 +544,22 @@ impl DCompSurface {
                 let src_row =
                     std::slice::from_raw_parts(src_data.as_ptr().add(src_offset), copy_bytes);
                 let dst_row =
-                    std::slice::from_raw_parts_mut(self.staging_bits().add(dst_offset), copy_bytes);
+                    std::slice::from_raw_parts_mut(staging_bits.add(dst_offset), copy_bytes);
 
                 convert_rgba_to_staging_bgra(src_row, dst_row, opacity);
             }
             self.staged_opacity = opacity;
 
-            // 2. Query back buffer IDXGISurface1: GetBuffer is slot 9 on IDXGISwapChain
-            let sc_vtbl = *(self.swap_chain as *mut *mut usize);
-            type PfnGetBuffer = unsafe extern "system" fn(
-                this: *mut c_void,
-                buffer: u32,
-                riid: *const windows_sys::core::GUID,
-                pp_surface: *mut *mut c_void,
-            ) -> HRESULT;
-            let get_buffer_fn: PfnGetBuffer = std::mem::transmute(*sc_vtbl.add(9));
-            let mut dxgi_surface1: *mut c_void = ptr::null_mut();
-            let hr = get_buffer_fn(self.swap_chain, 0, &IID_IDXGI_SURFACE1, &mut dxgi_surface1);
-            if hr < 0 || dxgi_surface1.is_null() {
-                return Err("IDXGISwapChain::GetBuffer(0, IDXGISurface1) failed");
-            }
+            // 2. Query back buffer IDXGISurface1
+            let dxgi_surface1: IDXGISurface1 = com
+                .swap_chain
+                .GetBuffer(0)
+                .map_err(|_| "IDXGISwapChain::GetBuffer(0, IDXGISurface1) failed")?;
 
-            // 3. Acquire HDC on DXGI Surface: GetDC is slot 11 on IDXGISurface1
-            let surf_vtbl = *(dxgi_surface1 as *mut *mut usize);
-            type PfnGetDC = unsafe extern "system" fn(
-                this: *mut c_void,
-                discard: i32,
-                phdc: *mut HDC,
-            ) -> HRESULT;
-            let get_dc_fn: PfnGetDC = std::mem::transmute(*surf_vtbl.add(11));
-            let mut dxgi_dc: HDC = ptr::null_mut();
-            let hr_dc = get_dc_fn(dxgi_surface1, 0, &mut dxgi_dc);
-            if hr_dc < 0 || dxgi_dc.is_null() {
-                let release_fn: unsafe extern "system" fn(*mut c_void) -> u32 =
-                    std::mem::transmute(*surf_vtbl.add(2));
-                release_fn(dxgi_surface1);
-                return Err("IDXGISurface1::GetDC failed");
-            }
+            // 3. Acquire HDC on DXGI Surface
+            let dxgi_dc = dxgi_surface1
+                .GetDC(false)
+                .map_err(|_| "IDXGISurface1::GetDC failed")?;
 
             // 4. BitBlt the changed area from the staging DIB to the back buffer, together with the
             // previous present's area: this buffer last showed the frame before that.
@@ -961,43 +567,29 @@ impl DCompSurface {
                 (false, Some(prev)) => full_window_rect.intersected(&clipped.united(&prev)),
                 _ => clipped,
             };
-            windows_sys::Win32::Graphics::Gdi::BitBlt(
-                dxgi_dc,
+            BitBlt(
+                dxgi_dc.0,
                 blit.x,
                 blit.y,
                 blit.width,
                 blit.height,
-                self.staging_dc(),
+                staging_dc,
                 blit.x,
                 blit.y,
-                windows_sys::Win32::Graphics::Gdi::SRCCOPY,
+                SRCCOPY,
             );
-            // 5. Release DC: ReleaseDC is slot 12 on IDXGISurface1
-            type PfnReleaseDC =
-                unsafe extern "system" fn(this: *mut c_void, p_dirty_rect: *const RECT) -> HRESULT;
-            let rel_dc_fn: PfnReleaseDC = std::mem::transmute(*surf_vtbl.add(12));
+
+            // 5. Release DC
             let dirty_gdi_rect = RECT {
                 left: blit.x,
                 top: blit.y,
                 right: blit.x + blit.width,
                 bottom: blit.y + blit.height,
             };
-            rel_dc_fn(dxgi_surface1, &dirty_gdi_rect);
+            let _ = dxgi_surface1.ReleaseDC(Some(&dirty_gdi_rect));
+            drop(dxgi_surface1);
 
-            // Release dxgi_surface1 COM reference
-            let release_fn: unsafe extern "system" fn(*mut c_void) -> u32 =
-                std::mem::transmute(*surf_vtbl.add(2));
-            release_fn(dxgi_surface1);
-
-            // 6. Present1 with pDirtyRects (slot 22 on IDXGISwapChain1)
-            type PfnPresent1 = unsafe extern "system" fn(
-                this: *mut c_void,
-                sync_interval: u32,
-                present_flags: u32,
-                p_present_parameters: *const DXGI_PRESENT_PARAMETERS,
-            ) -> HRESULT;
-            let present1_fn: PfnPresent1 = std::mem::transmute(*sc_vtbl.add(22));
-
+            // 6. Present1 with pDirtyRects
             let mut dxgi_dirty_rect = RECT {
                 left: clipped.x,
                 top: clipped.y,
@@ -1013,10 +605,10 @@ impl DCompSurface {
                 pScrollOffset: ptr::null_mut(),
             };
 
-            let hr = present1_fn(self.swap_chain, 0, 0, &present_params);
-            if hr < 0 {
-                return Err("IDXGISwapChain1::Present1 failed");
-            }
+            com.swap_chain
+                .Present1(0, DXGI_PRESENT(0), &present_params)
+                .ok()
+                .map_err(|_| "IDXGISwapChain1::Present1 failed")?;
             self.force_full = false;
             self.prev_dirty = Some(clipped);
             self.stats.present_count += 1;
@@ -1028,13 +620,9 @@ impl DCompSurface {
             );
 
             // 7. Commit DirectComposition device (also publishes any clip change)
-            let dev_vtbl = *(self.dcomp_device as *mut *mut usize);
-            type PfnCommit = unsafe extern "system" fn(this: *mut c_void) -> HRESULT;
-            let commit_fn: PfnCommit = std::mem::transmute(*dev_vtbl.add(3));
-            let hr_commit = commit_fn(self.dcomp_device);
-            if hr_commit < 0 {
-                return Err("IDCompositionDevice::Commit failed");
-            }
+            com.dcomp_device
+                .Commit()
+                .map_err(|_| "IDCompositionDevice::Commit failed")?;
             self.stats.commit_count += 1;
             crate::resize_trace::record(
                 crate::resize_trace::TraceKind::DCompCommit,
@@ -1076,33 +664,6 @@ impl PlatformSurface for DCompSurface {
     }
 }
 
-impl Drop for DCompSurface {
-    fn drop(&mut self) {
-        // SAFETY: each pointer was returned by `new` and is owned solely by this struct, so it is
-        //   released exactly once here; `com_release` ignores null (mock surface). The DLLs are
-        //   freed after the objects are released, as their code lives in those modules. `Drop`
-        //   has `&mut self`, so no other use can follow.
-        unsafe {
-            com_release(self.dcomp_clip_visual);
-            com_release(self.dcomp_visual);
-            com_release(self.dcomp_target);
-            com_release(self.dcomp_device);
-            com_release(self.swap_chain);
-            com_release(self.d3d_context);
-            com_release(self.d3d_device);
-
-            if !self.dcomp_mod.is_null() {
-                FreeLibrary(self.dcomp_mod);
-            }
-            if !self.dxgi_mod.is_null() {
-                FreeLibrary(self.dxgi_mod);
-            }
-            if !self.d3d11_mod.is_null() {
-                FreeLibrary(self.d3d11_mod);
-            }
-        }
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1180,82 +741,5 @@ mod tests {
             "WindowsSurface present_dirty failed: {:?}",
             res.err()
         );
-    }
-
-    #[test]
-    fn test_com_query_interface_invokes_slot_zero_with_iid() {
-        const E_NOINTERFACE: HRESULT = -2147467262; // 0x80004002
-
-        #[repr(C)]
-        struct FakeComObject {
-            vtbl: *const [usize; 3],
-            qi_calls: u32,
-            release_calls: u32,
-        }
-
-        unsafe extern "system" fn fake_qi(
-            this: *mut c_void,
-            riid: *const GUID,
-            ppv: *mut *mut c_void,
-        ) -> HRESULT {
-            // SAFETY: test passes a valid `FakeComObject`, `GUID`, and out-pointer.
-            unsafe {
-                let obj = &mut *(this as *mut FakeComObject);
-                obj.qi_calls += 1;
-                let guid = *riid;
-                let matches = (guid.data1, guid.data2, guid.data3, guid.data4)
-                    == (
-                        IID_IDXGI_DEVICE.data1,
-                        IID_IDXGI_DEVICE.data2,
-                        IID_IDXGI_DEVICE.data3,
-                        IID_IDXGI_DEVICE.data4,
-                    );
-                if matches {
-                    *ppv = this;
-                    0
-                } else {
-                    *ppv = ptr::null_mut();
-                    E_NOINTERFACE
-                }
-            }
-        }
-
-        unsafe extern "system" fn fake_add_ref(_this: *mut c_void) -> u32 {
-            1
-        }
-
-        unsafe extern "system" fn fake_release(this: *mut c_void) -> u32 {
-            // SAFETY: test passes a valid `FakeComObject`.
-            unsafe {
-                let obj = &mut *(this as *mut FakeComObject);
-                obj.release_calls += 1;
-                0
-            }
-        }
-
-        let vtbl: [usize; 3] = [
-            fake_qi as *const () as usize,
-            fake_add_ref as *const () as usize,
-            fake_release as *const () as usize,
-        ];
-        let mut obj = FakeComObject {
-            vtbl: &vtbl,
-            qi_calls: 0,
-            release_calls: 0,
-        };
-        let obj_ptr = (&raw mut obj).cast::<c_void>();
-
-        // SAFETY: `obj_ptr` points to a valid `FakeComObject` whose vtable matches `IUnknown`.
-        unsafe {
-            let dxgi_dev = com_query_interface(obj_ptr, &IID_IDXGI_DEVICE)
-                .expect("QueryInterface for IID_IDXGI_DEVICE should succeed");
-            assert_eq!(dxgi_dev, obj_ptr);
-            com_release(dxgi_dev);
-
-            let err = com_query_interface(obj_ptr, &IID_IUNKNOWN);
-            assert_eq!(err, Err(E_NOINTERFACE));
-        }
-        assert_eq!(obj.qi_calls, 2);
-        assert_eq!(obj.release_calls, 1);
     }
 }

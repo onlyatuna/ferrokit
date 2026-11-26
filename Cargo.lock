@@ -186,6 +186,7 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-wlr",
  "wayland-server",
+ "windows",
  "windows-sys",
  "x11rb",
 ]
