@@ -72,15 +72,19 @@ jobs:
               exit 0
             fi
           fi
-          sudo apt-get update
-          sudo apt-get install -y -o APT::Keep-Downloaded-Packages=true \
+          APT_OPTS="-o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15"
+          if ! sudo apt-get $APT_OPTS update; then
+            echo "http://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+            sudo apt-get $APT_OPTS update
+          fi
+          sudo apt-get $APT_OPTS install -y -o APT::Keep-Downloaded-Packages=true \
             libxkbcommon-dev libx11-dev libxrandr-dev \
             libxcursor-dev libxi-dev libxinerama-dev \
             libgl1-mesa-dev libgles2-mesa-dev pkg-config xvfb
           # The font tests resolve Arial and a CJK fallback, as they do on Windows.
           echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" \
             | sudo debconf-set-selections
-          sudo apt-get install -y -o APT::Keep-Downloaded-Packages=true \
+          sudo apt-get $APT_OPTS install -y -o APT::Keep-Downloaded-Packages=true \
             ttf-mscorefonts-installer fonts-noto-cjk
           mkdir -p "$HOME/ci-apt-cache/debs" "$HOME/ci-apt-cache/mscorefonts"
           sudo cp /var/cache/apt/archives/*.deb "$HOME/ci-apt-cache/debs/" || true
@@ -160,14 +164,18 @@ jobs:
               exit 0
             fi
           fi
-          sudo apt-get update
-          sudo apt-get install -y -o APT::Keep-Downloaded-Packages=true \
+          APT_OPTS="-o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15"
+          if ! sudo apt-get $APT_OPTS update; then
+            echo "http://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+            sudo apt-get $APT_OPTS update
+          fi
+          sudo apt-get $APT_OPTS install -y -o APT::Keep-Downloaded-Packages=true \
             libxkbcommon-dev libx11-dev libxrandr-dev \
             libxcursor-dev libxi-dev libxinerama-dev \
             libgl1-mesa-dev libgles2-mesa-dev pkg-config xvfb
           echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" \
             | sudo debconf-set-selections
-          sudo apt-get install -y -o APT::Keep-Downloaded-Packages=true \
+          sudo apt-get $APT_OPTS install -y -o APT::Keep-Downloaded-Packages=true \
             ttf-mscorefonts-installer fonts-noto-cjk
           mkdir -p "$HOME/ci-apt-cache/debs" "$HOME/ci-apt-cache/mscorefonts"
           sudo cp /var/cache/apt/archives/*.deb "$HOME/ci-apt-cache/debs/" || true
@@ -217,8 +225,12 @@ jobs:
               exit 0
             fi
           fi
-          sudo apt-get update
-          sudo apt-get install -y -o APT::Keep-Downloaded-Packages=true \
+          APT_OPTS="-o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15"
+          if ! sudo apt-get $APT_OPTS update; then
+            echo "http://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+            sudo apt-get $APT_OPTS update
+          fi
+          sudo apt-get $APT_OPTS install -y -o APT::Keep-Downloaded-Packages=true \
             libxkbcommon-dev libx11-dev libxrandr-dev \
             libxcursor-dev libxi-dev libxinerama-dev \
             libgl1-mesa-dev libgles2-mesa-dev pkg-config
