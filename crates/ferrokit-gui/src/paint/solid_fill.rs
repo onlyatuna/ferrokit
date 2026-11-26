@@ -139,12 +139,9 @@ pub fn fill_path_source_over(
         for row in 0..h as usize {
             let y = y0 as usize + row;
             let cov = &mut coverage[row * stride..row * stride + w as usize];
-            // The clip mask can contain anti-aliased coverage (0..=255), e.g. from rotated clip quads.
             if let Some((data, cw)) = clip_data {
                 let clip_row = &data[y * cw + x0 as usize..y * cw + x1 as usize];
-                for (c, &k) in cov.iter_mut().zip(clip_row) {
-                    *c = ((u16::from(*c) * u16::from(k) + 127) / 255) as u8;
-                }
+                apply_clip_mask(cov, clip_row);
             }
             let start = y * pstride + x0 as usize * 4;
             blend_row(&mut dest[start..start + w as usize * 4], cov, color);
@@ -152,11 +149,33 @@ pub fn fill_path_source_over(
     });
 }
 
+#[inline]
+fn apply_clip_mask(cov: &mut [u8], clip_row: &[u8]) {
+    // The clip mask can contain anti-aliased coverage (0..=255), e.g. from rotated clip quads.
+    for (c, &k) in cov.iter_mut().zip(clip_row) {
+        *c = ((u16::from(*c) * u16::from(k) + 127) / 255) as u8;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tiny_skia::{PathBuilder, Pixmap, Rect};
 
+    #[test]
+    fn apply_clip_mask_multiplies_antialiased_coverage() {
+        let mut cov = [128u8, 255, 255, 255];
+        let clip_row = [127u8, 127, 0, 255];
+        apply_clip_mask(&mut cov, &clip_row);
+        assert_eq!(cov[0], 64);
+        assert_eq!(cov[1], 127);
+        assert_eq!(cov[2], 0);
+        assert_eq!(cov[3], 255);
+    }
+
+    // Exercising tiny-skia's rasterizer under Miri hits issue #105 (tiny-skia 0.11.4 compares fn
+    // pointers to pick tail-stage load/store, which zeroes tail pixels on some Miri seeds).
+    #[cfg(not(miri))]
     #[test]
     fn fill_path_source_over_multiplies_antialiased_clip_mask_coverage() {
         let mut pixmap = Pixmap::new(4, 2).unwrap();
