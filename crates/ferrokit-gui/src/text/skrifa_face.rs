@@ -31,54 +31,8 @@
 //! style is the process default or the font's hinting preference), synthetic bold and oblique,
 //! and the switch to auto-hinting Qt makes after `FT_Err_Execution_Too_Long`.
 //!
-//! # Vendored crates
-//!
-//! `skrifa` and `read-fonts` come from `third_party/` (see the `README.ferrokit.md` of each):
-//! the pen learns which points are implied ones, so `SlotPen` rebuilds FreeType's point array;
-//! the TrueType interpreter uses FreeType 2.14's move arithmetic and its choice of the
-//! auto-hinter; and CFF stem darkening, which Qt switches on (`qt_getFreetypeData`), is ported.
-//! Qt's FreeType engine also blends the grey-scale glyphs of CFF fonts with the text gamma
-//! (`expectsGammaCorrectedBlending`), which [`GlyphFace::gamma_corrected_blending`] tells the painter.
-//! With them, against FreeType 2.14.2 on 24 TrueType and 33 CFF faces (Latin-1 text, 9 to 24 px)
-//! outline point arrays and bitmaps are identical for every TrueType glyph in normal mode
-//! (73,344 renders) and unhinted (293,376), for every CFF glyph in all three modes (907,632), and
-//! for 253,048 of 293,376 TrueType glyphs in light mode before the vertical separation
-//! adjustment below was ported.
-//!
-//! # Light hinting of TrueType accents and dots
-//!
-//! FreeType 2.14.0 added a vertical separation adjustment to its auto-hinter (`afadjust.c`,
-//! commit `7099b09e9`, "[autofit] Implement vertical separation adjustment"). It moves the dot of
-//! `i` and `j` and the accents of accented letters vertically so that they keep a gap to the
-//! letter below. The vendored skrifa auto-hinter has it (see `third_party/skrifa/README.ferrokit.md`
-//! and `adjust/mod.rs`, with the FreeType line of every ported function). It includes what the
-//! HarfBuzz build of FreeType adds: the reverse character map of the adjustment is extended
-//! through the GSUB single and alternate substitutions (`add_substitute`, `adjust/gsub.rs`), the
-//! blue strings of Indic, Khmer, Myanmar and USE scripts measure the dotted circle that HarfBuzz
-//! inserts before a lone dependent sign and hide the default ignorable characters, the
-//! alternate substitutions of a feature style (Verdana's `c2sc`) are applied, and the style
-//! ranges are those of FreeType 2.14.2's `afranges.c`. Measured over 40 TrueType fonts, about
-//! 1,270 characters each (Latin-1, accented Latin, Greek, Cyrillic), 8 to 24 px: 3,050,616 of
-//! 3,050,616 light renders equal FreeType 2.14.2's (system library), 762,654 of 762,654
-//! `QRawFont::alphaMapForGlyph` records equal Qt 6.12.0's, 330,224 of 330,224 single glyph
-//! `drawText` renders equal Qt's. By glyph index (every glyph of the 40 fonts, 9, 12, 16 and
-//! 20 px, Normal and Light with a sub-pixel offset): 1,364,418 of 1,364,424 equal FreeType's and
-//! 454,808 of 454,808 equal Qt's. The target is the Ubuntu build of FreeType 2.14.2, which loads
-//! HarfBuzz at run time; other builds of FreeType may differ.
-//!
-//! # Known differences
-//!
-//! - 6 of the by-glyph-index records differ: Normal mode (`FT_LOAD_TARGET_NORMAL`) at 9 px for
-//!   U+05D8 and U+FB38 of DejaVu Sans Bold and U+266B in the four Liberation Mono faces. Qt's
-//!   default (light) hinting is not affected; the cause is not established.
-//! - FreeType's coverage computation (`af_shaper_get_coverage_hb`) leaves out the glyphs that
-//!   the GPOS table of a feature covers; the vendored skrifa does not read GPOS. No difference
-//!   was measured in the 40 fonts.
-//! - The style class of Nyiakeng Puachue Hmong, which FreeType 2.14.2 does not have, is still in
-//!   the table of the vendored skrifa, without characters.
-//!
-//! CFF fonts (hinted by the CFF engine, which has no such adjustment) and every other hint style
-//! are not affected.
+//! This backend uses upstream crates.io `skrifa` + [`ftgrays`] (with CFF gamma-corrected blending
+//! reported via [`GlyphFace::gamma_corrected_blending`]).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -108,15 +62,6 @@ struct Slot {
 
 /// Collects a skrifa outline as the points, tags and contour ends of an `FT_Outline`.
 ///
-/// skrifa draws a glyph as FreeType's `FT_Outline_Decompose` walks it: contours start at the same
-/// point and two consecutive off-curve points have an implied on-curve point between them. skrifa
-/// hands that point to the pen as an explicit one, rounded to 1/64 pixel, but FreeType's point
-/// array does not have it and its rasterizer works at the exact midpoint (`gray_conic_to`). The
-/// vendored read-fonts (`third_party/read-fonts`) tells the pen about such a point
-/// ([`OutlinePen::implied_point`], called before the command that ends on it): it is dropped, and
-/// the contour keeps the off-curve points around it, as in FreeType. That includes the start of a
-/// contour that begins with an off-curve point and the return to the start that closes a curve.
-///
 /// A CFF contour (`cff`) does not repeat its first point at the end (`cff_builder_close_contour`).
 #[derive(Default)]
 struct SlotPen {
@@ -124,8 +69,6 @@ struct SlotPen {
     open: bool,
     /// The outline comes from the CFF driver.
     cff: bool,
-    /// The end point of the next command is an implied point.
-    implied: bool,
     /// Index in `outline.points` of the open contour's first point.
     first: usize,
 }
@@ -146,13 +89,6 @@ impl SlotPen {
             (f64::from(y) * 64.0).round() as i64,
         ));
         self.outline.tags.push(tag);
-    }
-
-    /// The on-curve end point of a command, unless it is an implied one.
-    fn push_end(&mut self, x: f32, y: f32) {
-        if !std::mem::take(&mut self.implied) {
-            self.push(x, y, ftgrays::TAG_ON);
-        }
     }
 
     fn end_contour(&mut self) {
@@ -189,25 +125,22 @@ impl OutlinePen for SlotPen {
         self.end_contour();
         self.open = true;
         self.first = self.outline.points.len();
-        self.push_end(x, y);
+        self.push(x, y, ftgrays::TAG_ON);
     }
     fn line_to(&mut self, x: f32, y: f32) {
         self.push(x, y, ftgrays::TAG_ON);
     }
     fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
         self.push(cx, cy, ftgrays::TAG_CONIC);
-        self.push_end(x, y);
+        self.push(x, y, ftgrays::TAG_ON);
     }
     fn curve_to(&mut self, c0x: f32, c0y: f32, c1x: f32, c1y: f32, x: f32, y: f32) {
         self.push(c0x, c0y, ftgrays::TAG_CUBIC);
         self.push(c1x, c1y, ftgrays::TAG_CUBIC);
-        self.push_end(x, y);
+        self.push(x, y, ftgrays::TAG_ON);
     }
     fn close(&mut self) {
         self.end_contour();
-    }
-    fn implied_point(&mut self) {
-        self.implied = true;
     }
 }
 
@@ -342,8 +275,6 @@ impl SkrifaFace {
                 symmetric_rendering: true,
                 preserve_linear_metrics: false,
             },
-            // Qt's FreeType engine turns CFF stem darkening on (`qt_getFreetypeData`)
-            cff_stem_darkening: self.cff,
         };
         let instance = HintingInstance::new(
             outlines,
@@ -379,10 +310,7 @@ impl SkrifaFace {
             Some((outline, metrics.advance_width))
         };
         let (outline, advance) = match target {
-            None => draw(
-                DrawSettings::unhinted(size, LocationRef::default())
-                    .with_cff_stem_darkening(self.cff),
-            )?,
+            None => draw(DrawSettings::unhinted(size, LocationRef::default()))?,
             Some((mode, hinter)) => {
                 let hinted = self
                     .instance(&outlines, ysize, mode, hinter)
@@ -665,47 +593,23 @@ mod tests {
     }
 
     #[test]
-    fn closing_curve_back_to_an_explicit_start_adds_no_point() {
+    fn closing_curve_back_to_an_explicit_start_adds_point() {
         let mut pen = SlotPen::default();
         pen.move_to(0.0, 0.0);
         pen.line_to(1.0, 0.0);
         pen.line_to(1.0, 1.0);
-        // skrifa closes the contour with the return to its start, which it announces.
-        pen.implied_point();
         pen.quad_to(0.5, 1.5, 0.0, 0.0);
         pen.close();
         let o = pen.finish();
-        assert_eq!(o.contours, [3]);
+        assert_eq!(o.contours, [4]);
         assert_eq!(
             pts(&o),
             [
                 (0, 0, ftgrays::TAG_ON),
                 (64, 0, ftgrays::TAG_ON),
                 (64, 64, ftgrays::TAG_ON),
-                (32, 96, ftgrays::TAG_CONIC)
-            ]
-        );
-    }
-
-    #[test]
-    fn implied_points_are_not_part_of_the_outline() {
-        let mut pen = SlotPen::default();
-        // A contour that starts off the curve: its start, and the points between two consecutive
-        // off-curve points, are implied.
-        pen.implied_point();
-        pen.move_to(0.5, 0.0);
-        pen.quad_to(1.0, 0.0, 1.0, 0.5);
-        pen.implied_point();
-        pen.quad_to(1.0, 1.0, 0.5, 0.0);
-        pen.close();
-        let o = pen.finish();
-        assert_eq!(o.contours, [2]);
-        assert_eq!(
-            pts(&o),
-            [
-                (64, 0, ftgrays::TAG_CONIC),
-                (64, 32, ftgrays::TAG_ON),
-                (64, 64, ftgrays::TAG_CONIC)
+                (32, 96, ftgrays::TAG_CONIC),
+                (0, 0, ftgrays::TAG_ON)
             ]
         );
     }

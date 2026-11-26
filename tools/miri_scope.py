@@ -33,7 +33,6 @@ EXACT = {
 PREFIX = (
     ("crates/ferrokit-core/", CORE_DEPENDENTS),
     ("crates/ferrokit-gui/", GUI_DEPENDENTS),
-    ("third_party/", GUI_DEPENDENTS),
     ("crates/ferrokit-widgets/", {"widgets"}),
     ("crates/ferrokit-platform/", {"widgets"}),
     ("crates/ferrokit-derive/", set(CRATES)),

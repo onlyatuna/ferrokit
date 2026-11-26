@@ -7,13 +7,8 @@ members = [
     "crates/ferrokit-widgets",
     "crates/ferrokit-derive",
 ]
-# Fuzz harnesses need nightly and are not built by CI (see fuzz/README.md). The vendored crates of
-# third_party/ (copies of skrifa and read-fonts, each with a small change that makes it reproduce
-# FreeType 2.14.2 exactly; third_party/*/README.ferrokit.md says which) are not workspace members:
-# ferrokit-gui depends on them by path and they keep their own manifests. No `[patch.crates-io]`:
-# a patch is only honoured in the root of a workspace, so a project that depends on ferrokit-gui
-# would not get the vendored crates and would fail to compile against the crates.io ones.
-exclude = ["fuzz", "third_party/read-fonts", "third_party/skrifa"]
+# Fuzz harnesses need nightly and are not built by CI (see fuzz/README.md).
+exclude = ["fuzz"]
 
 # One feature set for every member. Cargo unifies features over the packages a command selects, so
 # with per-crate lists `cargo test -p ferrokit-core` built a different windows-sys (and so a different
