@@ -4,10 +4,8 @@ A Rust implementation of a subset of Qt®: the object model, the event loop, sig
 painting, text layout, style sheets, widgets and layouts, and a Win32 platform layer.
 
 > **Status: 0.x, unstable API, not published to crates.io.**
-> Windows x86_64 is the only supported platform and the only one that has been run on a real
-> desktop. The macOS and Linux back ends exist but are experimental: CI checks that they compile
-> and runs the tests that can run there. Nothing has been verified on a real macOS or Linux
-> desktop.
+> Windows x86_64 is the primary desktop target (`Win32` + opt-in `DirectComposition`).
+> macOS (`objc2 0.6` AppKit main-thread checks) and Linux (`x11rb` under Xvfb + pure-Rust `wayland-client` with in-process `wayland-server` tests) are actively tested in CI, though full interactive desktop QA on real macOS/Wayland hardware remains experimental.
 
 ## Why
 
@@ -22,9 +20,12 @@ without rediscovering how each widget and layout behaves.
 |---|---|
 | `ferrokit-core` | object model (parent and child objects, properties, meta objects), events, event loop, signals and slots, timers, threads, I/O helpers |
 | `ferrokit-gui` | geometry, colours, painter (software rasteriser), text shaping and fonts, images |
-| `ferrokit-platform` | native windows, screens, cursor, clipboard, tray icons, menus, dialogs; Win32 first, other back ends experimental |
+| `ferrokit-platform` | native windows, screens, cursor, clipboard, tray icons, menus, dialogs (Win32, Cocoa/AppKit, Linux X11 & Wayland) |
 | `ferrokit-widgets` | widgets, layouts, style sheets (QSS), tool tips, menus |
 | `ferrokit-derive` | derive macro for the object model |
+| `ferrokit-model` | standalone concurrency model (`loom`, `shuttle`, `ThreadSanitizer`, `kani`) mirroring `ferrokit-core`'s 9-level lock hierarchy |
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the crate dependency graph, backend matrix, and verification pyramid, and [deny.toml](deny.toml) for the dependency license policy (`cargo deny check licenses`).
 
 ## How close to Qt is it?
 

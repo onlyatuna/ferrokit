@@ -81,6 +81,13 @@ equations, so that notice applies to them too (LICENSES/BSD-3-Clause.txt):
   All rights reserved.
 
 
+tinyfiledialogs
+-------------
+`ferrokit-platform` depends on the `tinyfiledialogs` crate (3.9.1, `zlib-acknowledgement`), which
+bundles the `tinyfiledialogs` C library (zlib license) for non-macOS native message boxes and file
+dialogs.
+
+
 Reference data
 --------------
 Expected values in many tests (for example crates/ferrokit-widgets/tests/fixtures/layout_qt_oracle.txt,
