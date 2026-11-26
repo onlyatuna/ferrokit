@@ -331,3 +331,16 @@ jobs:
         run: |
           cargo +nightly-2026-10-16 test --locked --target x86_64-unknown-linux-gnu -Zbuild-std \
             --manifest-path crates/ferrokit-model/Cargo.toml --test stress_tests -- --nocapture
+
+  license-check:
+    name: License Check (cargo-deny)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check dependency licenses
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+          arguments: --locked
