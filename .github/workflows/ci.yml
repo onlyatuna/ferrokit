@@ -57,8 +57,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/ci-apt-cache
-          key: apt-linux-gui-fonts-xvfb-v1-${{ hashFiles('.github/workflows/ci.yml') }}
-          restore-keys: apt-linux-gui-fonts-xvfb-v1-
+          key: apt-linux-gui-fonts-xvfb-v2-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: apt-linux-gui-fonts-xvfb-v2-
 
       - name: Install Linux deps
         if: runner.os == 'Linux'
@@ -77,10 +77,11 @@ jobs:
             echo "http://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
             sudo apt-get $APT_OPTS update
           fi
+          sudo apt-get $APT_OPTS -f install -y
           sudo apt-get $APT_OPTS install -y -o APT::Keep-Downloaded-Packages=true \
             libxkbcommon-dev libx11-dev libxrandr-dev \
             libxcursor-dev libxi-dev libxinerama-dev \
-            libgl1-mesa-dev libgles2-mesa-dev pkg-config xvfb
+            libgl1-mesa-dev libgles2-mesa-dev xvfb
           # The font tests resolve Arial and a CJK fallback, as they do on Windows.
           echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" \
             | sudo debconf-set-selections
@@ -151,8 +152,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/ci-apt-cache
-          key: apt-linux-gui-fonts-xvfb-v1-${{ hashFiles('.github/workflows/ci.yml') }}
-          restore-keys: apt-linux-gui-fonts-xvfb-v1-
+          key: apt-linux-gui-fonts-xvfb-v2-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: apt-linux-gui-fonts-xvfb-v2-
 
       - name: Install Linux deps and Xvfb
         run: |
@@ -169,10 +170,11 @@ jobs:
             echo "http://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
             sudo apt-get $APT_OPTS update
           fi
+          sudo apt-get $APT_OPTS -f install -y
           sudo apt-get $APT_OPTS install -y -o APT::Keep-Downloaded-Packages=true \
             libxkbcommon-dev libx11-dev libxrandr-dev \
             libxcursor-dev libxi-dev libxinerama-dev \
-            libgl1-mesa-dev libgles2-mesa-dev pkg-config xvfb
+            libgl1-mesa-dev libgles2-mesa-dev xvfb
           echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" \
             | sudo debconf-set-selections
           sudo apt-get $APT_OPTS install -y -o APT::Keep-Downloaded-Packages=true \
@@ -214,8 +216,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/ci-apt-cache
-          key: apt-linux-clippy-v1-${{ hashFiles('.github/workflows/ci.yml') }}
-          restore-keys: apt-linux-clippy-v1-
+          key: apt-linux-clippy-v2-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: apt-linux-clippy-v2-
 
       - name: Install Linux deps
         if: runner.os == 'Linux'
@@ -230,10 +232,11 @@ jobs:
             echo "http://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
             sudo apt-get $APT_OPTS update
           fi
+          sudo apt-get $APT_OPTS -f install -y
           sudo apt-get $APT_OPTS install -y -o APT::Keep-Downloaded-Packages=true \
             libxkbcommon-dev libx11-dev libxrandr-dev \
             libxcursor-dev libxi-dev libxinerama-dev \
-            libgl1-mesa-dev libgles2-mesa-dev pkg-config
+            libgl1-mesa-dev libgles2-mesa-dev
           mkdir -p "$HOME/ci-apt-cache/debs"
           sudo cp /var/cache/apt/archives/*.deb "$HOME/ci-apt-cache/debs/" || true
 
