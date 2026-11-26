@@ -189,6 +189,12 @@ pub mod generic {
         }
 
         fn clipboard(&self) -> Box<dyn PlatformClipboard> {
+            #[cfg(target_os = "linux")]
+            {
+                if crate::window::x11::X11NativeWindow::display_reachable() {
+                    return Box::new(crate::clipboard::x11::X11Clipboard::new());
+                }
+            }
             Box::new(GenericClipboard::new())
         }
 
@@ -350,6 +356,12 @@ pub mod unix {
         }
 
         fn clipboard(&self) -> Box<dyn PlatformClipboard> {
+            #[cfg(target_os = "linux")]
+            {
+                if crate::window::x11::X11NativeWindow::display_reachable() {
+                    return Box::new(crate::clipboard::x11::X11Clipboard::new());
+                }
+            }
             Box::new(GenericClipboard::new())
         }
 

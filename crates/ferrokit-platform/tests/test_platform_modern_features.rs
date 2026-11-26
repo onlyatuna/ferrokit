@@ -194,15 +194,85 @@ fn test_cross_platform_screens_parity() {
     // Test X11 screen
     let x11_primary = X11Screen::primary();
     assert!(x11_primary.is_primary());
-    assert_eq!(x11_primary.geometry().width, 1920);
-    assert_eq!(x11_primary.geometry().height, 1080);
-    assert_eq!(x11_primary.device_pixel_ratio(), 1.0);
+    assert!(x11_primary.geometry().width > 0);
+    assert!(x11_primary.geometry().height > 0);
+    assert!(x11_primary.device_pixel_ratio() >= 1.0);
+    #[cfg(not(target_os = "linux"))]
+    {
+        assert_eq!(x11_primary.geometry().width, 1920);
+        assert_eq!(x11_primary.geometry().height, 1080);
+        assert_eq!(x11_primary.device_pixel_ratio(), 1.0);
+    }
 
     let x11_screens = X11Screen::screens();
-    assert_eq!(x11_screens.len(), 1);
+    assert!(!x11_screens.is_empty());
 
-    let x11_at = X11Screen::screen_at(Point::new(500, 500));
+    let x11_at = X11Screen::screen_at(Point::new(10, 10));
     assert!(x11_at.is_some());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn test_linux_x11_live_window_surface_and_clipboard() {
+    use ferrokit_gui::paint::Pixmap;
+    use ferrokit_platform::clipboard::{MimeData, PlatformClipboard, x11::X11Clipboard};
+    use ferrokit_platform::platform_window::PlatformWindow;
+    use ferrokit_platform::screen::{PlatformScreen, X11Screen};
+    use ferrokit_platform::window::WindowFlags;
+    use ferrokit_platform::window_x11::X11NativeWindow;
+    use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+
+    if !X11NativeWindow::display_reachable() {
+        return;
+    }
+
+    let screen = X11Screen::primary();
+    assert!(screen.is_primary());
+    assert!(screen.geometry().width > 0 && screen.geometry().height > 0);
+
+    let mut win = X11NativeWindow::new(
+        "Ferrokit X11 Live",
+        Rect::new(20, 30, 160, 120),
+        WindowFlags::NORMAL,
+    )
+    .expect("live X11 window");
+    assert!(win.is_live_display());
+    assert!(win.connection_fd() >= 0);
+    assert!(matches!(
+        win.raw_window_handle().expect("window handle").as_raw(),
+        RawWindowHandle::Xcb(_)
+    ));
+    assert!(matches!(
+        win.raw_display_handle().expect("display handle").as_raw(),
+        RawDisplayHandle::Xcb(_)
+    ));
+
+    win.show();
+    win.set_geometry(Rect::new(40, 50, 200, 140));
+    win.set_stays_on_top(true);
+    win.set_click_through(true);
+    win.set_click_through(false);
+    win.set_opacity(0.9);
+    win.set_minimum_size(100, 80);
+    win.set_maximum_size(800, 600);
+
+    let mut pm = Pixmap::with_dpr(200, 140, 1.0).unwrap();
+    pm.fill(ferrokit_gui::tiny_skia::Color::from_rgba8(10, 20, 30, 255));
+    win.present(&mut pm, 0.9).expect("put_image present");
+    let _ = win.poll_events();
+    win.hide();
+
+    // Clipboard round-trip across two X11Clipboard instances (real X11 SelectionRequest/Notify IPC)
+    let owner = X11Clipboard::new();
+    let reader = X11Clipboard::new();
+    let mut mime = MimeData::new();
+    mime.set_text("hello-x11-clipboard");
+    mime.set_html("<b>hello</b>");
+    owner.set_mime_data(&mime).expect("set_mime_data");
+    let got = reader.mime_data().expect("mime_data");
+    assert_eq!(got.text().as_deref(), Some("hello-x11-clipboard"));
+    assert_eq!(got.html().as_deref(), Some("<b>hello</b>"));
+    owner.clear().expect("clear");
 }
 
 #[test]

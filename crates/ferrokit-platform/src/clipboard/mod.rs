@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 pub mod macos;
+#[cfg(target_os = "linux")]
+pub mod x11;
 
 #[cfg(windows)]
 use crate::win32_handles::{ClipboardSession, GlobalMem};

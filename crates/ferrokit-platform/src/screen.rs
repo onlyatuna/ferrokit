@@ -726,7 +726,7 @@ pub mod x11_screen {
     }
 
     impl X11Screen {
-        pub fn primary() -> Self {
+        fn fallback_primary() -> Self {
             Self {
                 name: "X11PrimaryScreen".to_string(),
                 geometry: Rect::new(0, 0, 1920, 1080),
@@ -736,17 +736,159 @@ pub mod x11_screen {
             }
         }
 
+        #[cfg(target_os = "linux")]
+        fn env_scale_factor() -> f32 {
+            for key in ["QT_SCALE_FACTOR", "GDK_SCALE"] {
+                if let Ok(val) = std::env::var(key)
+                    && let Ok(parsed) = val.trim().parse::<f32>()
+                    && parsed.is_finite()
+                    && parsed >= 1.0
+                {
+                    return parsed;
+                }
+            }
+            1.0
+        }
+
+        #[cfg(target_os = "linux")]
+        fn query_screens() -> Option<Vec<Self>> {
+            use x11rb::connection::Connection;
+            use x11rb::protocol::randr::ConnectionExt as _;
+            use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+            use x11rb::rust_connection::RustConnection;
+
+            let (conn, screen_num) = RustConnection::connect(None).ok()?;
+            let screen = conn.setup().roots.get(screen_num)?;
+            let root = screen.root;
+            let root_w = i32::from(screen.width_in_pixels);
+            let root_h = i32::from(screen.height_in_pixels);
+            let dpr = Self::env_scale_factor();
+
+            let workarea = conn
+                .intern_atom(false, b"_NET_WORKAREA")
+                .ok()
+                .and_then(|c| c.reply().ok())
+                .and_then(|atom| {
+                    conn.get_property(false, root, atom.atom, AtomEnum::CARDINAL, 0, 4)
+                        .ok()?
+                        .reply()
+                        .ok()
+                })
+                .and_then(|prop| {
+                    let mut vals = prop.value32()?;
+                    let x = vals.next()? as i32;
+                    let y = vals.next()? as i32;
+                    let w = vals.next()? as i32;
+                    let h = vals.next()? as i32;
+                    (w > 0 && h > 0).then(|| Rect::new(x, y, w, h))
+                });
+
+            let mut out = Vec::new();
+            if let Ok(res_cookie) = conn.randr_get_screen_resources_current(root)
+                && let Ok(res) = res_cookie.reply()
+            {
+                let primary_output = conn
+                    .randr_get_output_primary(root)
+                    .ok()
+                    .and_then(|c| c.reply().ok())
+                    .map(|r| r.output)
+                    .unwrap_or(0);
+
+                for &output in &res.outputs {
+                    let Ok(info) = conn
+                        .randr_get_output_info(output, res.config_timestamp)
+                        .ok()
+                        .and_then(|c| c.reply().ok())
+                        .ok_or(())
+                    else {
+                        continue;
+                    };
+                    if info.crtc == 0 {
+                        continue;
+                    }
+                    let Ok(crtc) = conn
+                        .randr_get_crtc_info(info.crtc, res.config_timestamp)
+                        .ok()
+                        .and_then(|c| c.reply().ok())
+                        .ok_or(())
+                    else {
+                        continue;
+                    };
+                    if crtc.width == 0 || crtc.height == 0 {
+                        continue;
+                    }
+                    let geom = Rect::new(
+                        i32::from(crtc.x),
+                        i32::from(crtc.y),
+                        i32::from(crtc.width),
+                        i32::from(crtc.height),
+                    );
+                    let avail = workarea
+                        .map(|wa| geom.intersected(&wa))
+                        .filter(|r| !r.is_empty())
+                        .unwrap_or(geom);
+                    let name = String::from_utf8_lossy(&info.name).into_owned();
+                    let is_primary = output == primary_output;
+                    out.push(Self {
+                        name: if name.is_empty() {
+                            "X11Screen".to_string()
+                        } else {
+                            name
+                        },
+                        geometry: geom,
+                        available_geometry: avail,
+                        is_primary,
+                        dpr,
+                    });
+                }
+            }
+
+            if out.is_empty() && root_w > 0 && root_h > 0 {
+                let geom = Rect::new(0, 0, root_w, root_h);
+                let avail = workarea
+                    .map(|wa| geom.intersected(&wa))
+                    .filter(|r| !r.is_empty())
+                    .unwrap_or(geom);
+                out.push(Self {
+                    name: "X11PrimaryScreen".to_string(),
+                    geometry: geom,
+                    available_geometry: avail,
+                    is_primary: true,
+                    dpr,
+                });
+            } else if !out.is_empty() && !out.iter().any(|s| s.is_primary) {
+                out[0].is_primary = true;
+            }
+
+            (!out.is_empty()).then_some(out)
+        }
+
+        pub fn primary() -> Self {
+            let screens = Self::screens();
+            screens
+                .iter()
+                .find(|s| s.is_primary)
+                .cloned()
+                .unwrap_or_else(|| {
+                    screens
+                        .into_iter()
+                        .next()
+                        .unwrap_or_else(Self::fallback_primary)
+                })
+        }
+
         pub fn screens() -> Vec<Self> {
-            vec![Self::primary()]
+            #[cfg(target_os = "linux")]
+            if let Some(screens) = Self::query_screens() {
+                return screens;
+            }
+            vec![Self::fallback_primary()]
         }
 
         pub fn screen_at(pos: Point) -> Option<Self> {
-            let primary = Self::primary();
-            if primary.geometry.contains(pos) {
-                Some(primary)
-            } else {
-                None
-            }
+            Self::screens()
+                .into_iter()
+                .find(|s| s.geometry.contains(pos))
         }
     }
 
