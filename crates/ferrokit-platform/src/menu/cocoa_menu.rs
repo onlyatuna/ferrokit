@@ -7,8 +7,31 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use super::{PlatformMenu, PlatformMenuItem};
 use crate::objc_runtime::{
-    ActionTarget, Class, Id, NS_CONTROL_STATE_VALUE_OFF, NS_CONTROL_STATE_VALUE_ON, ObjcMsg, Sel,
+    ActionTarget, CGPoint, Class, Id, NS_CONTROL_STATE_VALUE_OFF, NS_CONTROL_STATE_VALUE_ON,
+    ObjcMsg, Sel,
 };
+
+fn should_invoke_native_popup() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        if crate::integration::CocoaPlatformIntegration::is_headless() {
+            return false;
+        }
+        // `popUpMenuPositioningItem:atLocation:inView:` runs a modal tracking loop; skip it when
+        // no `NSApplication` run loop is active (e.g. `appkit_main_thread` checks).
+        let app_cls = Class::get("NSApplication").unwrap_or(Class::NIL);
+        // SAFETY: `sharedApplication` takes no arguments and returns `NSApplication *` or nil;
+        // `isRunning` takes no arguments and returns `BOOL`.
+        unsafe {
+            let app = ObjcMsg::send_class_0(app_cls, Sel::register("sharedApplication"));
+            ObjcMsg::send_bool_return(app, Sel::register("isRunning"))
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
 
 /// Addresses of the live `NSMenu`s [`CocoaMenu::new`] created (removed in [`CocoaMenu::drop`]
 /// before the `NSMenu` is released).
@@ -457,11 +480,28 @@ impl PlatformMenu for CocoaMenu {
     fn show_popup(&self, screen_pos: Point) {
         *ferrokit_core::poison::lock_unpoisoned(&self.is_popped_up) = true;
         *ferrokit_core::poison::lock_unpoisoned(&self.popup_pos) = Some(screen_pos);
+        if !self.ns_menu.is_nil() && should_invoke_native_popup() {
+            let cocoa_pos = crate::window::macos::qt_mac_flip_global_point(screen_pos);
+            // SAFETY: `self.ns_menu` is live (released only in `Drop`); `popUpMenuPositioningItem:atLocation:inView:`
+            // takes `(NSMenuItem * = nil, NSPoint, NSView * = nil)` in Cocoa screen coordinates.
+            unsafe {
+                ObjcMsg::send_popup_menu(
+                    self.ns_menu,
+                    Id::NIL,
+                    CGPoint::new(cocoa_pos.x as f64, cocoa_pos.y as f64),
+                    Id::NIL,
+                );
+            }
+        }
     }
 
     fn dismiss(&self) {
         *ferrokit_core::poison::lock_unpoisoned(&self.is_popped_up) = false;
         *ferrokit_core::poison::lock_unpoisoned(&self.popup_pos) = None;
+        if !self.ns_menu.is_nil() {
+            // SAFETY: `self.ns_menu` is live (released only in `Drop`); `cancelTracking` takes no arguments.
+            unsafe { ObjcMsg::send_cancel_tracking(self.ns_menu) };
+        }
     }
 
     fn find_item(&self, id: u32) -> Option<Arc<dyn PlatformMenuItem>> {
@@ -480,5 +520,52 @@ impl PlatformMenu for CocoaMenu {
 
     fn native_handle(&self) -> isize {
         self.ns_menu.0 as isize
+    }
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod tests {
+    use super::*;
+    use crate::objc_runtime::MockObjcRuntime;
+    use crate::objc_runtime::appkit::MockValue;
+
+    #[test]
+    fn show_popup_and_dismiss_dispatch_appkit_messages() {
+        let runtime = MockObjcRuntime::instance();
+        let menu = CocoaMenu::new();
+        let ns_menu = Id(menu.native_handle() as *mut std::ffi::c_void);
+        runtime.clear_calls();
+
+        let screen_pos = Point::new(120, 240);
+        menu.show_popup(screen_pos);
+        assert!(menu.is_popped_up());
+        assert_eq!(menu.popup_pos(), Some(screen_pos));
+
+        let expected_cocoa = crate::window::macos::qt_mac_flip_global_point(screen_pos);
+        let calls = runtime.calls_for(ns_menu);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].selector,
+            "popUpMenuPositioningItem:atLocation:inView:"
+        );
+        assert_eq!(
+            calls[0].args,
+            vec![
+                MockValue::Id(Id::NIL),
+                MockValue::Point(CGPoint::new(
+                    expected_cocoa.x as f64,
+                    expected_cocoa.y as f64
+                )),
+                MockValue::Id(Id::NIL),
+            ]
+        );
+
+        menu.dismiss();
+        assert!(!menu.is_popped_up());
+        assert_eq!(menu.popup_pos(), None);
+        let calls = runtime.calls_for(ns_menu);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1].selector, "cancelTracking");
+        assert!(calls[1].args.is_empty());
     }
 }

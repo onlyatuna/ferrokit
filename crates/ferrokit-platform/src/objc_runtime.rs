@@ -165,36 +165,164 @@ pub const NS_WINDOW_BELOW: NSInteger = -1;
 
 #[cfg(target_os = "macos")]
 mod native_bindings {
-    use super::*;
-
     // One `#[link]` per library is how several libraries are linked; the lint reads the repeated
     // `kind = "framework"` as a duplicate.
     #[allow(clippy::duplicated_attributes)]
-    #[link(name = "objc")]
     #[link(name = "AppKit", kind = "framework")]
     #[link(name = "CoreFoundation", kind = "framework")]
-    unsafe extern "C" {
-        pub fn objc_getClass(name: *const c_char) -> *mut c_void;
-        pub fn sel_registerName(name: *const c_char) -> *const c_void;
-        pub fn objc_msgSend();
-        #[cfg(target_arch = "x86_64")]
-        pub fn objc_msgSend_stret();
-        pub fn objc_allocateClassPair(
-            superclass: *mut c_void,
-            name: *const c_char,
-            extra_bytes: usize,
-        ) -> *mut c_void;
-        pub fn objc_registerClassPair(class: *mut c_void);
-        pub fn class_getInstanceMethod(class: *mut c_void, sel: *const c_void) -> *mut c_void;
-        pub fn method_getTypeEncoding(method: *mut c_void) -> *const c_char;
-        pub fn class_addMethod(
-            class: *mut c_void,
-            sel: *const c_void,
-            imp: *const c_void,
-            types: *const c_char,
-        ) -> BOOL;
-        pub fn objc_autoreleasePoolPush() -> *mut c_void;
-        pub fn objc_autoreleasePoolPop(pool: *mut c_void);
+    unsafe extern "C" {}
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct NSOperatingSystemVersion {
+    pub major: NSInteger,
+    pub minor: NSInteger,
+    pub patch: NSInteger,
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) mod objc2_bridge {
+    use super::*;
+    use objc2::encode::{Encode, EncodeArguments, EncodeReturn, Encoding, RefEncode};
+    use objc2::runtime::{AnyClass, AnyObject, MessageReceiver, Sel as Objc2Sel};
+
+    // SAFETY: `CGPoint` is `#[repr(C)]` with two `CGFloat` (`f64`) fields, matching `@encode(CGPoint)`.
+    unsafe impl Encode for CGPoint {
+        const ENCODING: Encoding =
+            Encoding::Struct("CGPoint", &[CGFloat::ENCODING, CGFloat::ENCODING]);
+    }
+
+    // SAFETY: `CGPoint` is `#[repr(C)]` and `ENCODING_REF` is a pointer to `Self::ENCODING`.
+    unsafe impl RefEncode for CGPoint {
+        const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
+    }
+
+    // SAFETY: `CGSize` is `#[repr(C)]` with two `CGFloat` (`f64`) fields, matching `@encode(CGSize)`.
+    unsafe impl Encode for CGSize {
+        const ENCODING: Encoding =
+            Encoding::Struct("CGSize", &[CGFloat::ENCODING, CGFloat::ENCODING]);
+    }
+
+    // SAFETY: `CGSize` is `#[repr(C)]` and `ENCODING_REF` is a pointer to `Self::ENCODING`.
+    unsafe impl RefEncode for CGSize {
+        const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
+    }
+
+    // SAFETY: `CGRect` is `#[repr(C)]` with `(CGPoint, CGSize)`, matching `@encode(CGRect)`.
+    unsafe impl Encode for CGRect {
+        const ENCODING: Encoding =
+            Encoding::Struct("CGRect", &[CGPoint::ENCODING, CGSize::ENCODING]);
+    }
+
+    // SAFETY: `CGRect` is `#[repr(C)]` and `ENCODING_REF` is a pointer to `Self::ENCODING`.
+    unsafe impl RefEncode for CGRect {
+        const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
+    }
+
+    // SAFETY: `NSRange` is `#[repr(C)]` with two `NSUInteger` fields, matching `@encode(NSRange)`.
+    unsafe impl Encode for appkit::NSRange {
+        const ENCODING: Encoding =
+            Encoding::Struct("_NSRange", &[NSUInteger::ENCODING, NSUInteger::ENCODING]);
+    }
+
+    // SAFETY: `NSRange` is `#[repr(C)]` and `ENCODING_REF` is a pointer to `Self::ENCODING`.
+    unsafe impl RefEncode for appkit::NSRange {
+        const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
+    }
+
+    // SAFETY: `NSOperatingSystemVersion` is `#[repr(C)]` with three `NSInteger` fields, matching
+    // Foundation's `NSOperatingSystemVersion`.
+    unsafe impl Encode for NSOperatingSystemVersion {
+        const ENCODING: Encoding = Encoding::Struct(
+            "?",
+            &[
+                NSInteger::ENCODING,
+                NSInteger::ENCODING,
+                NSInteger::ENCODING,
+            ],
+        );
+    }
+
+    // SAFETY: `NSOperatingSystemVersion` is `#[repr(C)]` and `ENCODING_REF` is a pointer to `Self::ENCODING`.
+    unsafe impl RefEncode for NSOperatingSystemVersion {
+        const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING);
+    }
+
+    /// Converts a raw selector pointer into an `objc2::runtime::Sel`.
+    ///
+    /// # Safety
+    /// `ptr` must be a non-null, valid Objective-C `SEL` pointer.
+    #[inline]
+    pub(crate) unsafe fn to_objc2_sel(ptr: *const c_void) -> Objc2Sel {
+        // SAFETY: `objc2::runtime::Sel` is `#[repr(transparent)]` around `NonNull<c_void>`;
+        // caller guarantees `ptr` is a valid non-null `SEL`.
+        unsafe { std::mem::transmute::<*const c_void, Objc2Sel>(ptr) }
+    }
+
+    /// Converts an `objc2::runtime::Sel` into a raw selector pointer.
+    #[inline]
+    pub(crate) fn from_objc2_sel(sel: Objc2Sel) -> *const c_void {
+        // SAFETY: `objc2::runtime::Sel` is `#[repr(transparent)]` around `NonNull<c_void>`.
+        unsafe { std::mem::transmute::<Objc2Sel, *const c_void>(sel) }
+    }
+
+    /// Sends an Objective-C instance message via `objc2::runtime::MessageReceiver::send_message`
+    /// (with `catch-all` exception handling and architecture-appropriate ABI dispatch).
+    ///
+    /// # Safety
+    /// `receiver` must be nil or a live Objective-C object responding to `sel` with arguments `A`
+    /// and return type `R`.
+    #[inline]
+    pub(crate) unsafe fn send_msg<A: EncodeArguments, R: EncodeReturn>(
+        receiver: Id,
+        sel: Sel,
+        args: A,
+    ) -> R {
+        // SAFETY: caller guarantees `receiver` is nil or a valid `AnyObject` and `sel` is valid
+        // with signature `(A) -> R`.
+        unsafe { (receiver.0.cast::<AnyObject>()).send_message(to_objc2_sel(sel.0), args) }
+    }
+
+    /// Sends an Objective-C class message via `objc2::runtime::MessageReceiver::send_message`.
+    ///
+    /// # Safety
+    /// `class` must be a valid Objective-C class responding to `sel` with arguments `A` and return
+    /// type `R`.
+    #[inline]
+    pub(crate) unsafe fn send_class_msg<A: EncodeArguments, R: EncodeReturn>(
+        class: Class,
+        sel: Sel,
+        args: A,
+    ) -> R {
+        // SAFETY: caller guarantees `class` is a valid `AnyClass` and `sel` is valid with
+        // signature `(A) -> R`.
+        unsafe { (&*(class.0.cast::<AnyClass>())).send_message(to_objc2_sel(sel.0), args) }
+    }
+
+    /// Sends an Objective-C superclass message via
+    /// `objc2::runtime::MessageReceiver::send_super_message`.
+    ///
+    /// # Safety
+    /// `receiver` must be a live instance of a subclass of `super_class`, and `sel` must be a
+    /// valid selector with signature `(A) -> R`.
+    #[inline]
+    pub(crate) unsafe fn send_super_msg<A: EncodeArguments, R: EncodeReturn>(
+        receiver: *mut c_void,
+        super_class: Class,
+        sel: *const c_void,
+        args: A,
+    ) -> R {
+        // SAFETY: caller guarantees `receiver` is an instance of a subclass of `super_class` and
+        // `sel` is valid with signature `(A) -> R`.
+        unsafe {
+            (receiver.cast::<AnyObject>()).send_super_message(
+                &*(super_class.0.cast::<AnyClass>()),
+                to_objc2_sel(sel),
+                args,
+            )
+        }
     }
 }
 
@@ -215,7 +343,7 @@ impl AutoreleasePool {
             // SAFETY: `objc_autoreleasePoolPush` takes no arguments and returns an opaque token
             // popped in `Drop` on the same thread (`AutoreleasePool` holds a raw pointer and is
             // `!Send`).
-            let pool = unsafe { native_bindings::objc_autoreleasePoolPush() };
+            let pool = unsafe { objc2::ffi::objc_autoreleasePoolPush() };
             Self { pool }
         }
         #[cfg(not(target_os = "macos"))]
@@ -238,7 +366,7 @@ impl Drop for AutoreleasePool {
         #[cfg(target_os = "macos")]
         {
             // SAFETY: `self.pool` is the token pushed by `new` on this thread, popped once here.
-            unsafe { native_bindings::objc_autoreleasePoolPop(self.pool) };
+            unsafe { objc2::ffi::objc_autoreleasePoolPop(self.pool) };
         }
     }
 }
@@ -266,17 +394,26 @@ pub fn qnsview_class() -> Class {
         }
         let ns_view = objc_get_class("NSView");
         let name = CString::new("QNSView").unwrap();
-        let class = native_bindings::objc_allocateClassPair(ns_view.0, name.as_ptr(), 0);
-        let sel = Sel::register("isFlipped");
-        let inherited = native_bindings::class_getInstanceMethod(ns_view.0, sel.0);
-        native_bindings::class_addMethod(
-            class,
-            sel.0,
-            is_flipped as *const c_void,
-            native_bindings::method_getTypeEncoding(inherited),
+        let class = objc2::ffi::objc_allocateClassPair(
+            ns_view.0.cast::<objc2::runtime::AnyClass>(),
+            name.as_ptr(),
+            0,
         );
-        appkit::install_view_methods(class);
-        native_bindings::objc_registerClassPair(class);
+        let sel = Sel::register("isFlipped");
+        let inherited = objc2::ffi::class_getInstanceMethod(
+            ns_view.0.cast::<objc2::runtime::AnyClass>(),
+            objc2_bridge::to_objc2_sel(sel.0),
+        );
+        let imp: objc2::runtime::Imp =
+            std::mem::transmute::<*const c_void, objc2::runtime::Imp>(is_flipped as *const c_void);
+        objc2::ffi::class_addMethod(
+            class,
+            objc2_bridge::to_objc2_sel(sel.0),
+            imp,
+            objc2::ffi::method_getTypeEncoding(inherited),
+        );
+        appkit::install_view_methods(class.cast());
+        objc2::ffi::objc_registerClassPair(class);
         class as usize
     });
     Class(*CLASS as *mut c_void)
@@ -285,12 +422,6 @@ pub fn qnsview_class() -> Class {
 /// `[[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:{major, 0, 0}]`.
 #[cfg(target_os = "macos")]
 fn is_macos_at_least(major: NSInteger) -> bool {
-    #[repr(C)]
-    struct NSOperatingSystemVersion {
-        major: NSInteger,
-        minor: NSInteger,
-        patch: NSInteger,
-    }
     // SAFETY: `NSProcessInfo` is a Foundation class (linked via AppKit); `processInfo` takes no
     // arguments and returns an object, which is what `send_class_0` models. The result is
     // autoreleased/shared, so there is no +1 to balance.
@@ -306,20 +437,9 @@ fn is_macos_at_least(major: NSInteger) -> bool {
         minor: 0,
         patch: 0,
     };
-    // SAFETY: `transmute` only reinterprets the address of the variadic-declared `objc_msgSend`
-    // symbol as a function pointer of the signature this call actually has (receiver, selector,
-    // by-value 3-word struct `NSOperatingSystemVersion` -> `BOOL`), which is how the runtime
-    // documents `objc_msgSend` must be called. `info` is `[NSProcessInfo processInfo]` from above
-    // and `isOperatingSystemAtLeastVersion:` takes exactly that `NSOperatingSystemVersion` struct
-    // (`#[repr(C)]` with three `NSInteger`s, matching Foundation's layout) and returns `BOOL`.
-    let res: BOOL = unsafe {
-        let msg_send: unsafe extern "C" fn(
-            *mut c_void,
-            *const c_void,
-            NSOperatingSystemVersion,
-        ) -> BOOL = std::mem::transmute(native_bindings::objc_msgSend as *const ());
-        msg_send(info.0, sel.0, version)
-    };
+    // SAFETY: `info` is `[NSProcessInfo processInfo]` from above and
+    // `isOperatingSystemAtLeastVersion:` takes `NSOperatingSystemVersion` and returns `BOOL`.
+    let res: BOOL = unsafe { objc2_bridge::send_msg(info, sel, (version,)) };
     res != NO
 }
 
@@ -400,25 +520,35 @@ pub fn qcocoa_application_delegate() -> Id {
         let mut class = objc_get_class("QCocoaApplicationDelegate");
         if class.is_nil() {
             let name = CString::new("QCocoaApplicationDelegate").unwrap();
-            let raw = native_bindings::objc_allocateClassPair(
-                objc_get_class("NSObject").0,
+            let raw = objc2::ffi::objc_allocateClassPair(
+                objc_get_class("NSObject")
+                    .0
+                    .cast::<objc2::runtime::AnyClass>(),
                 name.as_ptr(),
                 0,
             );
-            native_bindings::class_addMethod(
+            let did_launch_imp: objc2::runtime::Imp =
+                std::mem::transmute::<*const c_void, objc2::runtime::Imp>(
+                    did_finish_launching as *const c_void,
+                );
+            objc2::ffi::class_addMethod(
                 raw,
-                Sel::register("applicationDidFinishLaunching:").0,
-                did_finish_launching as *const c_void,
+                objc2_bridge::to_objc2_sel(Sel::register("applicationDidFinishLaunching:").0),
+                did_launch_imp,
                 c"v@:@".as_ptr(),
             );
-            native_bindings::class_addMethod(
+            let did_active_imp: objc2::runtime::Imp =
+                std::mem::transmute::<*const c_void, objc2::runtime::Imp>(
+                    did_become_active as *const c_void,
+                );
+            objc2::ffi::class_addMethod(
                 raw,
-                Sel::register("applicationDidBecomeActive:").0,
-                did_become_active as *const c_void,
+                objc2_bridge::to_objc2_sel(Sel::register("applicationDidBecomeActive:").0),
+                did_active_imp,
                 c"v@:@".as_ptr(),
             );
-            native_bindings::objc_registerClassPair(raw);
-            class = Class(raw);
+            objc2::ffi::objc_registerClassPair(raw);
+            class = Class(raw.cast());
         }
         let delegate = ObjcMsg::send_0(
             ObjcMsg::send_class_0(class, Sel::register("alloc")),
@@ -438,28 +568,12 @@ pub fn nsstring_from_str(s: &str) -> Id {
     // SAFETY: `alloc` takes no arguments and returns an object, matching `send_class_0`; `cls` is
     // the `NSString` class from `objc_getClass` (a nil class would make the send a no-op).
     let str_obj = unsafe { ObjcMsg::send_class_0(cls, sel_alloc) };
-    // SAFETY: `transmute` reinterprets `objc_msgSend` as a function pointer with this call's real
-    // signature (receiver, selector, `*const u8`, `NSUInteger` length, `NSUInteger` encoding ->
-    // object), as the runtime documentation requires. `str_obj` is the fresh `alloc` result,
-    // consumed by `initWithBytes:length:encoding:`, whose parameters are (const void*, NSUInteger,
-    // NSUInteger) per the Foundation documentation; `s.as_ptr()`/`s.len()` describe a live UTF-8
-    // buffer that the call copies, and 4 is `NSUTF8StringEncoding`.
-    unsafe {
-        let msg_send: extern "C" fn(
-            *mut c_void,
-            *const c_void,
-            *const u8,
-            NSUInteger,
-            NSUInteger,
-        ) -> *mut c_void = std::mem::transmute(native_bindings::objc_msgSend as *const ());
-        Id(msg_send(
-            str_obj.0,
-            sel_init.0,
-            s.as_ptr(),
-            s.len(),
-            4, /* NSUTF8StringEncoding */
-        ))
-    }
+    // SAFETY: `str_obj` is the fresh `alloc` result, consumed by `initWithBytes:length:encoding:`;
+    // `s.as_ptr()`/`s.len()` describe a live UTF-8 buffer that the call copies, and 4 is
+    // `NSUTF8StringEncoding`.
+    let ptr: *mut c_void =
+        unsafe { objc2_bridge::send_msg(str_obj, sel_init, (s.as_ptr(), s.len(), 4usize)) };
+    Id(ptr)
 }
 
 /// Retrieves class pointer
@@ -467,9 +581,9 @@ pub fn objc_get_class(name: &str) -> Class {
     #[cfg(target_os = "macos")]
     {
         let c_str = CString::new(name).unwrap();
-        // SAFETY: `c_str` is a NUL-terminated `CString` alive for the whole call, which is what
-        // `objc_getClass` requires; it returns nil for an unknown class, which `Class` represents.
-        Class(unsafe { native_bindings::objc_getClass(c_str.as_ptr()) })
+        objc2::runtime::AnyClass::get(&c_str).map_or(Class::NIL, |c| {
+            Class((c as *const objc2::runtime::AnyClass).cast_mut().cast())
+        })
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -482,9 +596,9 @@ pub fn sel_register_name(name: &str) -> Sel {
     #[cfg(target_os = "macos")]
     {
         let c_str = CString::new(name).unwrap();
-        // SAFETY: `c_str` is a NUL-terminated `CString` alive for the whole call, which is what
-        // `sel_registerName` requires; it registers the name if needed and returns a selector.
-        Sel(unsafe { native_bindings::sel_registerName(c_str.as_ptr()) })
+        Sel(objc2_bridge::from_objc2_sel(objc2::runtime::Sel::register(
+            &c_str,
+        )))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -797,31 +911,8 @@ fn mock_selector_name(sel: Sel) -> String {
         .unwrap_or_default()
 }
 
-/// `objc_msgSend` as the function pointer type `F`.
-///
-/// # Safety
-/// `F` must be an `unsafe extern "C" fn` pointer type whose signature matches the method each
-/// call through it sends (receiver, selector, then the method's arguments and return type).
 #[cfg(target_os = "macos")]
-#[inline]
-unsafe fn msg_send_fn<F: Copy>() -> F {
-    debug_assert_eq!(std::mem::size_of::<F>(), std::mem::size_of::<*const ()>());
-    // SAFETY: caller guarantees F matches objc_msgSend signature.
-    unsafe { std::mem::transmute_copy(&(native_bindings::objc_msgSend as *const ())) }
-}
-
-/// `objc_msgSend_stret` as the function pointer type `F` (x86_64 struct-return ABI).
-///
-/// # Safety
-/// `F` must be an `extern "C" fn` pointer type taking `(*mut Ret, receiver, selector, ...)`
-/// matching the struct-returning method sent.
-#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-#[inline]
-unsafe fn msg_send_stret_fn<F: Copy>() -> F {
-    debug_assert_eq!(std::mem::size_of::<F>(), std::mem::size_of::<*const ()>());
-    // SAFETY: caller guarantees F matches objc_msgSend_stret signature.
-    unsafe { std::mem::transmute_copy(&(native_bindings::objc_msgSend_stret as *const ())) }
-}
+use self::objc2_bridge::{send_class_msg, send_msg};
 
 impl ObjcMsg {
     /// `-[receiver sel]` returning an object.
@@ -836,8 +927,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> *mut c_void = msg_send_fn();
-            Id(msg_send(receiver.0, sel.0))
+            Id(send_msg::<(), *mut c_void>(receiver, sel, ()))
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -909,8 +999,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> *mut c_void = msg_send_fn();
-            Id(msg_send(class.0, sel.0))
+            Id(send_class_msg::<(), *mut c_void>(class, sel, ()))
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -1018,9 +1107,11 @@ impl ObjcMsg {
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
             let ns_text = nsstring_from_str(text);
-            let msg_send: extern "C" fn(*mut c_void, *const c_void, *mut c_void) -> *mut c_void =
-                msg_send_fn();
-            let result = Id(msg_send(receiver.0, sel.0, ns_text.0));
+            let result = Id(send_msg::<(*mut c_void,), *mut c_void>(
+                receiver,
+                sel,
+                (ns_text.0,),
+            ));
             Self::send_0(ns_text, Sel::register("release"));
             result
         }
@@ -1056,19 +1147,13 @@ impl ObjcMsg {
         unsafe {
             let ns_title = nsstring_from_str(title);
             let ns_key = nsstring_from_str(key_equivalent);
-            let msg_send: extern "C" fn(
+            let result = Id(send_msg::<
+                (*mut c_void, *const c_void, *mut c_void),
                 *mut c_void,
-                *const c_void,
-                *mut c_void,
-                *const c_void,
-                *mut c_void,
-            ) -> *mut c_void = msg_send_fn();
-            let result = Id(msg_send(
-                receiver.0,
-                Sel::register("initWithTitle:action:keyEquivalent:").0,
-                ns_title.0,
-                action.0,
-                ns_key.0,
+            >(
+                receiver,
+                Sel::register("initWithTitle:action:keyEquivalent:"),
+                (ns_title.0, action.0, ns_key.0),
             ));
             Self::send_0(ns_title, Sel::register("release"));
             Self::send_0(ns_key, Sel::register("release"));
@@ -1177,9 +1262,11 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void, *mut c_void) -> *mut c_void =
-                msg_send_fn();
-            Id(msg_send(receiver.0, sel.0, arg.0))
+            Id(send_msg::<(*mut c_void,), *mut c_void>(
+                receiver,
+                sel,
+                (arg.0,),
+            ))
         }
     }
 
@@ -1205,9 +1292,11 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void, *const c_void) -> *mut c_void =
-                msg_send_fn();
-            Id(msg_send(receiver.0, sel.0, action.0))
+            Id(send_msg::<(*const c_void,), *mut c_void>(
+                receiver,
+                sel,
+                (action.0,),
+            ))
         }
     }
 
@@ -1229,9 +1318,11 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void, CGFloat) -> *mut c_void =
-                msg_send_fn();
-            Id(msg_send(receiver.0, sel.0, length))
+            Id(send_msg::<(CGFloat,), *mut c_void>(
+                receiver,
+                sel,
+                (length,),
+            ))
         }
     }
 
@@ -1272,9 +1363,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void, NSInteger) -> *mut c_void =
-                msg_send_fn();
-            Id(msg_send(receiver.0, sel.0, val))
+            Id(send_msg::<(NSInteger,), *mut c_void>(receiver, sel, (val,)))
         }
     }
 
@@ -1312,9 +1401,7 @@ impl ObjcMsg {
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
             let bool_val: BOOL = if val { YES } else { NO };
-            let msg_send: extern "C" fn(*mut c_void, *const c_void, BOOL) -> *mut c_void =
-                msg_send_fn();
-            Id(msg_send(receiver.0, sel.0, bool_val))
+            Id(send_msg::<(BOOL,), *mut c_void>(receiver, sel, (bool_val,)))
         }
     }
 
@@ -1330,9 +1417,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void, CGSize) -> *mut c_void =
-                msg_send_fn();
-            Id(msg_send(receiver.0, sel.0, size))
+            Id(send_msg::<(CGSize,), *mut c_void>(receiver, sel, (size,)))
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -1363,9 +1448,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void, CGRect) -> *mut c_void =
-                msg_send_fn();
-            Id(msg_send(receiver.0, sel.0, rect))
+            Id(send_msg::<(CGRect,), *mut c_void>(receiver, sel, (rect,)))
         }
     }
 
@@ -1390,13 +1473,10 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void, CGRect, BOOL) -> *mut c_void =
-                msg_send_fn();
-            Id(msg_send(
-                receiver.0,
-                sel.0,
-                rect,
-                if display { YES } else { NO },
+            Id(send_msg::<(CGRect, BOOL), *mut c_void>(
+                receiver,
+                sel,
+                (rect, if display { YES } else { NO }),
             ))
         }
     }
@@ -1438,21 +1518,13 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(
+            Id(send_msg::<
+                (CGRect, NSUInteger, NSUInteger, BOOL),
                 *mut c_void,
-                *const c_void,
-                CGRect,
-                NSUInteger,
-                NSUInteger,
-                BOOL,
-            ) -> *mut c_void = msg_send_fn();
-            Id(msg_send(
-                receiver.0,
-                sel.0,
-                rect,
-                style_mask,
-                backing,
-                if defer_flag { YES } else { NO },
+            >(
+                receiver,
+                sel,
+                (rect, style_mask, backing, if defer_flag { YES } else { NO }),
             ))
         }
     }
@@ -1490,8 +1562,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> BOOL = msg_send_fn();
-            msg_send(receiver.0, sel.0) != NO
+            send_msg::<(), BOOL>(receiver, sel, ()) != NO
         }
     }
 
@@ -1513,9 +1584,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void, *mut c_void) -> BOOL =
-                msg_send_fn();
-            msg_send(receiver.0, sel.0, arg.0) != NO
+            send_msg::<(*mut c_void,), BOOL>(receiver, sel, (arg.0,)) != NO
         }
     }
 
@@ -1546,21 +1615,10 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(
-                *mut c_void,
-                *const c_void,
-                *mut c_void,
-                *mut c_void,
-                NSUInteger,
-                *mut c_void,
-            ) = msg_send_fn();
-            msg_send(
-                receiver.0,
-                Sel::register("addObserver:forKeyPath:options:context:").0,
-                observer.0,
-                key_path.0,
-                options,
-                std::ptr::null_mut(),
+            send_msg::<(*mut c_void, *mut c_void, NSUInteger, *mut c_void), ()>(
+                receiver,
+                Sel::register("addObserver:forKeyPath:options:context:"),
+                (observer.0, key_path.0, options, std::ptr::null_mut()),
             );
         }
     }
@@ -1590,21 +1648,10 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(
-                *mut c_void,
-                *const c_void,
-                *mut c_void,
-                *const c_void,
-                *mut c_void,
-                *mut c_void,
-            ) = msg_send_fn();
-            msg_send(
-                center.0,
-                Sel::register("addObserver:selector:name:object:").0,
-                observer.0,
-                selector.0,
-                name.0,
-                object.0,
+            send_msg::<(*mut c_void, *const c_void, *mut c_void, *mut c_void), ()>(
+                center,
+                Sel::register("addObserver:selector:name:object:"),
+                (observer.0, selector.0, name.0, object.0),
             );
         }
     }
@@ -1627,13 +1674,10 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void, *mut c_void, *mut c_void) =
-                msg_send_fn();
-            msg_send(
-                receiver.0,
-                Sel::register("removeObserver:forKeyPath:").0,
-                observer.0,
-                key_path.0,
+            send_msg::<(*mut c_void, *mut c_void), ()>(
+                receiver,
+                Sel::register("removeObserver:forKeyPath:"),
+                (observer.0, key_path.0),
             );
         }
     }
@@ -1656,8 +1700,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void, *mut c_void) = msg_send_fn();
-            msg_send(center.0, Sel::register("removeObserver:").0, observer.0);
+            send_msg::<(*mut c_void,), ()>(center, Sel::register("removeObserver:"), (observer.0,));
         }
     }
 
@@ -1691,19 +1734,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            #[cfg(target_arch = "aarch64")]
-            {
-                let msg_send: extern "C" fn(*mut c_void, *const c_void) -> CGRect = msg_send_fn();
-                msg_send(receiver.0, sel.0)
-            }
-            #[cfg(target_arch = "x86_64")]
-            {
-                let msg_send_stret: extern "C" fn(*mut CGRect, *mut c_void, *const c_void) =
-                    msg_send_stret_fn();
-                let mut result = std::mem::MaybeUninit::<CGRect>::uninit();
-                msg_send_stret(result.as_mut_ptr(), receiver.0, sel.0);
-                result.assume_init()
-            }
+            send_msg::<(), CGRect>(receiver, sel, ())
         }
     }
 
@@ -1728,8 +1759,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> f64 = msg_send_fn();
-            msg_send(receiver.0, sel.0)
+            send_msg::<(), f64>(receiver, sel, ())
         }
     }
 
@@ -1754,8 +1784,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> NSUInteger = msg_send_fn();
-            msg_send(receiver.0, sel.0)
+            send_msg::<(), NSUInteger>(receiver, sel, ())
         }
     }
 
@@ -1780,9 +1809,11 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void, NSUInteger) -> *mut c_void =
-                msg_send_fn();
-            Id(msg_send(receiver.0, sel.0, idx))
+            Id(send_msg::<(NSUInteger,), *mut c_void>(
+                receiver,
+                sel,
+                (idx,),
+            ))
         }
     }
 
@@ -1830,36 +1861,37 @@ impl ObjcMsg {
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
             let color_space = nsstring_from_str("NSDeviceRGBColorSpace");
-            let msg_send: extern "C" fn(
+            let rep = Id(send_msg::<
+                (
+                    *mut *mut u8,
+                    NSInteger,
+                    NSInteger,
+                    NSInteger,
+                    NSInteger,
+                    BOOL,
+                    BOOL,
+                    *mut c_void,
+                    NSInteger,
+                    NSInteger,
+                ),
                 *mut c_void,
-                *const c_void,
-                *mut *mut u8,
-                NSInteger,
-                NSInteger,
-                NSInteger,
-                NSInteger,
-                BOOL,
-                BOOL,
-                *mut c_void,
-                NSInteger,
-                NSInteger,
-            ) -> *mut c_void = msg_send_fn();
-            let rep = Id(msg_send(
-                receiver.0,
+            >(
+                receiver,
                 Sel::register(
                     "initWithBitmapDataPlanes:pixelsWide:pixelsHigh:bitsPerSample:samplesPerPixel:hasAlpha:isPlanar:colorSpaceName:bytesPerRow:bitsPerPixel:",
-                )
-                .0,
-                std::ptr::null_mut(),
-                width as NSInteger,
-                height as NSInteger,
-                8,
-                4,
-                YES,
-                NO,
-                color_space.0,
-                (width * 4) as NSInteger,
-                32,
+                ),
+                (
+                    std::ptr::null_mut(),
+                    width as NSInteger,
+                    height as NSInteger,
+                    8,
+                    4,
+                    YES,
+                    NO,
+                    color_space.0,
+                    (width * 4) as NSInteger,
+                    32,
+                ),
             ));
             Self::send_0(color_space, Sel::register("release"));
             if rep.is_nil() {
@@ -1941,27 +1973,39 @@ fn action_target_class() -> Class {
         if !existing.is_nil() {
             return existing.0 as usize;
         }
-        let class = native_bindings::objc_allocateClassPair(
-            objc_get_class("NSObject").0,
+        let class = objc2::ffi::objc_allocateClassPair(
+            objc_get_class("NSObject")
+                .0
+                .cast::<objc2::runtime::AnyClass>(),
             c"FerrokitActionTarget".as_ptr(),
             0,
         );
         if class.is_null() {
             return 0;
         }
-        native_bindings::class_addMethod(
+        let perform_imp: objc2::runtime::Imp = std::mem::transmute::<
+            *const c_void,
+            objc2::runtime::Imp,
+        >(perform_action as *const c_void);
+        objc2::ffi::class_addMethod(
             class,
-            Sel::register(ACTION_TARGET_SELECTOR).0,
-            perform_action as *const c_void,
+            objc2_bridge::to_objc2_sel(Sel::register(ACTION_TARGET_SELECTOR).0),
+            perform_imp,
             c"v@:@".as_ptr(),
         );
-        native_bindings::class_addMethod(
+        let observe_imp: objc2::runtime::Imp = std::mem::transmute::<
+            *const c_void,
+            objc2::runtime::Imp,
+        >(observe_value as *const c_void);
+        objc2::ffi::class_addMethod(
             class,
-            Sel::register("observeValueForKeyPath:ofObject:change:context:").0,
-            observe_value as *const c_void,
+            objc2_bridge::to_objc2_sel(
+                Sel::register("observeValueForKeyPath:ofObject:change:context:").0,
+            ),
+            observe_imp,
             c"v@:@@@^v".as_ptr(),
         );
-        native_bindings::objc_registerClassPair(class);
+        objc2::ffi::objc_registerClassPair(class);
         class as usize
     });
     Class(*CLASS as *mut c_void)

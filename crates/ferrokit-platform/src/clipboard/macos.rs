@@ -373,14 +373,11 @@ mod native {
     use super::PasteboardBackend;
     use crate::objc_runtime::{
         AutoreleasePool as Pool, BOOL, Id, NSUInteger, ObjcMsg, Sel, nsstring_from_str,
-        objc_get_class,
+        objc_get_class, objc2_bridge,
     };
     use std::ffi::{CStr, c_void};
     use std::sync::Mutex;
 
-    unsafe extern "C" {
-        fn objc_msgSend();
-    }
     /// A +1 `NSString` released on drop.
     struct OwnedString(Id);
 
@@ -489,47 +486,29 @@ mod native {
             let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
             let _pool = Pool::new();
             let ns_type = OwnedString::new(ty);
-            // SAFETY: the first transmute reinterprets `objc_msgSend` as the signature of
-            // `+[NSData dataWithBytes:length:]` (receiver, selector, `const void *`, NSUInteger ->
-            // id); `data.as_ptr()`/`data.len()` describe a live slice that the call copies, and
-            // the result is autoreleased (valid until `_pool` drains, after this block) or nil,
-            // which is checked. The second transmute reinterprets it as `-setData:forType:`
-            // (receiver, selector, id, id -> BOOL); `pasteboard` is the live, non-nil general
-            // pasteboard (inside `_pool`, under `_guard`), `ns_data` the non-nil NSData and
-            // `ns_type.0` the live NSString, all valid for the call, which retains or copies
-            // them. Both signatures are as the AppKit/Foundation documentation gives them
-            // [inferred].
+            // SAFETY: `+[NSData dataWithBytes:length:]` copies `data` and returns an autoreleased
+            // `NSData` (valid until `_pool` drains) or nil; `-setData:forType:` takes that
+            // `NSData` and `ns_type.0` (both live for the call) and returns `BOOL`.
             unsafe {
-                let make: extern "C" fn(
+                let ns_data = Id(objc2_bridge::send_class_msg::<
+                    (*const u8, NSUInteger),
                     *mut c_void,
-                    *const c_void,
-                    *const u8,
-                    NSUInteger,
-                ) -> *mut c_void = std::mem::transmute(objc_msgSend as *const ());
-                let ns_data = Id(make(
-                    objc_get_class("NSData").0,
-                    Sel::register("dataWithBytes:length:").0,
-                    data.as_ptr(),
-                    data.len(),
+                >(
+                    objc_get_class("NSData"),
+                    Sel::register("dataWithBytes:length:"),
+                    (data.as_ptr(), data.len()),
                 ));
                 if ns_data.is_nil() {
                     return false;
                 }
-                let set: extern "C" fn(
-                    *mut c_void,
-                    *const c_void,
-                    *mut c_void,
-                    *mut c_void,
-                ) -> BOOL = std::mem::transmute(objc_msgSend as *const ());
                 let pasteboard = Self::general();
                 if pasteboard.is_nil() {
                     return false;
                 }
-                set(
-                    pasteboard.0,
-                    Sel::register("setData:forType:").0,
-                    ns_data.0,
-                    ns_type.0.0,
+                objc2_bridge::send_msg::<(*mut c_void, *mut c_void), BOOL>(
+                    pasteboard,
+                    Sel::register("setData:forType:"),
+                    (ns_data.0, ns_type.0.0),
                 ) != 0
             }
         }

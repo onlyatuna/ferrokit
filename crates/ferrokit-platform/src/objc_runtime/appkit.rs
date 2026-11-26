@@ -290,8 +290,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> CGPoint = msg_send_fn();
-            msg_send(receiver.0, sel.0)
+            send_msg::<(), CGPoint>(receiver, sel, ())
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -317,9 +316,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void, CGPoint) -> CGPoint =
-                msg_send_fn();
-            msg_send(receiver.0, sel.0, point)
+            send_msg::<(CGPoint,), CGPoint>(receiver, sel, (point,))
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -352,20 +349,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            #[cfg(target_arch = "aarch64")]
-            {
-                let msg_send: extern "C" fn(*mut c_void, *const c_void, CGRect) -> CGRect =
-                    msg_send_fn();
-                msg_send(receiver.0, sel.0, rect)
-            }
-            #[cfg(target_arch = "x86_64")]
-            {
-                let msg_send_stret: extern "C" fn(*mut CGRect, *mut c_void, *const c_void, CGRect) =
-                    msg_send_stret_fn();
-                let mut result = std::mem::MaybeUninit::<CGRect>::uninit();
-                msg_send_stret(result.as_mut_ptr(), receiver.0, sel.0, rect);
-                result.assume_init()
-            }
+            send_msg::<(CGRect,), CGRect>(receiver, sel, (rect,))
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -406,13 +390,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(
-                *mut c_void,
-                *const c_void,
-                CGPoint,
-                *mut c_void,
-            ) -> CGPoint = msg_send_fn();
-            msg_send(receiver.0, sel.0, point, view.0)
+            send_msg::<(CGPoint, *mut c_void), CGPoint>(receiver, sel, (point, view.0))
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -456,8 +434,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> NSInteger = msg_send_fn();
-            msg_send(receiver.0, sel.0)
+            send_msg::<(), NSInteger>(receiver, sel, ())
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -486,8 +463,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> NSUInteger = msg_send_fn();
-            msg_send(receiver.0, sel.0)
+            send_msg::<(), NSUInteger>(receiver, sel, ())
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -513,8 +489,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> u16 = msg_send_fn();
-            msg_send(receiver.0, sel.0)
+            send_msg::<(), u16>(receiver, sel, ())
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -539,8 +514,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> CGFloat = msg_send_fn();
-            msg_send(receiver.0, sel.0)
+            send_msg::<(), CGFloat>(receiver, sel, ())
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -566,8 +540,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void) -> BOOL = msg_send_fn();
-            msg_send(receiver.0, sel.0) != NO
+            send_msg::<(), BOOL>(receiver, sel, ()) != NO
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -644,8 +617,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void, NSUInteger) = msg_send_fn();
-            msg_send(receiver.0, sel.0, val);
+            send_msg::<(NSUInteger,), ()>(receiver, sel, (val,));
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -668,8 +640,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void, CGFloat) = msg_send_fn();
-            msg_send(receiver.0, sel.0, val);
+            send_msg::<(CGFloat,), ()>(receiver, sel, (val,));
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -772,13 +743,11 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(
-                *mut c_void,
-                *const c_void,
-                *mut c_void,
-                NSInteger,
-            ) -> *mut c_void = msg_send_fn();
-            Id(msg_send(receiver.0, sel.0, arg.0, ordering))
+            Id(send_msg::<(*mut c_void, NSInteger), *mut c_void>(
+                receiver,
+                sel,
+                (arg.0, ordering),
+            ))
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -817,13 +786,11 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(
-                *mut c_void,
-                *const c_void,
-                NSInteger,
-                NSInteger,
-            ) -> *mut c_void = msg_send_fn();
-            Id(msg_send(receiver.0, sel.0, first, second))
+            Id(send_msg::<(NSInteger, NSInteger), *mut c_void>(
+                receiver,
+                sel,
+                (first, second),
+            ))
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -856,19 +823,10 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver is a live NSView and subview is a live NSView.
         unsafe {
-            let msg_send: extern "C" fn(
-                *mut c_void,
-                *const c_void,
-                *mut c_void,
-                NSInteger,
-                *mut c_void,
-            ) = msg_send_fn();
-            msg_send(
-                receiver.0,
-                Sel::register("addSubview:positioned:relativeTo:").0,
-                subview.0,
-                ordering,
-                other.0,
+            send_msg::<(*mut c_void, NSInteger, *mut c_void), ()>(
+                receiver,
+                Sel::register("addSubview:positioned:relativeTo:"),
+                (subview.0, ordering, other.0),
             );
         }
 
@@ -916,16 +874,10 @@ impl ObjcMsg {
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
             let name_obj = nsstring_from_str(name);
-            let msg_send: extern "C" fn(
-                *mut c_void,
-                *const c_void,
-                *mut c_void,
-                *const c_void,
-                *mut c_void,
-                *mut c_void,
-            ) = msg_send_fn();
-            msg_send(
-                receiver.0, sel.0, observer.0, action.0, name_obj.0, object.0,
+            send_msg::<(*mut c_void, *const c_void, *mut c_void, *mut c_void), ()>(
+                receiver,
+                sel,
+                (observer.0, action.0, name_obj.0, object.0),
             );
             // The centre copies the name; balance the +1 from `nsstring_from_str`.
             ObjcMsg::send_0(name_obj, Sel::register("release"));
@@ -959,8 +911,7 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(*mut c_void, *const c_void, *mut c_void) = msg_send_fn();
-            msg_send(receiver.0, sel.0, observer.0);
+            send_msg::<(*mut c_void,), ()>(receiver, sel, (observer.0,));
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -981,13 +932,11 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(
-                *mut c_void,
-                *const c_void,
-                CGRect,
-                *mut c_void,
-            ) -> *mut c_void = msg_send_fn();
-            Id(msg_send(receiver.0, sel.0, rect, arg.0))
+            Id(send_msg::<(CGRect, *mut c_void), *mut c_void>(
+                receiver,
+                sel,
+                (rect, arg.0),
+            ))
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -1019,21 +968,13 @@ impl ObjcMsg {
         #[cfg(target_os = "macos")]
         // SAFETY: caller guarantees receiver responds to sel with matching types.
         unsafe {
-            let msg_send: extern "C" fn(
+            Id(send_msg::<
+                (CGRect, NSUInteger, *mut c_void, *mut c_void),
                 *mut c_void,
-                *const c_void,
-                CGRect,
-                NSUInteger,
-                *mut c_void,
-                *mut c_void,
-            ) -> *mut c_void = msg_send_fn();
-            Id(msg_send(
-                receiver.0,
-                Sel::register("initWithRect:options:owner:userInfo:").0,
-                rect,
-                options,
-                owner.0,
-                std::ptr::null_mut(),
+            >(
+                receiver,
+                Sel::register("initWithRect:options:owner:userInfo:"),
+                (rect, options, owner.0, std::ptr::null_mut()),
             ))
         }
 
@@ -1086,11 +1027,10 @@ impl ObjcMsg {
                     Self::send_0(ns_str, release_sel);
                 }
             }
-            let msg_send: extern "C" fn(*mut c_void, *const c_void, *mut c_void) = msg_send_fn();
-            msg_send(
-                receiver.0,
-                Sel::register("registerForDraggedTypes:").0,
-                array.0,
+            send_msg::<(*mut c_void,), ()>(
+                receiver,
+                Sel::register("registerForDraggedTypes:"),
+                (array.0,),
             );
             Self::send_0(array, release_sel);
         }
@@ -1105,6 +1045,61 @@ impl ObjcMsg {
                     .map(|t| MockValue::Str((*t).to_string()))
                     .collect(),
             );
+        }
+    }
+
+    /// `-[NSMenu popUpMenuPositioningItem:atLocation:inView:]`.
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`]; `menu` is a live `NSMenu` and `item`/`view` are nil or live AppKit objects.
+    pub unsafe fn send_popup_menu(menu: Id, item: Id, location: CGPoint, view: Id) -> bool {
+        if menu.is_nil() {
+            return false;
+        }
+
+        #[cfg(target_os = "macos")]
+        // SAFETY: caller guarantees `menu` is a live `NSMenu` and `item`/`view` are nil or live.
+        unsafe {
+            send_msg::<(*mut c_void, CGPoint, *mut c_void), BOOL>(
+                menu,
+                Sel::register("popUpMenuPositioningItem:atLocation:inView:"),
+                (item.0, location, view.0),
+            ) != NO
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            record(
+                menu,
+                Sel::register("popUpMenuPositioningItem:atLocation:inView:"),
+                vec![
+                    MockValue::Id(item),
+                    MockValue::Point(location),
+                    MockValue::Id(view),
+                ],
+            );
+            true
+        }
+    }
+
+    /// `-[NSMenu cancelTracking]`.
+    ///
+    /// # Safety
+    /// See [`ObjcMsg`]; `menu` is nil or a live `NSMenu`.
+    pub unsafe fn send_cancel_tracking(menu: Id) {
+        if menu.is_nil() {
+            return;
+        }
+
+        #[cfg(target_os = "macos")]
+        // SAFETY: caller guarantees `menu` is a live `NSMenu`.
+        unsafe {
+            send_msg::<(), ()>(menu, Sel::register("cancelTracking"), ());
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            record(menu, Sel::register("cancelTracking"), Vec::new());
         }
     }
 }
@@ -1153,17 +1148,10 @@ pub unsafe fn send_cursor_init(receiver: Id, image: Id, hot_spot: CGPoint) -> Id
     // (checked non-nil above); `initWithImage:hotSpot:` takes `(NSImage *, NSPoint)` where
     // `NSPoint` is ABI-identical to `CGPoint`, and returns the initialised `NSCursor`.
     unsafe {
-        let msg_send: extern "C" fn(
-            *mut c_void,
-            *const c_void,
-            *mut c_void,
-            CGPoint,
-        ) -> *mut c_void = msg_send_fn();
-        Id(msg_send(
-            receiver.0,
-            Sel::register("initWithImage:hotSpot:").0,
-            image.0,
-            hot_spot,
+        Id(send_msg::<(*mut c_void, CGPoint), *mut c_void>(
+            receiver,
+            Sel::register("initWithImage:hotSpot:"),
+            (image.0, hot_spot),
         ))
     }
 
@@ -1476,13 +1464,6 @@ mod native {
     use crate::window::macos_input::NsEventKind;
     use std::ffi::CStr;
 
-    #[link(name = "objc")]
-    unsafe extern "C" {
-        fn objc_getProtocol(name: *const c_char) -> *mut c_void;
-        fn class_addProtocol(class: *mut c_void, protocol: *mut c_void) -> BOOL;
-        fn objc_msgSendSuper();
-    }
-
     #[cfg(target_arch = "aarch64")]
     const ENC_BOOL_GETTER: &CStr = c"B@:";
     #[cfg(not(target_arch = "aarch64"))]
@@ -1491,25 +1472,6 @@ mod native {
     const ENC_BOOL_METHOD_WITH_ID_ARG: &CStr = c"B@:@";
     #[cfg(not(target_arch = "aarch64"))]
     const ENC_BOOL_METHOD_WITH_ID_ARG: &CStr = c"c@:@";
-
-    /// `struct objc_super`: where `objc_msgSendSuper` starts its method lookup.
-    #[repr(C)]
-    struct ObjcSuper {
-        receiver: *mut c_void,
-        super_class: *mut c_void,
-    }
-
-    /// `objc_msgSendSuper` as the function pointer type `F`.
-    ///
-    /// # Safety
-    /// `F` must be an `unsafe extern "C" fn` pointer type taking `*const ObjcSuper`, the selector,
-    /// then the arguments and return type of the method each call through it sends.
-    #[inline]
-    unsafe fn super_send_fn<F: Copy>() -> F {
-        debug_assert_eq!(std::mem::size_of::<F>(), std::mem::size_of::<*const ()>());
-        // SAFETY: caller guarantees F matches objc_msgSendSuper signature.
-        unsafe { std::mem::transmute_copy(&(objc_msgSendSuper as *const ())) }
-    }
 
     /// Runs `f`; a panic must not unwind into AppKit (undefined behavior), so it yields
     /// `fallback` instead, as the Win32 window procedure does.
@@ -1531,22 +1493,15 @@ mod native {
                     input::handle_ns_event(Id(this), $kind, Id(event))
                 });
                 if !handled {
-                    // SAFETY: `sup` lives across the call and names `this` (the receiver AppKit
-                    // is dispatching to) with `NSView` as the class where lookup starts, which
-                    // `QNSView` is a subclass of (see `qnsview_class`), so `this` is an
-                    // instance of a subclass of `super_class` as `objc_msgSendSuper` requires.
-                    // `super_send_fn` is transmuted to the exact signature used: (`*const
-                    // ObjcSuper`, selector, event), and every method installed with this macro
-                    // takes the event and returns nothing. `cmd`/`event` are the selector and
-                    // argument AppKit passed to this very method.
+                    // SAFETY: `this` is a `QNSView` (an `NSView` subclass); `cmd`/`event` are the
+                    // selector and argument AppKit passed to this method.
                     unsafe {
-                        let sup = ObjcSuper {
-                            receiver: this,
-                            super_class: objc_get_class("NSView").0,
-                        };
-                        let send: extern "C" fn(*const ObjcSuper, *const c_void, *mut c_void) =
-                            super_send_fn();
-                        send(&sup, cmd, event);
+                        objc2_bridge::send_super_msg::<(*mut c_void,), ()>(
+                            this,
+                            objc_get_class("NSView"),
+                            cmd,
+                            (event,),
+                        );
                     }
                 }
             }
@@ -1604,34 +1559,19 @@ mod native {
 
     extern "C" fn update_tracking_areas(this: *mut c_void, cmd: *const c_void) {
         guarded((), || input::update_tracking_area(Id(this)));
-        // SAFETY: `sup` lives across the call and names `this` with `NSView` as the lookup start
-        // class; `this` is a `QNSView`, an `NSView` subclass. `updateTrackingAreas` takes no
-        // arguments and returns nothing, matching the transmuted signature (`*const ObjcSuper`,
-        // selector); `cmd` is the selector AppKit passed. Cocoa asks subclasses to call the
-        // superclass implementation [inferred: AppKit documentation].
+        // SAFETY: `this` is a `QNSView`, an `NSView` subclass; `updateTrackingAreas` takes no
+        // arguments and returns nothing; `cmd` is the selector AppKit passed.
         unsafe {
-            let sup = ObjcSuper {
-                receiver: this,
-                super_class: objc_get_class("NSView").0,
-            };
-            let send: extern "C" fn(*const ObjcSuper, *const c_void) = super_send_fn();
-            send(&sup, cmd);
+            objc2_bridge::send_super_msg::<(), ()>(this, objc_get_class("NSView"), cmd, ());
         }
     }
 
     extern "C" fn reset_cursor_rects(this: *mut c_void, cmd: *const c_void) {
         let applied = guarded(false, || input::reset_cursor_rects(Id(this)));
         if !applied {
-            // SAFETY: same as in `update_tracking_areas`: `sup` names `this` (a `QNSView`) with
-            // `NSView` as the lookup start; `resetCursorRects` takes no arguments and returns
-            // nothing, matching the transmuted signature; `cmd` is the selector AppKit passed.
+            // SAFETY: same as `update_tracking_areas`: `this` is a `QNSView` (`NSView` subclass).
             unsafe {
-                let sup = ObjcSuper {
-                    receiver: this,
-                    super_class: objc_get_class("NSView").0,
-                };
-                let send: extern "C" fn(*const ObjcSuper, *const c_void) = super_send_fn();
-                send(&sup, cmd);
+                objc2_bridge::send_super_msg::<(), ()>(this, objc_get_class("NSView"), cmd, ());
             }
         }
     }
@@ -1639,18 +1579,15 @@ mod native {
     extern "C" fn cursor_update(this: *mut c_void, cmd: *const c_void, event: *mut c_void) {
         let applied = guarded(false, || input::cursor_update(Id(this)));
         if !applied {
-            // SAFETY: `sup` names `this` (a `QNSView`) with `NSView` as the lookup start;
-            // `cursorUpdate:` takes the event and returns nothing, matching the transmuted
-            // signature (`*const ObjcSuper`, selector, event); `cmd`/`event` are what AppKit
-            // passed to this method.
+            // SAFETY: `this` is a `QNSView` (`NSView` subclass); `cursorUpdate:` takes the event
+            // and returns nothing.
             unsafe {
-                let sup = ObjcSuper {
-                    receiver: this,
-                    super_class: objc_get_class("NSView").0,
-                };
-                let send: extern "C" fn(*const ObjcSuper, *const c_void, *mut c_void) =
-                    super_send_fn();
-                send(&sup, cmd, event);
+                objc2_bridge::send_super_msg::<(*mut c_void,), ()>(
+                    this,
+                    objc_get_class("NSView"),
+                    cmd,
+                    (event,),
+                );
             }
         }
     }
@@ -1821,10 +1758,18 @@ mod native {
     /// # Safety
     /// `class` is an allocated, not yet registered class pair whose superclass is `NSView`.
     pub(crate) unsafe fn install_view_methods(class: *mut c_void) {
+        let cls = class.cast::<objc2::runtime::AnyClass>();
         let add = |name: &str, imp: *const c_void, types: &CStr| {
             // SAFETY: adding method implementation to un-registered class pair.
             unsafe {
-                native_bindings::class_addMethod(class, Sel::register(name).0, imp, types.as_ptr())
+                let fn_ptr: objc2::runtime::Imp =
+                    std::mem::transmute::<*const c_void, objc2::runtime::Imp>(imp);
+                objc2::ffi::class_addMethod(
+                    cls,
+                    objc2_bridge::to_objc2_sel(Sel::register(name).0),
+                    fn_ptr,
+                    types.as_ptr(),
+                )
             };
         };
         let event_methods: [(&str, *const c_void); 12] = [
@@ -1951,9 +1896,9 @@ mod native {
         );
         // SAFETY: retrieves NSTextInputClient protocol and adds to un-registered class pair.
         unsafe {
-            let protocol = objc_getProtocol(c"NSTextInputClient".as_ptr());
+            let protocol = objc2::ffi::objc_getProtocol(c"NSTextInputClient".as_ptr());
             if !protocol.is_null() {
-                class_addProtocol(class, protocol);
+                objc2::ffi::class_addProtocol(cls, protocol);
             }
         }
     }
@@ -1976,28 +1921,40 @@ mod native {
             }
             let ns_window = objc_get_class("NSWindow");
             let name = CString::new("QNSWindow").unwrap();
-            let class = native_bindings::objc_allocateClassPair(ns_window.0, name.as_ptr(), 0);
+            let class = objc2::ffi::objc_allocateClassPair(
+                ns_window.0.cast::<objc2::runtime::AnyClass>(),
+                name.as_ptr(),
+                0,
+            );
             if class.is_null() {
                 return ns_window.0 as usize;
             }
+            let yes_imp: objc2::runtime::Imp = std::mem::transmute::<
+                *const c_void,
+                objc2::runtime::Imp,
+            >(returns_yes as *const c_void);
             for selector in ["canBecomeKeyWindow", "canBecomeMainWindow"] {
-                native_bindings::class_addMethod(
+                objc2::ffi::class_addMethod(
                     class,
-                    Sel::register(selector).0,
-                    returns_yes as *const c_void,
+                    objc2_bridge::to_objc2_sel(Sel::register(selector).0),
+                    yes_imp,
                     ENC_BOOL_GETTER.as_ptr(),
                 );
             }
             // `-[NSWindow performClose:]` (the title bar's close button, Cmd+W) asks the window,
             // or its delegate, `windowShouldClose:` before closing; like Qt's `QNSWindow` it
             // delivers the close request synchronously.
-            native_bindings::class_addMethod(
+            let close_imp: objc2::runtime::Imp = std::mem::transmute::<
+                *const c_void,
+                objc2::runtime::Imp,
+            >(window_should_close as *const c_void);
+            objc2::ffi::class_addMethod(
                 class,
-                Sel::register("windowShouldClose:").0,
-                window_should_close as *const c_void,
+                objc2_bridge::to_objc2_sel(Sel::register("windowShouldClose:").0),
+                close_imp,
                 ENC_BOOL_METHOD_WITH_ID_ARG.as_ptr(),
             );
-            native_bindings::objc_registerClassPair(class);
+            objc2::ffi::objc_registerClassPair(class);
             class as usize
         });
         Class(*CLASS as *mut c_void)
