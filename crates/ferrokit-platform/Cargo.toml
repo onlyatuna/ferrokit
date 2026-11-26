@@ -28,7 +28,7 @@ windows-sys = { workspace = true }
 # Future dependencies: zbus, x11rb / wayland-client
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# Future dependencies: objc2, objc2-app-kit
+objc2 = { version = "0.6", features = ["catch-all", "relax-void-encoding", "disable-encoding-assertions"] }
 
 [lints]
 workspace = true
