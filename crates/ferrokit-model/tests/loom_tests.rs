@@ -306,3 +306,74 @@ fn test_loom_negative_mutant_clear_pending_before_mark_ended_fails() {
         })
     });
 }
+
+// ---- Synced 9-level lock hierarchy, reparent_owned, and H-free detach ----
+
+#[test]
+fn test_loom_reparent_owned_and_competing_set_parent() {
+    bounded(|| {
+        let reg = Arc::new(HierarchyRegistry::new(3));
+        reg.set_parent(0, Some(1)).unwrap();
+
+        let r1 = Arc::clone(&reg);
+        let t1 = thread::spawn(move || {
+            let _ = r1.reparent_owned(0, 1, Some(2));
+        });
+
+        let r2 = Arc::clone(&reg);
+        let t2 = thread::spawn(move || {
+            let _ = r2.set_parent(0, None);
+        });
+
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        reg.assert_invariants();
+    });
+}
+
+#[test]
+fn test_loom_detach_without_h_races_set_parent() {
+    bounded(|| {
+        let reg = Arc::new(HierarchyRegistry::new(3));
+        reg.set_parent(0, Some(1)).unwrap();
+
+        let r1 = Arc::clone(&reg);
+        let t1 = thread::spawn(move || {
+            let _ = r1.detach_without_h(0);
+        });
+
+        let r2 = Arc::clone(&reg);
+        let t2 = thread::spawn(move || {
+            let _ = r2.set_parent(0, Some(2));
+        });
+
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        reg.assert_invariants();
+    });
+}
+
+#[test]
+fn test_loom_outer_lock_hierarchy_concurrent_paths() {
+    bounded(|| {
+        let reg = Arc::new(HierarchyRegistry::new(3));
+
+        let r1 = Arc::clone(&reg);
+        let t1 = thread::spawn(move || {
+            let _ = r1.timer_dispatch_read(0);
+            r1.update_thread_affinity(0, 1);
+        });
+
+        let r2 = Arc::clone(&reg);
+        let t2 = thread::spawn(move || {
+            let _ = r2.set_parent(0, Some(1));
+        });
+
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        reg.assert_invariants();
+    });
+}
