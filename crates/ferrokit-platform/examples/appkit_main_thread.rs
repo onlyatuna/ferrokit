@@ -689,7 +689,7 @@ mod checks {
         },
         CheckDef {
             name: "window_view_methods",
-            origin: "new: QNSView overrides the input methods, takes first responder and tracks the pointer",
+            origin: "new: FerrokitNSView overrides the input methods, takes first responder and tracks the pointer",
             run: CheckFn::Plain(window_view_methods),
         },
         CheckDef {
@@ -1052,15 +1052,15 @@ mod checks {
             WindowFlags::NORMAL,
         );
         let content: Id = send(win.ns_window(), "contentView");
-        // Qt: QNSView -isFlipped returns YES (qnsview_drawing.mm:67-70), and every QCocoaWindow's
-        // view is a QNSView (qcocoawindow.mm:120).
+        // Qt: FerrokitNSView -isFlipped returns YES (qnsview_drawing.mm:67-70), and every QCocoaWindow's
+        // view is a FerrokitNSView (qcocoawindow.mm:120).
         t.info(&format!(
             "content view class responds as NSView: {}",
             is_kind_of(content, "NSView")
         ));
         t.expect(
             yes(content, "isFlipped"),
-            "[contentView isFlipped] (QNSView returns YES)",
+            "[contentView isFlipped] (FerrokitNSView returns YES)",
         );
         t.eq(
             "ferrokit is_flipped() matches AppKit",
@@ -1070,7 +1070,7 @@ mod checks {
     }
 
     fn window_present_orientation(t: &mut Recorder) {
-        // Qt's QNSView is flipped and its layer shows the backing store's first row at the top
+        // Qt's FerrokitNSView is flipped and its layer shows the backing store's first row at the top
         // (qnsview_drawing.mm:67-70; qcocoabackingstore.mm:392). Render the content layer the way
         // Core Animation composites it and check which half of the frame comes out on top.
         let mut win = window(
@@ -1233,7 +1233,7 @@ mod checks {
     fn window_present(t: &mut Recorder) {
         let (win, layer) = presented_window(1.0);
         let content: Id = send(win.ns_window(), "contentView");
-        // Qt: QNSView is layer-backed (qnsview_drawing.mm:57) and the backing store sets the
+        // Qt: FerrokitNSView is layer-backed (qnsview_drawing.mm:57) and the backing store sets the
         // content layer's contents (QCocoaWindow::contentLayer, qcocoawindow.mm:2235-2241;
         // qcocoabackingstore.mm:392).
         t.expect(yes(content, "wantsLayer"), "[contentView wantsLayer]");
@@ -2112,7 +2112,7 @@ mod checks {
         }
     }
 
-    /// `QNSView`'s own implementations of the input methods (not NSResponder's), the keyboard
+    /// `FerrokitNSView`'s own implementations of the input methods (not NSResponder's), the keyboard
     /// focus the content view takes, and the tracking area that makes the pointer reach it.
     fn window_view_methods(t: &mut Recorder) {
         let win = window(
@@ -2151,7 +2151,10 @@ mod checks {
             let sel = Sel::register(selector);
             let own: usize = send1(view, "methodForSelector:", sel);
             let inherited: usize = send1(class("NSView"), "instanceMethodForSelector:", sel);
-            t.expect(own != inherited, &format!("QNSView implements {selector}"));
+            t.expect(
+                own != inherited,
+                &format!("FerrokitNSView implements {selector}"),
+            );
         }
         t.expect(
             yes(view, "acceptsFirstResponder"),
@@ -2162,7 +2165,7 @@ mod checks {
             send::<Id>(w, "firstResponder"),
             view,
         );
-        // Qt: QNSWindow can become key even without a title bar; a tooltip cannot.
+        // Qt: FerrokitNSWindow can become key even without a title bar; a tooltip cannot.
         t.expect(
             yes(w, "canBecomeKeyWindow"),
             "[window canBecomeKeyWindow] of a frameless window",

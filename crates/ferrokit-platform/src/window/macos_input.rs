@@ -735,7 +735,7 @@ fn dispatch_dpi(view: Id, window: Id) -> bool {
 }
 
 /// `-[NSWindow windowShouldClose:]` (a user close: the title bar's close button, Cmd+W,
-/// `performClose:`), the synchronous counterpart of Qt's `QNSWindow windowShouldClose:`
+/// `performClose:`), the synchronous counterpart of Qt's `FerrokitNSWindow windowShouldClose:`
 /// delivering `QWindowSystemInterface::handleCloseEvent`. Returns whether AppKit closes the
 /// window itself.
 ///

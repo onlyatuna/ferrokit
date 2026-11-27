@@ -288,8 +288,8 @@ thread_local! {
 }
 #[cfg(windows)]
 const TRAY_WINDOW_CLASS_NAME: &[u16] = &[
-    'Q' as u16, 't' as u16, 'R' as u16, 'u' as u16, 's' as u16, 't' as u16, 'T' as u16, 'r' as u16,
-    'a' as u16, 'y' as u16, 'W' as u16, 'i' as u16, 'n' as u16, 0,
+    'F' as u16, 'e' as u16, 'r' as u16, 'r' as u16, 'o' as u16, 'k' as u16, 'i' as u16, 't' as u16,
+    'T' as u16, 'r' as u16, 'a' as u16, 'y' as u16, 'W' as u16, 'i' as u16, 'n' as u16, 0,
 ];
 
 /// The shared state of the tray registered for `hwnd`, as an owned handle: it stays valid for the

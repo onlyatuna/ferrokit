@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Native input of `CocoaNativeWindow`: what AppKit's `QNSView` methods do with an `NSEvent`,
+//! Native input of `CocoaNativeWindow`: what AppKit's `FerrokitNSView` methods do with an `NSEvent`,
 //! run against the mock runtime with mock events (`MockObjcRuntime::object_with`). The mock
 //! models the content view as a flipped view at the window origin, so a position given in
 //! Cocoa's bottom-left window coordinates must come out top-left, as Qt reports it. On macOS the

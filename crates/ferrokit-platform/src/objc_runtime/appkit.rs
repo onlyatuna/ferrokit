@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! AppKit messages `window_cocoa` needs beyond the original [`ObjcMsg`] set, the mock runtime's
 //! property store and call log that make them testable on any OS, and the Objective-C classes
-//! whose methods call back into Rust (the platform NSView's input methods, `QNSWindow`).
+//! whose methods call back into Rust (the platform NSView's input methods, `FerrokitNSWindow`).
 //!
 //! Every function here follows the contract documented on [`ObjcMsg`]. The `*_logged` family
 //! additionally appends to the mock's call log (`MockObjcRuntime::calls`), so a test sees the
@@ -1537,7 +1537,7 @@ mod native {
         YES
     }
 
-    /// `-[QNSWindow windowShouldClose:]`: the handler gets the close request and decides
+    /// `-[FerrokitNSWindow windowShouldClose:]`: the handler gets the close request and decides
     /// whether the window closes (as the Win32 `WM_CLOSE` and the X11 and Wayland close
     /// requests do), so AppKit is told NO. Without a handler AppKit closes the window itself.
     extern "C" fn window_should_close(
@@ -1916,10 +1916,10 @@ mod native {
     }
 
     /// The `NSWindow` subclass of every window that can take the keyboard focus: like Qt's
-    /// `QNSWindow` it says yes to `-canBecomeKeyWindow` and `-canBecomeMainWindow`, which a plain
+    /// `FerrokitNSWindow` it says yes to `-canBecomeKeyWindow` and `-canBecomeMainWindow`, which a plain
     /// borderless `NSWindow` (a frameless window) refuses.
     pub fn qnswindow_class() -> Class {
-        // SAFETY: the closure runs once (LazyLock). `QNSWindow` is only allocated when absent;
+        // SAFETY: the closure runs once (LazyLock). `FerrokitNSWindow` is only allocated when absent;
         // `ns_window` is `NSWindow` (always present with AppKit linked), `name` is a
         // NUL-terminated `CString` alive for the call, and a nil `class` returns early before any
         // use. `returns_yes` is an `extern "C"` function of (self, _cmd) returning `BOOL`, which
@@ -1927,12 +1927,12 @@ mod native {
         // `canBecomeKeyWindow` / `canBecomeMainWindow` getters. The class is registered after
         // its methods are added.
         static CLASS: LazyLock<usize> = LazyLock::new(|| unsafe {
-            let existing = objc_get_class("QNSWindow");
+            let existing = objc_get_class("FerrokitNSWindow");
             if !existing.is_nil() {
                 return existing.0 as usize;
             }
             let ns_window = objc_get_class("NSWindow");
-            let name = CString::new("QNSWindow").unwrap();
+            let name = CString::new("FerrokitNSWindow").unwrap();
             let class = objc2::ffi::objc_allocateClassPair(
                 ns_window.0.cast::<objc2::runtime::AnyClass>(),
                 name.as_ptr(),
@@ -1954,7 +1954,7 @@ mod native {
                 );
             }
             // `-[NSWindow performClose:]` (the title bar's close button, Cmd+W) asks the window,
-            // or its delegate, `windowShouldClose:` before closing; like Qt's `QNSWindow` it
+            // or its delegate, `windowShouldClose:` before closing; like Qt's `FerrokitNSWindow` it
             // delivers the close request synchronously.
             let close_imp: objc2::runtime::Imp = std::mem::transmute::<
                 *const c_void,

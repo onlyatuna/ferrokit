@@ -388,12 +388,12 @@ pub fn qnsview_class() -> Class {
     // `objc_allocateClassPair` returns non-nil here (a nil result would make the `class_addMethod`
     // calls no-ops per the runtime documentation, not UB).
     static CLASS: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| unsafe {
-        let existing = objc_get_class("QNSView");
+        let existing = objc_get_class("FerrokitNSView");
         if !existing.is_nil() {
             return existing.0 as usize;
         }
         let ns_view = objc_get_class("NSView");
-        let name = CString::new("QNSView").unwrap();
+        let name = CString::new("FerrokitNSView").unwrap();
         let class = objc2::ffi::objc_allocateClassPair(
             ns_view.0.cast::<objc2::runtime::AnyClass>(),
             name.as_ptr(),
@@ -517,9 +517,9 @@ pub fn qcocoa_application_delegate() -> Id {
     // `v@:@` encoding passed. The delegate is created with `alloc` + `init` (no arguments) on the
     // class just registered; the +1 is intentionally never released (see the doc comment).
     static DELEGATE: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| unsafe {
-        let mut class = objc_get_class("QCocoaApplicationDelegate");
+        let mut class = objc_get_class("FerrokitCocoaApplicationDelegate");
         if class.is_nil() {
-            let name = CString::new("QCocoaApplicationDelegate").unwrap();
+            let name = CString::new("FerrokitCocoaApplicationDelegate").unwrap();
             let raw = objc2::ffi::objc_allocateClassPair(
                 objc_get_class("NSObject")
                     .0
@@ -729,7 +729,7 @@ impl MockObjcRuntime {
             "NSMenuItem",
             "NSWindow",
             "NSView",
-            "QNSView",
+            "FerrokitNSView",
             "NSEvent",
             "CALayer",
             "NSScreen",
@@ -792,7 +792,7 @@ impl MockObjcRuntime {
             obj.button = Id(button_id as *mut c_void);
         }
 
-        if class_name == "QNSView" {
+        if class_name == "FerrokitNSView" {
             // Align with Qt the platform NSView: the view reports itself as flipped.
             obj.is_flipped = true;
         }
