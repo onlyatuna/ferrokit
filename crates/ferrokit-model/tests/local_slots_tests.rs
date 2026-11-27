@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-3.0-only
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Deterministic std tests of the local-slot model: one scripted schedule per protocol step,
 //! the shared scenarios on real threads, and the negative (mutant) checks.
 //!

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-3.0-only
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Scaled-down hierarchy transaction model for Loom and Shuttle.
 //!
 //! # Model Scope and Limitations

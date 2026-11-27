@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! The Linux glyph backend (`SkrifaFace` on upstream `skrifa` and the `ftgrays` rasterizer) against
+//! The Linux glyph backend (`SkrifaFace` on upstream `skrifa` and `ab_glyph_rasterizer`) against
 //! reference outlines, bitmaps, and metrics from FreeType 2.14.2 and Qt 6.12 for the synthetic
 //! fixture fonts `tests/data/ft_golden.ttf` and `ft_golden.otf` and for `oracle_text.ttf`; no
 //! system font is read.
@@ -11,16 +11,18 @@
 //! (`QRawFont::alphaMapForGlyph`) and strings drawn with `QPainter::drawText` into a QImage. Both
 //! are written by `tests/data/gen_ft_golden.py`, which says how they were measured.
 //!
-//! Because `ferrokit-gui` uses upstream crates.io `skrifa` rather than a FreeType-patched fork,
-//! outlines and rasterized bitmaps are checked for structural validity, `ftgrays` self-consistency,
-//! and bounding-box/advance agreement within tolerance rather than byte-for-byte parity.
+//! Because `ferrokit-gui` uses upstream crates.io `skrifa` + `ab_glyph_rasterizer` rather than a
+//! FreeType-patched fork, outlines and rasterized bitmaps are checked for structural validity,
+//! metrics self-consistency, and bounding-box/advance agreement within tolerance rather than
+//! byte-for-byte parity.
 
 use ferrokit_gui::text::font::SharedFontData;
 use ferrokit_gui::text::font_database::HintStyle;
-use ferrokit_gui::text::ftgrays::{self, OUTLINE_OVERLAP, Outline};
 use ferrokit_gui::text::glyph_face::GlyphFace;
-use ferrokit_gui::text::skrifa_face::SkrifaFace;
+use ferrokit_gui::text::skrifa_face::{GlyphOutline, SkrifaFace};
 use std::collections::HashMap;
+
+const OUTLINE_OVERLAP: u32 = 0x40;
 
 const FT_GOLDEN: &str = include_str!("data/ft_golden.txt");
 const QT_GOLDEN: &str = include_str!("data/qt_golden.txt");
@@ -158,7 +160,7 @@ fn ft_records() -> Vec<Record> {
 
 /// `SkrifaFace::freetype_outline` of the record's glyph: `FT_Load_Glyph`'s slot outline moved by the
 /// record's sub-pixel offset.
-fn outline_of(faces: &mut Faces, r: &Record) -> Outline {
+fn outline_of(faces: &mut Faces, r: &Record) -> GlyphOutline {
     let face = faces.get(&r.font, r.mode);
     let gid = face.glyph_index(r.ch);
     assert_ne!(gid, 0, "{} has no glyph", r.label());
@@ -240,33 +242,18 @@ fn outlines_equal_freetypes_point_for_point() {
         let o = outline_of(&mut faces, r);
         let label = r.label();
         assert_eq!(
-            o.contours.is_empty(),
+            o.contours == 0,
             r.contours.is_empty(),
             "{label}: contour presence"
         );
-        assert_eq!(o.points.len(), o.tags.len(), "{label}: points/tags len");
-        if let Some(&last) = o.contours.last() {
-            assert_eq!(
-                usize::from(last) + 1,
-                o.points.len(),
-                "{label}: last contour end"
-            );
-            for w in o.contours.windows(2) {
-                assert!(w[0] < w[1], "{label}: contour ends not monotonic");
-            }
-        }
-        for &t in &o.tags {
-            assert!(
-                matches!(
-                    t & 3,
-                    ftgrays::TAG_CONIC | ftgrays::TAG_ON | ftgrays::TAG_CUBIC
-                ),
-                "{label}: invalid point tag {t}"
-            );
-        }
         assert_eq!(
-            o.flags & OUTLINE_OVERLAP,
-            r.flags & OUTLINE_OVERLAP,
+            o.commands.is_empty(),
+            r.contours.is_empty(),
+            "{label}: commands presence"
+        );
+        assert_eq!(
+            o.has_overlaps,
+            (r.flags & OUTLINE_OVERLAP) != 0,
             "{label}: overlap flag"
         );
         checked += 1;
@@ -284,39 +271,44 @@ fn bitmaps_equal_freetypes_render_glyph() {
     let records = ft_records();
     let mut faces = Faces::default();
     for r in &records {
-        let o = outline_of(&mut faces, r);
-        let ppem = (r.size as u16, r.size as u16);
-        let got = ftgrays::render(&o, ppem)
-            .ok()
-            .filter(|b| b.width > 0 && b.rows > 0);
+        let face = faces.get(&r.font, r.mode);
+        let gid = face.glyph_index(r.ch);
+        let (m, buf) = if r.delta == 0 {
+            face.rasterize_indexed(gid, r.size as f32)
+        } else {
+            face.rasterize_subpixel(gid, r.size as f32, 1.0, r.delta)
+        };
+        let got = (m.width > 0 && m.height > 0).then_some((
+            m.xmin,
+            m.ymin + m.height as i32,
+            m.width as u32,
+            m.height as u32,
+            buf,
+        ));
         match (&r.bitmap, &got) {
             (None, None) => {}
-            (Some(want), Some(b)) => {
+            (Some(want), Some((left, top, width, rows, buffer))) => {
                 let tol = if r.mode == 0 { r.size.max(6) } else { 6 };
                 assert!(
-                    b.left.abs_diff(want.left) <= tol
-                        && b.top.abs_diff(want.top) <= tol
-                        && b.width.abs_diff(want.width) <= tol
-                        && b.rows.abs_diff(want.rows) <= tol,
-                    "{}: bitmap box ({}, {}, {}, {}) vs reference ({}, {}, {}, {})",
+                    left.abs_diff(want.left) <= tol
+                        && top.abs_diff(want.top) <= tol
+                        && width.abs_diff(want.width) <= tol
+                        && rows.abs_diff(want.rows) <= tol,
+                    "{}: bitmap box ({left}, {top}, {width}, {rows}) vs reference ({}, {}, {}, {})",
                     r.label(),
-                    b.left,
-                    b.top,
-                    b.width,
-                    b.rows,
                     want.left,
                     want.top,
                     want.width,
                     want.rows
                 );
                 assert_eq!(
-                    b.buffer.len(),
-                    (b.width * b.rows) as usize,
+                    buffer.len(),
+                    (width * rows) as usize,
                     "{}: buffer len",
                     r.label()
                 );
                 assert!(
-                    b.buffer.iter().any(|&v| v > 0),
+                    buffer.iter().any(|&v| v > 0),
                     "{}: empty coverage",
                     r.label()
                 );
@@ -331,9 +323,8 @@ fn bitmaps_equal_freetypes_render_glyph() {
     }
 }
 
-/// The glyph interface the painter uses gives the same bitmaps as `ftgrays::render` on the
-/// face's outline (`rasterize_indexed` at whole-pixel position and `rasterize_subpixel` at an
-/// offset) and stays within tolerance of FreeType's bounding box.
+/// The glyph interface the painter uses gives consistent bounding boxes across `metrics_indexed`,
+/// `rasterize_indexed`, and `rasterize_subpixel`, staying within tolerance of FreeType's box.
 #[test]
 fn glyph_face_bitmaps_equal_freetypes() {
     let records = ft_records();
@@ -342,15 +333,21 @@ fn glyph_face_bitmaps_equal_freetypes() {
         if !matches!(r.delta, 0 | 32) || (r.mode == 0 && r.delta != 0) {
             continue;
         }
-        let o = outline_of(&mut faces, r);
-        let ppem = (r.size as u16, r.size as u16);
-        let rendered = ftgrays::render(&o, ppem)
-            .ok()
-            .filter(|b| b.width > 0 && b.rows > 0);
         let face = faces.get(&r.font, r.mode);
         let gid = face.glyph_index(r.ch);
         let (m, bits) = if r.delta == 0 {
-            face.rasterize_indexed(gid, r.size as f32)
+            let mm = face.metrics_indexed(gid, r.size as f32);
+            let (rm, bits) = face.rasterize_indexed(gid, r.size as f32);
+            assert_eq!(mm.xmin, rm.xmin, "{}: metrics_indexed xmin", r.label());
+            assert_eq!(mm.ymin, rm.ymin, "{}: metrics_indexed ymin", r.label());
+            assert_eq!(mm.width, rm.width, "{}: metrics_indexed width", r.label());
+            assert_eq!(
+                mm.height,
+                rm.height,
+                "{}: metrics_indexed height",
+                r.label()
+            );
+            (rm, bits)
         } else {
             assert!(
                 face.supports_horizontal_subpixel_positions(),
@@ -359,36 +356,35 @@ fn glyph_face_bitmaps_equal_freetypes() {
             );
             face.rasterize_subpixel(gid, r.size as f32, 1.0, r.delta)
         };
-        match (&rendered, &r.bitmap) {
-            (None, None) => assert!(m.width == 0 || m.height == 0, "{}", r.label()),
-            (Some(b), Some(want)) => {
+        let has_bitmap = m.width > 0 && m.height > 0;
+        match (has_bitmap, &r.bitmap) {
+            (false, None) => assert!(bits.is_empty(), "{}", r.label()),
+            (true, Some(want)) => {
                 assert_eq!(
-                    (
-                        m.xmin,
-                        m.ymin + m.height as i32,
-                        m.width as u32,
-                        m.height as u32
-                    ),
-                    (b.left, b.top, b.width, b.rows),
-                    "{}: box vs ftgrays",
+                    bits.len(),
+                    m.width * m.height,
+                    "{}: coverage len",
                     r.label()
                 );
-                assert_eq!(bits, b.buffer, "{}: coverage vs ftgrays", r.label());
                 let tol = if r.mode == 0 { r.size.max(6) } else { 6 };
+                let left = m.xmin;
+                let top = m.ymin + m.height as i32;
+                let width = m.width as u32;
+                let rows = m.height as u32;
                 assert!(
-                    b.left.abs_diff(want.left) <= tol
-                        && b.top.abs_diff(want.top) <= tol
-                        && b.width.abs_diff(want.width) <= tol
-                        && b.rows.abs_diff(want.rows) <= tol,
+                    left.abs_diff(want.left) <= tol
+                        && top.abs_diff(want.top) <= tol
+                        && width.abs_diff(want.width) <= tol
+                        && rows.abs_diff(want.rows) <= tol,
                     "{}: box vs reference",
                     r.label()
                 );
             }
             _ => panic!(
-                "{}: reference has bitmap: {}, ftgrays has bitmap: {}",
+                "{}: reference has bitmap: {}, rasterizer has bitmap: {}",
                 r.label(),
                 r.bitmap.is_some(),
-                rendered.is_some()
+                has_bitmap
             ),
         }
     }

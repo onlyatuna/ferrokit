@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-3.0-only
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Abstract model of the thread-owned slot protocol behind `Signal::connect_local`.
 //!
 //! # Model Scope and Limitations

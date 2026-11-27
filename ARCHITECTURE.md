@@ -43,7 +43,7 @@ flowchart TD
 - **2D Rendering**: `ferrokit-gui` renders into RGBA8 `Pixmap` buffers via `tiny-skia` and custom `solid_fill` / `text_blend` / `qss_box` blitters, with ICC color space calibration (`icc.rs`) and QSS CSS-box border/radius rendering.
 - **Text Shaping & Rasterization**:
   - Shaping uses `rustybuzz` (`HarfBuzz` port) with `unicode-bidi`, `unicode-linebreak`, and `unicode-segmentation`.
-  - Font enumeration and glyph rasterization dispatch to DirectWrite (`windows` crate on Windows), CoreText (macOS), and `fontconfig` + `skrifa` + `ftgrays` (Linux), with `ab_glyph_rasterizer` as the outline fallback.
+  - Font enumeration and glyph rasterization dispatch to DirectWrite (`windows` crate on Windows), CoreText (macOS), and `fontconfig` + `skrifa` + `ab_glyph_rasterizer` (Linux), with `OutlineFace` as the generic outline fallback.
 
 ## 4. Platform Backends (`ferrokit-platform`)
 

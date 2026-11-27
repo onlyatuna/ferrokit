@@ -23,7 +23,6 @@ pub(crate) mod fontconfig_catalog;
 pub(crate) mod fontconfig_ffi;
 pub mod format;
 pub mod fragment;
-pub mod ftgrays;
 pub mod glyph_face;
 pub mod glyph_layout;
 pub mod highlighter;

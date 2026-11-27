@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-3.0-only
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! `#[slots]`: registers the `#[slot]` methods of an inherent impl in the type's meta object.
 
 use crate::invoke::{argument_bindings, invoker_fn, type_name};

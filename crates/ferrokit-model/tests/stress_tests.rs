@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-3.0-only
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native concurrency stress test for ThreadSanitizer.
 
 #[cfg(not(any(feature = "loom", feature = "shuttle")))]
