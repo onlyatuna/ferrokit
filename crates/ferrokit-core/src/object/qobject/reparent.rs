@@ -191,7 +191,7 @@ pub(super) fn ancestors_in(
 /// `ChildRemoved`/`ChildAdded` to the registered parents.
 ///
 /// Refuses with [`ReparentError::OwnedByParent`] when a parent owns the child; use
-/// [`reparent_owned_object`] for those. Qt's `setParent_helper` (qobject.cpp:2287-2345) never destroys
+/// [`reparent_owned_object`] for those. Qt's `setParent_helper` never destroys
 /// the child; here the borrow `child` points into the object the parent owns, so ownership has to
 /// move through an id-based call.
 ///
@@ -201,8 +201,8 @@ pub(super) fn ancestors_in(
 ///
 /// Thread affinity: the child's thread and the new parent's thread (`ObjectData::thread_id`, as
 /// [`move_to_thread`](crate::object::move_to_thread) changes it) must be the same, because a parent and its children share one
-/// thread. Otherwise, as in Qt (qobject.cpp:2309-2345; line numbers differ between Qt versions,
-/// these were checked against Qt 6.11.2's `qobject.cpp`), the child is removed from its old parent,
+/// thread. Otherwise, as in Qt (line numbers differ between Qt versions,
+/// these were checked against Qt 6.11.2's), the child is removed from its old parent,
 /// which receives `ChildRemoved`, and is left without a parent; a warning goes to stderr, and this
 /// returns [`ReparentError::DifferentThread`]. Only the two affinities are compared. The calling
 /// thread is not checked, but a registered child must still be used on the thread it is registered
@@ -1125,7 +1125,7 @@ pub fn reparent_owned_object(
 }
 
 /// Attaches `child` as an owned child of `parent_id` and sends `ChildAdded` to the parent
-/// (Qt `setParent_helper`, qobject.cpp:2346-2352).
+/// (Qt `setParent_helper`).
 ///
 /// Returns the child id. If the parent's thread differs from the child's, returns
 /// `DifferentThread`; if the parent is not registered, returns `UnknownObject`; if the child has
@@ -1137,7 +1137,7 @@ pub fn reparent_owned_object(
 /// the `Box` is
 /// handed back and nothing is attached: the child gets no parent, the parent's children stay as
 /// they were, and no event is sent. For `DifferentThread` Qt's constructor ends the same way
-/// (qobject.cpp:941-959, 994-997) but prints a warning; this prints nothing.
+/// (994-997) but prints a warning; this prints nothing.
 ///
 /// On success the parent holds the child in an [`OwnedObject`] and the child is registered with
 /// that owner's pointer, so moving the child between parents leaves the registry's pointer valid.

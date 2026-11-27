@@ -23,7 +23,7 @@ use crate::signal::Signal;
 static START_TIME: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 /// Process-wide timer id source. Ids must not repeat across thread registries, because a moved
-/// object's timers keep their ids on the target thread (Qt `reRegisterTimers`, qobject.cpp:1496-1500).
+/// object's timers keep their ids on the target thread (Qt `reRegisterTimers`).
 static NEXT_TIMER_ID: AtomicU32 = AtomicU32::new(1);
 
 thread_local! {
@@ -279,7 +279,7 @@ impl TimerRegistry {
     }
 
     /// Registers `id` for `receiver`. A moved timer keeps its id on the target thread (Qt
-    /// `registerTimer` with an existing id, qobject.cpp:1496-1500); the phase restarts from now.
+    /// `registerTimer` with an existing id); the phase restarts from now.
     /// Returns `false`, leaving the live timer untouched, when `id` is already registered here.
     fn register_with_id(
         &mut self,
@@ -516,7 +516,7 @@ pub(crate) fn next_grid_deadline(interval_ms: u64, expiry_ms: u64, now_ms: u64) 
 }
 
 /// Stops and unregisters all active timers registered to the specified receiver object.
-/// Modeled after Qt's QObjectPrivate::moveToThread_helper timer cleanup.
+/// Modeled after Qt's object internals timer cleanup.
 ///
 /// On Windows the native timer of each removed entry is killed as well; it would otherwise keep
 /// posting `WM_TIMER` to the loop's window until the window is destroyed.
@@ -543,8 +543,8 @@ pub fn stop_timers_for_object(receiver: ObjectId) -> usize {
 
 /// Removes the timers whose receiver is in `receivers` and disarms their delivery sources, returning
 /// the entries so the target thread can re-register them under the same ids (Qt
-/// `QObjectPrivate::moveToThread_helper` timer handling: `unregisterTimers` on the source,
-/// qobject.cpp:1490-1502).
+/// object internals timer handling: `unregisterTimers` on the source,
+/// ).
 pub(crate) fn detach_timers_for_objects(receivers: &[ObjectId]) -> DetachedTimers {
     // Context-bound single shots move with their context (timers move with the object in Qt).
     let shots = take_context_single_shots(receivers);
@@ -601,7 +601,7 @@ fn detach_registered_timers(receivers: &[ObjectId]) -> Vec<MovedTimer> {
 }
 
 /// Re-registers detached timers on the calling (target) thread under their original ids and re-arms
-/// their delivery sources (Qt `reRegisterTimers`, qobject.cpp:1496-1500). The phase restarts, as with
+/// their delivery sources (Qt `reRegisterTimers`). The phase restarts, as with
 /// Qt's `registerTimer`. Runs as a `MetaCall` queued to the target after the move. An entry whose
 /// receiver has moved on is forwarded to its current owner; one whose receiver was destroyed is
 /// dropped.
@@ -685,7 +685,7 @@ fn adopt_entries(entries: Vec<MovedTimer>) {
 }
 
 /// Registers a timer and arms its delivery source (`QObject::startTimer` → `registerTimer`,
-/// qeventdispatcher_win.cpp:345-381). Zero interval posts `ZeroTimer` (360-363); otherwise
+/// ). Zero interval posts `ZeroTimer` (360-363); otherwise
 /// `SetTimer` on Windows. Shared by `Timer::start` and `start_object_timer`.
 fn arm_in_context(
     ctx: &ThreadTimerContext,
@@ -755,7 +755,7 @@ fn arm_source(
 }
 
 /// Removes a timer and disarms its delivery source (`QObject::killTimer` → `unregisterTimer`,
-/// qeventdispatcher_win.cpp:383-392). Uses the REGISTERED interval, not the mutable `Timer` field.
+/// ). Uses the REGISTERED interval, not the mutable `Timer` field.
 /// With `receiver`, a timer registered for another object is left alone.
 fn disarm_in_context(ctx: &ThreadTimerContext, receiver: Option<ObjectId>, id: TimerId) -> bool {
     let mut reg = lock_unpoisoned(&ctx.registry);
@@ -835,7 +835,7 @@ fn take_context_single_shots(contexts: &[ObjectId]) -> Vec<(ObjectId, u64, Singl
 
 /// Cancels this thread's pending context-bound single shots of `context`: the timers go away and
 /// the functors (with their captures) are dropped, as Qt's `QSingleShotTimer` is deleted with its
-/// context (qsingleshottimer.cpp:46-59).
+/// context.
 fn cancel_single_shots_for_context(context: ObjectId) {
     drop(take_context_single_shots(&[context]));
 }

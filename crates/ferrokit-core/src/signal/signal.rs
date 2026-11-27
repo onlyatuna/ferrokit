@@ -155,7 +155,7 @@ impl From<&'static str> for SlotKey {
         SlotKey::Named(name)
     }
 }
-/// RAII handle that disconnects the connection when dropped (`QMetaObject::Connection`).
+/// RAII handle that disconnects the connection when dropped (meta-object dispatch).
 pub struct ScopedConnection {
     id: ConnectionId,
     disconnect_fn: Option<Box<dyn FnOnce(ConnectionId) + Send>>,
@@ -305,7 +305,7 @@ struct Subscriber<T> {
     conn_type: ConnectionType,
     dispatcher: SlotDispatcher<T>,
     /// Cleared the moment the connection is severed. `emit` re-checks it before every call,
-    /// like `doActivate` re-checks `c->receiver` (qobject.cpp:4269).
+    /// like `doActivate` re-checks `c->receiver`.
     connected: Arc<AtomicBool>,
     /// Qt `UniqueConnection` key: explicit [`SlotKey`] identity; `None` for other connections.
     slot_key: Option<SlotKey>,
@@ -354,7 +354,7 @@ pub struct Signal<T> {
 }
 
 /// The QObject that owns a bound signal. `blocked` is the owner's own `signals_blocked` flag
-/// (Qt `QObjectPrivate::blockSig`), shared rather than looked up in the registry, so blocking
+/// (Qt object internals), shared rather than looked up in the registry, so blocking
 /// works for unregistered owners and survives unregistration. `alive` is the owner's liveness
 /// token (`ObjectData::liveness`), the flag `QPointer` reads: it goes false when the owner is
 /// destroyed. Holding it does not keep the owner alive, only the flag.
@@ -584,14 +584,14 @@ impl<T> Signal<T> {
     }
 
     /// Emits the signal to all connected subscribers.
-    /// Modeled after Qt `qobject.cpp:doActivate`.
+    /// Modeled after Qt:doActivate`.
     ///
     /// A signal that has an owner (`Signal::with_owner`) stops when its owner is destroyed, even
     /// by one of its own slots: the slots after that one are not called, however they were
     /// connected (`connect`, `connect_object`, queued or not), and an emission started on an owner
     /// that is already gone calls none. In Qt `~QObject` disconnects every receiver and zeroes the
     /// connection counter before it deletes the children, and `doActivate` leaves its loop
-    /// (qobject.cpp:1086-1178, 4431). An owner counts as gone from the first step of its
+    /// (4431). An owner counts as gone from the first step of its
     /// destruction. A nested emission ends only the emissions whose owner was destroyed; the
     /// others go on. A signal without an owner has nothing to lose and always runs to the end.
     ///
@@ -614,7 +614,7 @@ impl<T> Signal<T> {
     /// Emits the signal of an owner that is being destroyed: the owner's blocked flag and its
     /// liveness token are not consulted, and the emission does not end when the owner is gone.
     /// This is how `destroyed` is delivered (Qt `~QObject` clears `blockSig` before it emits
-    /// `destroyed`, qobject.cpp:1086-1105); every other signal uses [`Signal::emit`].
+    /// `destroyed`); every other signal uses [`Signal::emit`].
     pub(crate) fn emit_while_owner_dying(&self, value: &T) {
         self.emit_impl(value, false);
     }
@@ -796,7 +796,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
             .expect("a non-unique connection is always established")
     }
 
-    /// Qt `UniqueConnection` (`qobject.cpp:5517-5530`) using an explicit [`SlotKey`] instead of a
+    /// Qt `UniqueConnection` using an explicit [`SlotKey`] instead of a
     /// function-pointer address: when `receiver` already has `key` connected to this signal,
     /// nothing is connected and `None` is returned.
     pub fn connect_unique_with_key<R: QObject + ?Sized, K: Into<SlotKey>, F>(
@@ -820,9 +820,9 @@ impl<T: Clone + Send + 'static> Signal<T> {
         )
     }
 
-    /// Qt `UniqueConnection` (`qobject.cpp:5517-5530`): when `receiver` already has this `slot`
+    /// Qt `UniqueConnection`: when `receiver` already has this `slot`
     /// connected to this signal, nothing is connected and `None` is returned. Qt only accepts
-    /// unique connections with a receiver and a member slot (`qobject.cpp:5510-5513`); a function
+    /// unique connections with a receiver and a member slot; a function
     /// pointer plays the member-slot role here.
     #[deprecated(
         note = "comparing function pointers by address (`fn(&T) as usize`) can merge distinct \
@@ -847,7 +847,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
         )
     }
     /// Qt `SingleShotConnection` with a receiver: removed before its slot runs, so a re-entrant
-    /// emit cannot invoke it twice (`qobject.cpp:4362-4382`).
+    /// emit cannot invoke it twice.
     pub fn connect_single_shot_to<R: QObject + ?Sized, F>(
         &self,
         receiver: &R,

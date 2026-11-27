@@ -382,7 +382,7 @@ impl ObjectData {
         GenerationalId::new(self.id, self.generation)
     }
 
-    /// Recursively cascades deletion to all children matching Qt `QObjectPrivate::deleteChildren`.
+    /// Recursively cascades deletion to all children matching Qt object internals.
     ///
     /// An owned child whose callback is running is destroyed at once as far as anything else can
     /// tell (unregistered, no longer alive, no events, timers or connections to other objects),
@@ -967,13 +967,13 @@ impl Drop for ObjectData {
         // The object is gone from this first step on: the token goes false before the parent is
         // told or a child is deleted, so a signal of this object that is emitted by then reaches
         // no slot. Qt `~QObject` disconnects every receiver before `deleteChildren`
-        // (qobject.cpp:1086-1178), and `QPointer` is cleared before anything else is destroyed.
+        // and `QPointer` is cleared before anything else is destroyed.
         self.liveness.store(false, Ordering::Release);
         self.borrow_state
             .memory_destroyed
             .store(true, Ordering::Release);
         // `destroyed` goes out before the parent is told or a child is deleted (Qt `~QObject`,
-        // qobject.cpp:1086-1105). The object is dead by now: the token is false and the memory
+        // ). The object is dead by now: the token is false and the memory
         // counts as destroyed, so no slot reaches it through the registry. Any panic is held
         // until teardown completes so `delete_children()` and `unregister_qobject()` always run.
         let mut held_panic: Option<Box<dyn std::any::Any + Send>> =
@@ -1031,12 +1031,12 @@ impl Drop for ObjectData {
     }
 }
 
-/// Marks an object for deferred deletion (`QObject::deleteLater`, qobject.cpp:2511-2565).
+/// Marks an object for deferred deletion (`QObject::deleteLater`).
 ///
 /// Debounced per object: the first request posts one `DeferredDelete` and later requests are
-/// ignored (qobject.cpp:2531-2534). A request from the owning thread is stamped with that
+/// ignored. A request from the owning thread is stamped with that
 /// thread's loop and handler-scope levels; scope 0 is promoted to 1 while a loop runs
-/// (qobject.cpp:2539-2559). A request from another thread is stamped (0, 0).
+/// . A request from another thread is stamped (0, 0).
 pub fn delete_later(obj: &ObjectData) {
     let Some(owner) = query_object_thread(obj.id) else {
         return;
@@ -1065,9 +1065,9 @@ pub fn delete_later(obj: &ObjectData) {
     );
 }
 
-/// Event filter callback (`QObject::eventFilter`, `qobject.cpp:2407-2423`).
+/// Event filter callback (`QObject::eventFilter`).
 pub fn install_event_filter(target: &mut ObjectData, filter: ObjectId) -> bool {
-    // Cross-thread check: filter and target must be in the same thread (qobject.cpp:2412-2415)
+    // Cross-thread check: filter and target must be in the same thread
     if let Some(filter_thread) = query_object_thread(filter)
         && filter_thread != target.thread_id
     {

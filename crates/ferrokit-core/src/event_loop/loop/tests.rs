@@ -172,11 +172,11 @@ fn test_deferred_delete_loop_level() {
     // read or used through `&self` afterwards, and no callback runs yet.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut widget)) };
 
-    // delete_later stamps (loop 1, scope 0), promoted to scope 1 (qobject.cpp:2558-2559).
+    // delete_later stamps (loop 1, scope 0), promoted to scope 1.
     ThreadContext::set_current_loop_level(1);
     widget.delete_later();
 
-    // Gate: stamp sum 2 is not greater than the current sum 2 (qcoreapplication.cpp:1880-1885).
+    // Gate: stamp sum 2 is not greater than the current sum 2.
     ThreadContext::set_current_loop_level(2);
     event_loop.process_events(false);
     assert!(!widget.deleted);
@@ -739,7 +739,6 @@ impl QObject for TraceTarget {
 #[test]
 fn filter_removed_by_earlier_filter_is_not_called() {
     // Qt: object filters are walked by live index; a removed slot is null and skipped
-    // (qcoreapplication.cpp:1255-1265; qobject.cpp:2441-2446).
     let trace: Trace = Arc::new(Mutex::new(Vec::new()));
     let mut target = TraceTarget::new(Arc::clone(&trace));
     let mut earlier = ScriptedFilter::new("earlier", Arc::clone(&trace));
@@ -780,7 +779,7 @@ fn filter_removed_by_earlier_filter_is_not_called() {
 
 #[test]
 fn app_filter_removed_by_earlier_filter_is_not_called() {
-    // Qt: application filters use the same live index walk (qcoreapplication.cpp:1237-1247).
+    // Qt: application filters use the same live index walk.
     clear_application_event_filters();
     let trace: Trace = Arc::new(Mutex::new(Vec::new()));
     let mut target = TraceTarget::new(Arc::clone(&trace));
@@ -821,10 +820,10 @@ fn app_filter_removed_by_earlier_filter_is_not_called() {
 
 #[test]
 fn filter_installed_during_dispatch_follows_qt_index_walk() {
-    // Qt: installEventFilter prepends (qobject.cpp:2420-2422). The walk is already past index 0
+    // Qt: installEventFilter prepends. The walk is already past index 0
     // when the callback runs, so the new filter is NOT called for this event. The prepend shifts
     // the running filter to index 1, and the `++i` step calls it once more for the same event
-    // (qcoreapplication.cpp:1255-1265). The next event sees the new filter first.
+    // . The next event sees the new filter first.
     let trace: Trace = Arc::new(Mutex::new(Vec::new()));
     let mut target = TraceTarget::new(Arc::clone(&trace));
     let mut first = ScriptedFilter::new("first", Arc::clone(&trace));
@@ -874,7 +873,6 @@ fn filter_installed_during_dispatch_follows_qt_index_walk() {
 #[test]
 fn app_filter_installed_during_dispatch_follows_qt_index_walk() {
     // Qt: same prepend + index walk as the object chain, on the application list
-    // (qcoreapplication.cpp:1237-1247; qobject.cpp:2420-2422).
     clear_application_event_filters();
     let trace: Trace = Arc::new(Mutex::new(Vec::new()));
     let mut target = TraceTarget::new(Arc::clone(&trace));
@@ -1049,8 +1047,8 @@ fn test_insertion_offset_priority_ordering() {
     unsafe { unregister_qobject(id) };
 }
 
-/// `QCoreApplication::sendPostedEvents` snapshots `insertionOffset` at the start
-/// of a pass (qcoreapplication.cpp:1815-1817), so events posted from a handler wait for the next
+/// the core application snapshots `insertionOffset` at the start
+/// of a pass, so events posted from a handler wait for the next
 /// pass, and events posted between passes are ordered by priority among the remaining entries.
 /// `CleanUp` shifts `insertionOffset` down by the number of erased entries (1844-1849).
 #[test]
@@ -1207,8 +1205,8 @@ fn test_modal_pump_without_event_loop_is_noop() {
 
 /// A native modal loop opened from a posted callback (`Menu::exec_popup` from
 /// `Timer::single_shot(0)`) is a nested event loop: Qt delivers posted events from it
-/// before the callback returns (`QMenuPrivate::exec` runs a `QEventLoop`, qmenu.cpp:2691-2697;
-/// `QCoreApplication::sendPostedEvents` re-enters, qcoreapplication.cpp:1796-1817).
+/// before the callback returns (`QMenuPrivate::exec` runs a an event loop,;
+/// the core application re-enters).
 #[test]
 fn test_modal_pump_inside_a_posted_callback_delivers_events_before_it_returns() {
     let el = EventLoop::new();
@@ -1255,8 +1253,8 @@ fn test_modal_pump_inside_a_modal_pump_delivers_events_before_it_returns() {
 }
 
 /// The nested pump takes every event queued when it starts (Qt resets `insertionOffset` to
-/// the list size, qcoreapplication.cpp:1817) and delivers each once; the outer pump resumes
-/// from the shared `startOffset` (1815-1816), so it neither repeats them nor runs events
+/// the list size) and delivers each once; the outer pump resumes
+/// from the shared `start_offset` (1815-1816), so it neither repeats them nor runs events
 /// posted during the nested pump, which wait for the next turn (1856-1858).
 #[test]
 fn test_a_nested_pump_delivers_each_event_once_and_leaves_its_own_posts_for_the_next_turn() {
@@ -1447,7 +1445,7 @@ fn test_a_nested_filtered_deferred_delete_does_not_save_the_outer_object() {
 }
 
 /// An object deleted later from the outer loop survives a nested loop and is deleted once
-/// control is back in the loop that requested it (qcoreapplication.cpp:1877-1890).
+/// control is back in the loop that requested it.
 #[test]
 fn test_a_deferred_delete_from_the_outer_loop_waits_out_a_nested_pump() {
     struct Deletable {
@@ -1494,7 +1492,7 @@ fn test_a_deferred_delete_from_the_outer_loop_waits_out_a_nested_pump() {
             // moved; the pump unregisters it but never frees it. The closure is a posted
             // meta-call, not a callback of `object`, and only calls `delete_later(&self)`.
             let object = unsafe { &*(object_addr as *const Deletable) };
-            // Requested inside a handler: stamped at loop level 1, scope level 1 (qobject.cpp:2558-2559).
+            // Requested inside a handler: stamped at loop level 1, scope level 1.
             object.delete_later();
             let _ = pump_posted_events_modal();
             *deleted_during_nested.lock().unwrap() = Some(deleted.load(Ordering::SeqCst));
@@ -1511,8 +1509,8 @@ fn test_a_deferred_delete_from_the_outer_loop_waits_out_a_nested_pump() {
 
 /// A handler that calls `delete_later` and then runs a nested non-modal pump keeps the target
 /// alive for that pump. `notify_helper` holds scope level 1 for the whole handler
-/// (qcoreapplication.cpp:1118), so the DeferredDelete stamped (1, 1) is not deliverable at
-/// (1, 0) (qcoreapplication.cpp:1881-1885). The outer loop delivers it once the handler returns.
+/// so the DeferredDelete stamped (1, 1) is not deliverable at
+/// (1, 0). The outer loop delivers it once the handler returns.
 #[test]
 fn test_nested_pump_inside_a_handler_keeps_its_delete_later_target_alive() {
     struct Victim {
@@ -1895,7 +1893,7 @@ impl Drop for Watchdog {
 }
 
 /// An exit that was requested before the loop ran returns its code at once and delivers no
-/// events (`QThread::exec`, qthread.cpp:686-689).
+/// events (the thread event loop).
 #[test]
 fn exec_after_a_pending_exit_returns_its_code_without_delivering_events() {
     let _watchdog = Watchdog::arm(Duration::from_secs(10));
@@ -1952,7 +1950,6 @@ fn inner_loop_exit_returns_only_the_inner_exec_and_the_outer_loop_keeps_running(
 }
 
 /// A cross-thread exit ends every loop running on the target thread
-/// (qthread.cpp:754-767).
 #[test]
 fn cross_thread_handle_exit_ends_every_loop_running_on_that_thread() {
     let _watchdog = Watchdog::arm(Duration::from_secs(10));
@@ -1989,8 +1986,8 @@ fn cross_thread_handle_exit_ends_every_loop_running_on_that_thread() {
     assert_eq!(*log.lock().unwrap(), vec!["inner-3".to_string()]);
 }
 
-/// A native modal loop that stands in for a `QEventLoop` asks whether an exit is under way
-/// (`QThreadData::quitNow`): false before it, true from `exit` until the loop has returned,
+/// A native modal loop that stands in for a an event loop asks whether an exit is under way
+/// (the thread's `quit_now` flag): false before it, true from `exit` until the loop has returned,
 /// false again after.
 #[test]
 fn thread_quit_now_is_set_by_exit_until_the_loops_have_returned() {

@@ -67,13 +67,13 @@ thread_local! {
 
 /// Shared handle to the application's `aboutToQuit` signal; clones share subscribers.
 static ABOUT_TO_QUIT: RwLock<Option<Signal<()>>> = RwLock::new(None);
-/// `QCoreApplicationPrivate::in_exec` (qcoreapplication.cpp:1467, 1484-1486).
+/// the `in_exec` flag (1484-1486).
 static IN_EXEC: AtomicBool = AtomicBool::new(false);
-/// `QCoreApplicationPrivate::aboutToQuitEmitted` (qcoreapplication.cpp:1468, 1532-1534).
+/// the `about_to_quit_emitted` flag (1532-1534).
 static ABOUT_TO_QUIT_EMITTED: AtomicBool = AtomicBool::new(false);
 /// Thread that owns the application.
 static APP_THREAD: RwLock<Option<ThreadId>> = RwLock::new(None);
-/// Window veto installed by the widget layer (`QApplication::event(Quit)`, qapplication.cpp:1679-1697).
+/// Window veto installed by the widget layer (application quit veto handling).
 /// Returns false when a visible window refuses to close; `None` accepts every Quit.
 static QUIT_GATE: parking_lot::RwLock<Option<fn() -> bool>> = parking_lot::RwLock::new(None);
 
@@ -93,13 +93,13 @@ pub fn set_quit_gate(gate: fn() -> bool) {
     *QUIT_GATE.write() = Some(gate);
 }
 
-/// Whether `receiver` is the application object (`QCoreApplication::self`).
+/// Whether `receiver` is the application object (the singleton application object).
 pub(crate) fn is_application_object(receiver: ObjectId) -> bool {
     *crate::poison::read_unpoisoned(&APP_OBJECT_ID) == Some(receiver)
 }
 
-/// Delivers `Quit` to the application object: `QCoreApplication::event` (qcoreapplication.cpp:2052-2058)
-/// behind the window veto of `QApplication::event` (qapplication.cpp:1679-1697). Accepted quits
+/// Delivers `Quit` to the application object: application event handling
+/// behind the window veto of application quit veto handling. Accepted quits
 /// exit with code 0 as in Qt; refused quits are ignored and the loop keeps running.
 pub(crate) fn deliver_application_quit(event: &mut Event) {
     if !is_app_thread() {
@@ -129,7 +129,7 @@ fn current_event_loop() -> Option<Rc<EventLoop>> {
 }
 
 /// The application object's id when called on the application thread, for removing its posted
-/// `Quit` events on loop entry (qeventloop.cpp:192-195).
+/// `Quit` events on loop entry.
 pub(crate) fn app_object_on_current_thread() -> Option<ObjectId> {
     if is_app_thread() {
         *crate::poison::read_unpoisoned(&APP_OBJECT_ID)
@@ -138,7 +138,7 @@ pub(crate) fn app_object_on_current_thread() -> Option<ObjectId> {
     }
 }
 
-/// Emits `aboutToQuit` at most once per exec (qcoreapplication.cpp:1532-1535). The flag is set
+/// Emits `aboutToQuit` at most once per exec. The flag is set
 /// before emitting so a slot that calls `exit()` does not recurse.
 pub(crate) fn emit_about_to_quit_once() {
     if ABOUT_TO_QUIT_EMITTED.swap(true, Ordering::SeqCst) {
@@ -150,7 +150,7 @@ pub(crate) fn emit_about_to_quit_once() {
     }
 }
 
-/// Core application singleton equivalent to Qt's `QCoreApplication`.
+/// Core application singleton equivalent to Qt's the core application.
 ///
 /// Manages the application-wide event loop, metadata, arguments, attributes,
 /// and shutdown signals (`about_to_quit`).
@@ -239,13 +239,13 @@ impl CoreApplication {
     /// Runs the main event loop until `exit()` or `quit()` stops it.
     /// Returns the exit code passed to `exit()`.
     pub fn exec(&mut self) -> i32 {
-        // qcoreapplication.cpp:1467-1470: a new exec starts with in_exec set and aboutToQuit
+        // : a new exec starts with in_exec set and aboutToQuit
         // re-armed, so an exit() issued before exec() does not end it.
         ABOUT_TO_QUIT_EMITTED.store(false, Ordering::SeqCst);
         IN_EXEC.store(true, Ordering::SeqCst);
         let code = current_event_loop().map_or(0, |el| el.exec());
         // execCleanup: sendPostedEvents(nullptr, DeferredDelete) once the loop has returned
-        // (qcoreapplication.cpp:1472-1473, 1484-1489).
+        // (1484-1489).
         if let Some(el) = current_event_loop() {
             el.flush_deferred_deletes();
         }
@@ -253,34 +253,34 @@ impl CoreApplication {
         code
     }
 
-    /// Processes pending events for the calling thread (`QCoreApplication::processEvents`).
+    /// Processes pending events for the calling thread (event processing).
     pub fn process_events(can_wait: bool) -> bool {
         // Pumps even while exec() is on the stack: the loop is shared through a clone, not a borrow.
         current_event_loop().is_some_and(|el| el.process_events(can_wait))
     }
 
     /// Type name of the calling thread's application event dispatcher, or `None` when this
-    /// thread has no application event loop (`QCoreApplication::eventDispatcher()` class name).
+    /// thread has no application event loop (the thread's event dispatcher class name).
     pub fn event_dispatcher_class_name() -> Option<&'static str> {
         use crate::event_loop::EventDispatcher;
         current_event_loop().map(|l| l.dispatcher().class_name())
     }
 
-    /// Stops the event loop and makes `exec()` return `return_code` (`QCoreApplication::exit`).
+    /// Stops the event loop and makes `exec` return `return_code` (application exit).
     pub fn exit(return_code: i32) {
-        // qcoreapplication.cpp:1532-1535: aboutToQuit is emitted from exit() itself.
+        // : aboutToQuit is emitted from exit itself.
         emit_about_to_quit_once();
-        // qcoreapplication.cpp:1534-1540: exit() ends the loops of the application thread from any thread.
+        // : exit ends the loops of the application thread from any thread.
         let target = app_thread().unwrap_or_else(ThreadId::current);
         if let Some(handle) = crate::event_loop::get_thread_event_sender(target) {
             handle.exit(return_code);
         }
     }
 
-    /// Tells the application to quit (`QCoreApplication::quit`): a sendEvent of Quit on the
-    /// application thread, or a posted one from another thread (qcoreapplication.cpp:2138-2159).
+    /// Tells the application to quit (application quit): a sendEvent of Quit on the
+    /// application thread, or a posted one from another thread.
     pub fn quit() {
-        // qcoreapplication.cpp:2140-2144: no application object, or not in exec, means nothing to do.
+        // : no application object, or not in exec, means nothing to do.
         let Some(app) = Self::instance_id() else {
             return;
         };
@@ -294,7 +294,7 @@ impl CoreApplication {
         }
     }
 
-    /// Whether `exec` is running. `QCoreApplication::quit` acts only then (qcoreapplication.cpp:2138-2147).
+    /// Whether `exec` is running. application quit acts only then.
     pub fn in_exec() -> bool {
         IN_EXEC.load(Ordering::SeqCst)
     }
@@ -321,22 +321,22 @@ impl CoreApplication {
     pub fn post_event(receiver: ObjectId, event: Event) {
         Self::post_event_with_priority(receiver, event, 0);
     }
-    /// Sends an event directly to a receiver object synchronously (`QCoreApplication::sendEvent`).
+    /// Sends an event directly to a receiver object synchronously (synchronous event delivery).
     pub fn send_event(receiver: ObjectId, event: &mut Event) -> bool {
         crate::event_loop::notify_helper(receiver, event)
     }
 
-    /// Installs an application-wide event filter (`QCoreApplication::installEventFilter`).
+    /// Installs an application-wide event filter (application event filter registration).
     pub fn install_event_filter(filter_id: ObjectId) {
         install_application_event_filter(filter_id);
     }
 
-    /// Removes an application-wide event filter (`QCoreApplication::removeEventFilter`).
+    /// Removes an application-wide event filter (application event filter removal).
     pub fn remove_event_filter(filter_id: ObjectId) {
         remove_application_event_filter(filter_id);
     }
 
-    /// Installs a native event filter (`QCoreApplication::installNativeEventFilter`).
+    /// Installs a native event filter (native event filter registration).
     pub fn install_native_event_filter(filter: Box<dyn crate::event::NativeEventFilter>) {
         if let Some(loop_ref) = current_event_loop() {
             loop_ref.install_native_event_filter(filter);

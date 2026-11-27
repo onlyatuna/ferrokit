@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Meta Object System (`QMetaObject` & `QMetaType` equivalent).
+//! Meta Object System (the meta-object & `QMetaType` equivalent).
 //!
 //! Provides compile-time metadata, runtime type reflection, dynamic method invocation,
 //! typed properties inspection, enumerators reflection, and class hierarchy inspection.
@@ -453,7 +453,7 @@ impl MetaMethod {
     }
 
     /// Checks argument count, then each argument against its declared parameter type, before
-    /// invocation (`QMetaMethod::invoke` → `invokeImpl`, qmetaobject.cpp:2770-2809).
+    /// invocation (`QMetaMethod::invoke` → `invokeImpl`).
     pub fn check_arguments(&self, args: &[Variant]) -> Result<(), InvokeError> {
         if args.len() != self.parameter_types.len() {
             return Err(InvokeError::ParameterCountMismatch {
@@ -475,7 +475,7 @@ impl MetaMethod {
 
 /// Whether `arg` is accepted for a parameter declared as `param`.
 ///
-/// Mirrors Qt `invokeImpl`'s per-argument compatibility check (qmetaobject.cpp:2774-2809): an
+/// Mirrors Qt `invokeImpl`'s per-argument compatibility check: an
 /// exact metatype match or a Qt-legal numeric widening. Strings are never parsed as numbers.
 /// Parameter type names outside this table are not checked (the metatype table is incomplete).
 fn variant_accepts_parameter(arg: &Variant, param: &str) -> bool {
@@ -729,10 +729,10 @@ impl MetaClassInfo {
 }
 
 // -----------------------------------------------------------------------------
-// MetaObject: QMetaObject equivalent
+// MetaObject: the meta-object equivalent
 // -----------------------------------------------------------------------------
 
-/// The root reflection structure representing all compile-time metadata of a QObject class (`QMetaObject`).
+/// The root reflection structure representing all compile-time metadata of a QObject class (the meta-object).
 #[derive(Debug, Clone)]
 pub struct MetaObject {
     pub class_name: &'static str,
@@ -762,17 +762,17 @@ impl MetaObject {
         }
     }
 
-    /// Returns class name (`QMetaObject::className`).
+    /// Returns class name (meta-object dispatch).
     pub fn class_name(&self) -> &'static str {
         self.class_name
     }
 
-    /// Returns superclass meta object (`QMetaObject::superClass`).
+    /// Returns superclass meta object (meta-object dispatch).
     pub fn super_class(&self) -> Option<&'static MetaObject> {
         self.super_class
     }
 
-    /// Checks if this meta object inherits from another meta object (`QMetaObject::inherits`).
+    /// Checks if this meta object inherits from another meta object (meta-object dispatch).
     pub fn inherits(&self, other: &MetaObject) -> bool {
         if std::ptr::eq(self, other) || self.class_name == other.class_name {
             return true;
@@ -835,7 +835,7 @@ impl MetaObject {
 
     /// Name-only lookup for `invokeMethod(obj, name, args)`. Scans methods in declaration order and
     /// takes the first invokable overload whose parameter types match (`invokeMethodImpl`,
-    /// qmetaobject.cpp:1693-1708; a parameter mismatch moves on, qmetaobject_p.h:98-102).
+    /// a parameter mismatch moves on).
     fn index_of_compatible_method(&self, name: &str, args: &[Variant]) -> Option<usize> {
         let offset = self.method_offset();
         for (i, m) in self.methods.iter().enumerate() {
@@ -948,14 +948,14 @@ impl MetaObject {
         self.super_class?.index_of_class_info(name)
     }
 
-    // --- Dynamic Invocation Helper: QMetaObject::invokeMethod ---
+    // --- Dynamic Invocation Helper: the meta-object ---
 
     /// Resolves `member` to a method accepting `args`, without invoking it.
     ///
     /// A member containing `(` is a signature and must match exactly; its count and types are then
     /// checked and reported. A bare name takes the first invokable overload whose parameter types
     /// match. Queued invokes resolve here before posting, as Qt checks in `invokeImpl` before
-    /// queueing (qmetaobject.cpp:2774-2809).
+    /// queueing.
     pub fn resolve_method(
         &self,
         member: &str,
@@ -975,7 +975,7 @@ impl MetaObject {
         Ok(method)
     }
 
-    /// Invokes a method by name or signature on the target object (`QMetaObject::invokeMethod`).
+    /// Invokes a method by name or signature on the target object (meta-object dispatch).
     pub fn invoke_method(
         &self,
         target: &mut dyn std::any::Any,

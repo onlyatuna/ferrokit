@@ -200,7 +200,7 @@ impl EventQueue {
     }
 
     /// Removes the event at `index`. Removing one from the current turn shrinks
-    /// `insertion_offset` with it (Qt `insertionOffset -= startOffset`, qcoreapplication.cpp:1847).
+    /// `insertion_offset` with it (Qt `insertionOffset -= startOffset`).
     pub(crate) fn remove_at(&mut self, index: usize) -> PostedEvent {
         let posted = self
             .events
@@ -229,9 +229,9 @@ impl EventQueue {
     }
 
     /// Removes every posted event addressed to `receiver` (Qt
-    /// `QCoreApplication::removePostedEvents`, qcoreapplication.cpp:1955-2001). The removed events
+    /// the core application). The removed events
     /// are returned, not dropped here: a payload's `Drop` may unregister objects and re-enter this
-    /// queue, so the caller drops them after releasing the lock (qcoreapplication.cpp:2000-2001).
+    /// queue, so the caller drops them after releasing the lock.
     /// `insertion_offset` shrinks by the removed entries inside the current turn, as in `remove_at`.
     pub(crate) fn remove_posted_events(&mut self, receiver: ObjectId) -> Vec<PostedEvent> {
         if !self.receiver_counts.contains_key(&receiver) {
@@ -276,7 +276,7 @@ impl EventQueue {
         removed
     }
 
-    /// Removes posted `Quit` events addressed to `receiver` (qeventloop.cpp:192-195).
+    /// Removes posted `Quit` events addressed to `receiver`.
     pub(crate) fn remove_posted_quits_for(&mut self, receiver: ObjectId) {
         let mut index = self.events.len();
         while index > 0 {
@@ -306,7 +306,7 @@ impl EventQueue {
     }
 
     /// Inserts in priority order after the turn boundary, so an event posted during a turn waits
-    /// for the next one (qthread_p.h:65-86).
+    /// for the next one.
     pub(crate) fn insert_posted(&mut self, posted: PostedEvent) {
         let key = self.compressor.merge_key(&posted.event);
         self.insert_keyed(posted, key);

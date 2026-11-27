@@ -525,7 +525,7 @@ impl<T: Clone + Send + 'static> Signal<T> {
     ///
     /// **Deviation from Qt:** an emission on the context's own thread runs the slot in place;
     /// Qt warns "Dead lock detected" and then blocks forever
-    /// (`qobject.cpp`, `BlockingQueuedConnection` in `doActivate`).
+    /// (`BlockingQueuedConnection` in `doActivate`).
     ///
     /// # Errors
     /// As [`Signal::connect_local_to`].

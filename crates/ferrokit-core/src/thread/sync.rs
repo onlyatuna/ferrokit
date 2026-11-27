@@ -525,7 +525,7 @@ impl Semaphore {
 /// A condition variable used to synchronize threads, modeled after Qt's `QWaitCondition`.
 ///
 /// Like Qt's, it counts the wake-ups it was asked for, so a spurious wake of the underlying
-/// condition variable is not reported as a wake-up (qwaitcondition_unix.cpp:
+/// condition variable is not reported as a wake-up (
 /// `QWaitConditionPrivate::wait`).
 pub struct WaitCondition {
     gate: StdMutex<WaitState>,

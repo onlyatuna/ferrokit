@@ -26,7 +26,7 @@ pub trait EventFilter {
     fn event_filter(&mut self, watched: ObjectId, event: &mut Event) -> FilterResult;
 }
 
-/// Event filter chain manager (`QObjectPrivate::extraData->eventFilters`).
+/// Event filter chain manager (object internals).
 #[derive(Default, Debug, Clone)]
 pub struct EventFilterChain {
     filters: Vec<Option<ObjectId>>,
@@ -70,7 +70,7 @@ impl EventFilterChain {
 
     /// Raw slot `index` of the live chain: `None` past the end, `Some(None)` for a tombstone.
     /// `notify_helper` reads one slot per step, mirroring Qt's `eventFilters.at(i)` walk
-    /// (qcoreapplication.cpp:1237-1238, 1255-1256).
+    /// (1255-1256).
     pub fn slot_at(&self, index: usize) -> Option<Option<ObjectId>> {
         self.filters.get(index).copied()
     }
@@ -129,7 +129,7 @@ impl NativeEventFilterChain {
         self.filters.lock().insert(0, Arc::new(Mutex::new(filter)));
     }
 
-    /// Filters native messages (`QAbstractEventDispatcher::filterNativeEvent`).
+    /// Filters native messages (the event dispatcher).
     pub fn filter_native(&self, event_type: &str, msg: &NativeMessage, result: &mut isize) -> bool {
         // Iterate a snapshot: a filter installed during the call applies from the next message.
         let snapshot: Vec<_> = self.filters.lock().clone();

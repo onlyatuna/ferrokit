@@ -496,7 +496,7 @@ fn set_single_shot_true_on_active_timer_fires_once() {
     });
     timer.start();
     timer.set_single_shot(true);
-    // QTimer::timerEvent reads `single` at fire time (qtimer.cpp:330-331).
+    // QTimer::timerEvent reads `single` at fire time.
     assert_eq!(pump_for(&mut el, 300, &count), 1);
     assert!(!timer.is_active());
 }

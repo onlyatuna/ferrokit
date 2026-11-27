@@ -281,7 +281,7 @@ fn is_process_alive(pid: u32) -> bool {
     #[cfg(not(windows))]
     {
         // Qt: QLockFilePrivate::isProcessRunning treats the PID as dead only when
-        // kill(pid, 0) fails with ESRCH (qlockfile_unix.cpp:296-299); EPERM means it exists.
+        // kill(pid, 0) fails with ESRCH; EPERM means it exists.
         let Ok(pid) = libc::pid_t::try_from(pid) else {
             return false;
         };

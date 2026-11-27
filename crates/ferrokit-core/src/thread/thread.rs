@@ -11,7 +11,7 @@ use crate::event_loop::{EventLoop, EventLoopHandle};
 use crate::object::{EventSender, ThreadContext, ThreadId};
 use crate::signal::Signal;
 
-/// Thread priority levels, modeled after Qt's `QThread::Priority`.
+/// Thread priority levels, modeled after Qt's the thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ThreadPriority {
     /// Gets CPU time only while no other thread is ready to run.
@@ -35,10 +35,10 @@ thread_local! {
     static CURRENT_INTERRUPTION_FLAG: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
 }
 
-/// Applies a requested priority on the new thread, matching `QThread::start`.
+/// Applies a requested priority on the new thread, matching the thread.
 ///
-/// Windows maps every [`ThreadPriority`] to `SetThreadPriority` levels (qthread_win.cpp:404-452).
-/// Linux applies only `Idle`, as `SCHED_IDLE` (qthread_unix.cpp:729-767). Other Unix targets
+/// Windows maps every [`ThreadPriority`] to `SetThreadPriority` levels.
+/// Linux applies only `Idle`, as `SCHED_IDLE`. Other Unix targets
 /// ignore the request: Qt scales by `sched_get_priority_min/max`, which is not mirrored here.
 mod os_priority {
     use super::ThreadPriority;
@@ -61,7 +61,7 @@ mod os_priority {
         pub(in super::super) fn resolve(requested: Option<ThreadPriority>) -> Pending {
             match requested {
                 Some(priority) => Some(to_win32(priority)),
-                // `Inherit`: copy the creator's current level (qthread_win.cpp:439-442).
+                // `Inherit`: copy the creator's current level.
                 None => {
                     // SAFETY: `GetCurrentThread()` returns the documented pseudo-handle for the
                     // calling thread, which is valid for the thread it is used on and needs no
@@ -109,7 +109,7 @@ mod os_priority {
         pub(in super::super) type Pending = bool;
 
         // Qt's non-idle priorities scale within SCHED_OTHER's range, which is 0 on Linux, so
-        // they resolve to the default policy and are a no-op here (qthread_unix.cpp:729-767).
+        // they resolve to the default policy and are a no-op here.
         pub(in super::super) fn resolve(requested: Option<ThreadPriority>) -> Pending {
             matches!(requested, Some(ThreadPriority::Idle))
         }
@@ -157,7 +157,7 @@ mod os_priority {
 
 /// Completion state shared between a thread and its handle.
 ///
-/// `finishing` mirrors `QThread::isFinished()` (`threadState >= Finishing`, qthread.cpp:495-499):
+/// `finishing` mirrors the thread (`threadState >= Finishing`):
 /// it becomes true once the body has returned, before `finished` is emitted. `done` is set after
 /// `finished` has been emitted and is what [`Completion::wait`] blocks on.
 struct Completion {
@@ -228,7 +228,7 @@ impl Thread {
         let finished = Signal::new();
         let thread_started = started.clone();
         let thread_finished = finished.clone();
-        // `QThread::start()` defaults to `Inherit`.
+        // the thread defaults to `Inherit`.
         let priority = os_priority::resolve(None);
 
         let handle = StdThreadBuilder::new()
@@ -260,7 +260,7 @@ impl Thread {
                 let _ = tx.send((thread_id, sender.clone(), event_loop.handle()));
 
                 thread_started.emit(&());
-                // `QThread::exec` (qthread.cpp:685-698): an `exit` that came before the loop ran
+                // the thread event loop: an `exit` that came before the loop ran
                 // is returned at once, and the request is spent once the loop has ended.
                 let code = event_loop.exec_after(|| *thread_pending_exit.lock());
                 *thread_pending_exit.lock() = None;
@@ -311,22 +311,22 @@ impl Thread {
         })
     }
 
-    /// Suspends execution for the specified milliseconds, matching `QThread::msleep`.
+    /// Suspends execution for the specified milliseconds, matching the thread.
     pub fn msleep(ms: u64) {
         std::thread::sleep(Duration::from_millis(ms));
     }
 
-    /// Suspends execution for the specified duration, matching `QThread::sleep`.
+    /// Suspends execution for the specified duration, matching the thread.
     pub fn sleep(duration: Duration) {
         std::thread::sleep(duration);
     }
 
-    /// Yields CPU execution to another ready thread, matching `QThread::yieldCurrentThread`.
+    /// Yields CPU execution to another ready thread, matching the thread.
     pub fn yield_now() {
         std::thread::yield_now();
     }
 
-    /// Returns the ideal number of threads for the system (CPU cores), matching `QThread::idealThreadCount`.
+    /// Returns the ideal number of threads for the system (CPU cores), matching the thread.
     pub fn ideal_thread_count() -> usize {
         std::thread::available_parallelism()
             .map(|n| n.get())
@@ -464,7 +464,7 @@ impl<T> ThreadHandle<T> {
         self.thread_id
     }
 
-    /// Requests cooperative interruption of the thread, matching `QThread::requestInterruption`.
+    /// Requests cooperative interruption of the thread, matching the thread.
     pub fn request_interruption(&self) {
         self.interruption_flag.store(true, Ordering::SeqCst);
     }
@@ -474,37 +474,37 @@ impl<T> ThreadHandle<T> {
         self.interruption_flag.load(Ordering::SeqCst)
     }
 
-    /// Whether the thread has finished executing, matching `QThread::isFinished`.
+    /// Whether the thread has finished executing, matching the thread.
     ///
     /// Becomes true once the body returns, without requiring [`ThreadHandle::join`].
     pub fn is_finished(&self) -> bool {
         self.completion.finishing.load(Ordering::SeqCst)
     }
 
-    /// Whether the thread is still executing, matching `QThread::isRunning`.
+    /// Whether the thread is still executing, matching the thread.
     pub fn is_running(&self) -> bool {
         !self.is_finished()
     }
 
-    /// Blocks until the thread finishes or `timeout` elapses, matching `QThread::wait`.
+    /// Blocks until the thread finishes or `timeout` elapses, matching the thread.
     ///
     /// Returns `true` once the thread has finished. Returns before the OS thread has fully
-    /// exited on some platforms (qthread.cpp:955-959); [`ThreadHandle::join`] waits for that.
+    /// exited on some platforms; [`ThreadHandle::join`] waits for that.
     pub fn wait(&self, timeout: Duration) -> bool {
         self.completion.wait(timeout)
     }
 
-    /// Signal emitted on the new thread just before its body runs, matching `QThread::started`.
+    /// Signal emitted on the new thread just before its body runs, matching the thread.
     pub fn started(&self) -> &Signal<()> {
         &self.started
     }
 
-    /// Signal emitted on the thread as it finishes, matching `QThread::finished`.
+    /// Signal emitted on the thread as it finishes, matching the thread.
     pub fn finished(&self) -> &Signal<()> {
         &self.finished
     }
 
-    /// Blocks until the thread finishes and returns its result, matching `QThread::wait`.
+    /// Blocks until the thread finishes and returns its result, matching the thread.
     pub fn join(mut self) -> std::thread::Result<T> {
         match self.join_handle.take() {
             Some(h) => h.join(),
@@ -521,7 +521,7 @@ pub struct EventLoopThreadHandle {
     sender: EventSender,
     loop_handle: EventLoopHandle,
     /// The code of an [`EventLoopThreadHandle::exit`] the thread's loop may not have seen yet
-    /// (`QThread::exited` and `returnCode`, qthread.cpp:779-780).
+    /// (the thread and `returnCode`).
     pending_exit: Arc<Mutex<Option<i32>>>,
     interruption_flag: Arc<AtomicBool>,
     join_handle: Option<JoinHandle<i32>>,
@@ -542,7 +542,7 @@ impl EventLoopThreadHandle {
     }
 
     /// Ends every event loop running on the thread (including nested ones) with `code`, matching
-    /// `QThread::exit`. The code is returned by [`EventLoopThreadHandle::join`].
+    /// thread event loop exit. The code is returned by [`EventLoopThreadHandle::join`].
     ///
     /// The loops are told directly, not through an event posted to the thread, so an event
     /// filter cannot swallow the request. The loop that is delivering events at that moment
@@ -555,9 +555,9 @@ impl EventLoopThreadHandle {
         self.loop_handle.exit(code);
     }
 
-    /// Tells the thread's event loop to quit with code 0, matching `QThread::quit`.
+    /// Tells the thread's event loop to quit with code 0, matching thread event loop quit.
     ///
-    /// Does not request interruption (qthread.cpp:777-778).
+    /// Does not request interruption.
     pub fn quit(&self) {
         self.exit(0);
     }
@@ -572,27 +572,27 @@ impl EventLoopThreadHandle {
         self.interruption_flag.load(Ordering::SeqCst)
     }
 
-    /// Whether the thread has finished executing, matching `QThread::isFinished`.
+    /// Whether the thread has finished executing, matching the thread.
     pub fn is_finished(&self) -> bool {
         self.completion.finishing.load(Ordering::SeqCst)
     }
 
-    /// Whether the thread is still executing, matching `QThread::isRunning`.
+    /// Whether the thread is still executing, matching the thread.
     pub fn is_running(&self) -> bool {
         !self.is_finished()
     }
 
-    /// Blocks until the thread finishes or `timeout` elapses, matching `QThread::wait`.
+    /// Blocks until the thread finishes or `timeout` elapses, matching the thread.
     pub fn wait(&self, timeout: Duration) -> bool {
         self.completion.wait(timeout)
     }
 
-    /// Signal emitted on the thread just before its event loop starts, matching `QThread::started`.
+    /// Signal emitted on the thread just before its event loop starts, matching the thread.
     pub fn started(&self) -> &Signal<()> {
         &self.started
     }
 
-    /// Signal emitted on the thread as its event loop finishes, matching `QThread::finished`.
+    /// Signal emitted on the thread as its event loop finishes, matching the thread.
     pub fn finished(&self) -> &Signal<()> {
         &self.finished
     }
@@ -610,7 +610,7 @@ impl EventLoopThreadHandle {
 
 impl Drop for EventLoopThreadHandle {
     fn drop(&mut self) {
-        // Qt QThread::~QThread (qthread.cpp:465-476): if still running, wait for it or join.
+        // Qt QThread::~QThread: if still running, wait for it or join.
         // If the thread was not manually joined, ask it to quit and wait/join so resources do not leak.
         if let Some(h) = self.join_handle.take() {
             if !self.is_finished() {

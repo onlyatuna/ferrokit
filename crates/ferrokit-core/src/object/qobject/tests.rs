@@ -147,7 +147,7 @@ fn test_set_parent_to_an_unregistered_parent_records_only_the_childs_link() {
     assert!(parent2.children.is_empty());
 }
 
-/// Matches `QObject::deleteLater` (qobject.cpp:2511-2565): the first request posts one
+/// Matches `QObject::deleteLater`: the first request posts one
 /// stamped `DeferredDelete` to the owning thread and later requests are debounced.
 #[test]
 fn test_delete_later() {
@@ -232,7 +232,7 @@ fn test_unsafe_registration_dispatches_on_owner_thread() {
 
 /// A ChildAdded for a borrowed registered parent is posted and delivered after the
 /// borrow ends, not dropped (Qt's setParent_helper sends it through sendEvent,
-/// qobject.cpp:2287-2352).
+/// ).
 #[test]
 fn test_child_added_to_borrowed_parent_is_deferred_not_lost() {
     struct Parent {
@@ -284,7 +284,7 @@ fn test_child_added_to_borrowed_parent_is_deferred_not_lost() {
 }
 
 /// A synchronous send to a borrowed receiver returns `false` and is counted, not
-/// silently dropped. Qt has no borrow check here (qcoreapplication.cpp:1563-1572); this is the
+/// silently dropped. Qt has no borrow check here; this is the
 /// documented Rust deviation.
 #[test]
 fn test_sync_send_to_borrowed_receiver_is_rejected_visibly() {

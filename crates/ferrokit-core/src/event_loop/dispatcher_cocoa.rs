@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! `QCocoaEventDispatcher` (qcocoaeventdispatcher.mm): the GUI event loop's dispatcher on macOS.
+//! `QCocoaEventDispatcher`: the GUI event loop's dispatcher on macOS.
 //!
 //! ferrokit's `EventLoop` sends posted events and timer events itself, around each `process_events`
 //! call (loop.rs), so every call takes Qt's path for a `processEvents` that is not `exec`
-//! (qcocoaeventdispatcher.mm:378-466): make sure `NSApp` has launched, send every queued `NSEvent`
+//! : make sure `NSApp` has launched, send every queued `NSEvent`
 //! through the native event filters and `[NSApp sendEvent:]`, and if nothing was sent and the
 //! caller may wait, wait in `[NSApp nextEventMatchingMask:untilDate:…]` (which runs the main run
 //! loop) until an event arrives or the next ferrokit timer is due (:273-285, :479-487). `wake_up`, from
@@ -105,8 +105,8 @@ use ffi::{CFTypeRef, Id, Sel};
 const NS_EVENT_TYPE_APPLICATION_DEFINED: usize = 15;
 /// `NSEventMaskAny`.
 const NS_EVENT_MASK_ANY: usize = usize::MAX;
-/// `QtCocoaEventSubTypeWakeup` (qcocoahelpers.h:89-92).
-const WAKEUP_SUBTYPE: i16 = i16::MAX;
+/// Application-defined `NSEvent` subtype used to wake the Cocoa event loop.
+const WAKEUP_SUBTYPE: i16 = 0x464B;
 
 /// The classes and selectors the dispatcher sends to, looked up once.
 struct Runtime {
@@ -261,7 +261,7 @@ fn next_event(app: Id, until: Id) -> Id {
     }
 }
 
-/// `cancelWaitForMoreEvents` (qcocoaeventdispatcher.mm:898-906): posts the application-defined
+/// `cancelWaitForMoreEvents`: posts the application-defined
 /// wake-up event that ends a wait in `nextEventMatchingMask:`.
 fn post_wakeup_event() {
     let _pool = AutoreleasePool::new();

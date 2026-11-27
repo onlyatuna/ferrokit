@@ -91,7 +91,7 @@ impl TimerFd {
 
 /// The kernel side of the Linux reactor: one `epoll` set that holds every descriptor of an
 /// enabled socket notifier and an `eventfd` that wakes a blocked `epoll_wait` (what Qt's
-/// `QEventDispatcherUNIX` does with its thread-wakeup eventfd and `select`).
+/// the platform event dispatcher does with its thread-wakeup eventfd and `select`).
 #[cfg(target_os = "linux")]
 mod linux_epoll {
     use super::SocketDescriptor;
@@ -789,7 +789,7 @@ mod tests {
     }
 
     /// Unregistering a stale notifier whose fd was reused does not remove the live notifier
-    /// registered for that fd (Qt `QEventDispatcherUNIX::unregisterSocketNotifier` matches the
+    /// registered for that fd (Qt the platform event dispatcher matches the
     /// notifier itself).
     #[test]
     fn test_unregistering_a_stale_notifier_keeps_the_live_one_for_a_reused_fd() {

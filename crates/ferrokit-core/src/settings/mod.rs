@@ -257,7 +257,7 @@ impl Settings {
         // of them cannot each merge into the same stale snapshot.
         let _guard = SYNC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Serializes it with other processes through `<file>.lock`, as `QSettings` does
-        // (qsettings.cpp:1349-1368). Released when `sync` returns.
+        // . Released when `sync` returns.
         let _file_lock = lock_settings_file(path)?;
 
         let mut merged = HashMap::new();

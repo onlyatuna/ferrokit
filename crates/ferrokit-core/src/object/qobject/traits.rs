@@ -90,7 +90,7 @@ pub trait QObject: std::any::Any {
         type_id: std::any::TypeId,
         visit: &mut dyn FnMut(&dyn std::any::Any),
     ) -> bool {
-        // 1. Direct children first (qt_qFindChild_helper: qobject.cpp:2242-2256)
+        // 1. Direct children first (qt_qFindChild_helper)
         for child in &self.object_data().owned_children {
             let hit = child.with(|c| {
                 let name_matches = name.is_empty() || c.object_name() == Some(name);
@@ -139,7 +139,7 @@ pub trait QObject: std::any::Any {
 
     /// Queries the ObjectId of a child object matching type ID and optional name.
     fn find_child_id(&self, name: &str, type_id: std::any::TypeId) -> Option<ObjectId> {
-        // 1. Direct children first (qt_qFindChild_helper: qobject.cpp:2242-2256)
+        // 1. Direct children first (qt_qFindChild_helper)
         for child in &self.object_data().owned_children {
             let hit = child.with(|c| {
                 let name_matches = name.is_empty() || c.object_name() == Some(name);
@@ -181,7 +181,7 @@ pub trait QObject: std::any::Any {
         type_id: std::any::TypeId,
         visit: &mut dyn FnMut(&mut dyn std::any::Any),
     ) -> bool {
-        // 1. Direct children first (qt_qFindChild_helper: qobject.cpp:2242-2256)
+        // 1. Direct children first (qt_qFindChild_helper)
         for child in self.object_data_mut().into_owned_children_mut() {
             let hit = child.with_mut(|c| {
                 let name_matches = name.is_empty() || c.object_name() == Some(name);
@@ -313,7 +313,7 @@ pub trait QObject: std::any::Any {
 
     /// Sets property value, prioritizing static MetaProperty then fallback to dynamic property (`QObject::setProperty`).
     ///
-    /// Qt semantic (`qobject.cpp:4541-4583`):
+    /// Qt semantic:
     /// - Static declared property: returns `true` if writable and write succeeds, `false` if read-only or write fails.
     /// - Dynamic property (not declared in meta-object): returns `false` (both on add/change and removal).
     ///   A `DynamicPropertyChange` event is dispatched if the dynamic property was added, modified, or removed.
@@ -321,7 +321,7 @@ pub trait QObject: std::any::Any {
         default_set_property(self, name, value)
     }
 
-    /// Dynamically invokes a method by signature or name (`QMetaObject::invokeMethod`).
+    /// Dynamically invokes a method by signature or name (meta-object dispatch).
     fn invoke_method(
         &mut self,
         member: &str,
@@ -335,8 +335,8 @@ pub trait QObject: std::any::Any {
         }
     }
 
-    /// Invokes a method with an explicit connection type (`QMetaObject::invokeMethod(obj, name,
-    /// Qt::ConnectionType, ...)`, qmetaobject.cpp `invokeMethodImpl`).
+    /// Invokes a method with an explicit connection type (`the meta-object(obj, name,
+    /// Qt::ConnectionType,...)`, `invokeMethodImpl`).
     ///
     /// `Direct` invokes in the caller. `Auto` is `Direct` when the object lives on the calling thread
     /// (or is unregistered), otherwise it is queued. `Queued` and `BlockingQueued` are delegated to
@@ -617,7 +617,7 @@ impl<T: ?Sized> PartialEq for QPointer<T> {
 
 impl<T: ?Sized> Eq for QPointer<T> {}
 
-/// Sends an event to a receiver object synchronously (`QCoreApplication::sendEvent`).
+/// Sends an event to a receiver object synchronously (synchronous event delivery).
 pub fn send_event(receiver: ObjectId, event: &mut Event) -> bool {
     crate::event_loop::notify_helper(receiver, event)
 }
