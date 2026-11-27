@@ -152,7 +152,7 @@ pub trait Layout: 'static {
     fn margins(&self) -> Margins;
 
     /// The margin an owner gives a layout with no explicit margin (default owner layout margin lookup,
-    /// ): 11 for a window, 9 for a child widget, 0 for a nested layout. Ignored
+    /// ): 11 for a window for a child widget for a nested layout. Ignored
     /// once `set_margins` has set an explicit margin. Layouts without margins ignore it.
     fn set_default_margin(&mut self, _margin: i32) {}
     /// Marks this layout as nested in another layout: it has no owner widget, so its margin is 0
@@ -836,7 +836,7 @@ fn box_item_hfw(item: &LayoutItem, width: i32) -> i32 {
 }
 
 /// Gives a nested layout the rectangle its holder was placed at. The nested items are children of
-/// the holder, so the child layout works in holder coordinates: the holder's size at origin (0,0),
+/// the holder, so the child layout works in holder coordinates: the holder's size at origin (0),
 /// the same rectangle `Widget::update_layout` gives it.
 fn set_nested_layout_geometry(holder: &WidgetRef) {
     let w = holder.borrow();
@@ -1044,7 +1044,7 @@ impl BoxLayout {
                 .min(max.max(min as i64).min(i32::MAX as i64) as i32)
         };
         // `maxSize = QSize(maxw, maxh).expandedTo(minSize)`, then the margins, bounded to
-        // `LAYOUT_SIZE_MAX` (612-621).
+        // `LAYOUT_SIZE_MAX`.
         let max_bounded = |max: i64, min: i32, extra: i32| {
             (max.max(min as i64) + extra as i64).min(LAYOUT_SIZE_MAX as i64) as i32
         };
@@ -1400,7 +1400,7 @@ impl GridLayout {
         last.pos + last.size - cols[item.column].pos
     }
 
-    /// grid layout internals and `recalcHFW` (816-877):
+    /// grid layout internals and `recalcHFW`:
     /// the row chain once `cols` holds the column widths. Rows start at their minimum; each item
     /// raises the rows it covers to its height at its cell width.
     fn hfw_rows(&self, base_rows: &[LayoutStruct], cols: &[LayoutStruct]) -> Vec<LayoutStruct> {

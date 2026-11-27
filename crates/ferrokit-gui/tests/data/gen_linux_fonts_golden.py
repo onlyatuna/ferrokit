@@ -155,9 +155,9 @@ def main():
         # Every line is measured with an empty font engine cache, as in a fresh process. Qt's emoji
         # item pass takes a listed family whose emoji engine an earlier request of the same QFontDef
         # left in the QFontCache before it asks for a color font (`findMatchingFallback`,
-        # qfontdatabase.cpp:2797), so without a color font the missing-glyph engine of an emoji
+        # fallback), so without a color font the missing-glyph engine of an emoji
         # otherwise depends on the lines measured before. Adding and removing an application emoji
-        # family clears the cache (`QFontCache::clear()`, qfontdatabase.cpp:2283, 2300) and nothing
+        # family clears the font cache and nothing
         # else that lasts.
         QFontDatabase.addApplicationEmojiFontFamily("gen_linux_fonts_golden")
         QFontDatabase.removeApplicationEmojiFontFamily("gen_linux_fonts_golden")

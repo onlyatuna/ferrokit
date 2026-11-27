@@ -591,7 +591,7 @@ impl<T> Signal<T> {
     /// connected (`connect`, `connect_object`, queued or not), and an emission started on an owner
     /// that is already gone calls none. In Qt `~QObject` disconnects every receiver and zeroes the
     /// connection counter before it deletes the children, and `doActivate` leaves its loop
-    /// (4431). An owner counts as gone from the first step of its
+    /// . An owner counts as gone from the first step of its
     /// destruction. A nested emission ends only the emissions whose owner was destroyed; the
     /// others go on. A signal without an owner has nothing to lose and always runs to the end.
     ///

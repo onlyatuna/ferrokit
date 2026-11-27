@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Nested layouts. Qt adds a layout as a child layout (`QBoxLayout::addLayout`), so its
-//! `maximumSize` caps the outer item (qboxlayout.cpp:253-357, 612-621).
+//! `maximumSize` caps the outer item (612-621).
 
 use ferrokit_core::event::Event;
 use ferrokit_core::object::{ObjectData, ObjectId, QObject};
@@ -108,9 +108,9 @@ fn lay_out(layout: Box<dyn Layout>, width: i32, height: i32) -> WidgetRef {
     container
 }
 
-// Qt: QBoxLayout::setupGeom vertical branch sums child maxima (qboxlayout.cpp:320) and takes the
+// Qt: QBoxLayout::setupGeom vertical branch sums child maxima and takes the
 // cross-axis max (:324-325); maximumSize is that max bounded by QLAYOUTSIZE_MAX (:612-621).
-// Fixed children have max = hint (qSmartMaxSize, qlayoutitem.cpp:637-644).
+// Fixed children have max = hint (qSmartMaxSize).
 #[test]
 fn nested_vertical_box_max_is_sum_of_heights_and_max_of_widths() {
     let mut inner = BoxLayout::vertical();

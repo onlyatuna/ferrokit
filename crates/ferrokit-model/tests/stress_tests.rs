@@ -101,7 +101,7 @@ mod native_stress {
         reg.assert_invariants();
     }
 
-    /// Thread-owned slots (`src/local_slots.rs`) on real threads, for ThreadSanitizer: owners
+    /// Thread-owned slots on real threads, for ThreadSanitizer: owners
     /// install slots with nested captures, publish handles on a shared board, call and drop each
     /// other's handles, drain their queues and exit while foreign drops are still in flight.
     #[test]

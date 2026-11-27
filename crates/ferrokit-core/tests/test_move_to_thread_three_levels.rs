@@ -2,7 +2,7 @@
 //! Verify move_to_thread updates ObjectData.thread_id on all descendant levels (three levels).
 //!
 //! Qt reference:
-//! - `corelib/kernel/qobject.cpp:1706-1859` `moveToThread`:
+//! - `moveToThread`:
 //!   Recursively updates thread data / thread affinity for root and all descendants.
 
 use std::ptr::NonNull;

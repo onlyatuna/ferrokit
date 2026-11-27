@@ -27,10 +27,10 @@ thread_local! {
 #[test]
 fn test_self_deletion_during_event_dispatch() {
     // QObject::deleteLater posts a DeferredDelete; the widget leaves its parent when the event
-    // loop delivers it, not when the dispatch that requested it returns (qobject.cpp:2563-2564).
+    // loop delivers it, not when the dispatch that requested it returns.
     // A click arrives inside the loop, so the dispatch runs from a posted callback inside
-    // `EventLoop::exec` (loop level 1, qeventloop.cpp:161). Outside a loop Qt does not deliver a
-    // DeferredDelete (qcoreapplication.cpp:1881-1885).
+    // `EventLoop::exec` (loop level 1). Outside a loop Qt does not deliver a
+    // DeferredDelete.
     let event_loop = ferrokit_core::event_loop::EventLoop::new();
 
     let parent: WidgetRef = Rc::new(RefCell::new(Box::new(Frame::new())));

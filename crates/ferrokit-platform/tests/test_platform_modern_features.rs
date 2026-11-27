@@ -288,7 +288,7 @@ fn test_cross_platform_backdrop_and_click_through() {
     {
         use ferrokit_platform::window_cocoa::CocoaNativeWindow;
         // Qt: native windows belong to the thread that constructed the application
-        // (qcoreapplication.cpp:475, 531-537), so the application comes first on this thread.
+        // (531-537), so the application comes first on this thread.
         let _app = ferrokit_gui::application::GuiApplication::new(vec![
             "test_platform_modern_features".to_string(),
         ]);
@@ -578,8 +578,8 @@ fn test_platform_window_move_resize_opacity_minsize() {
         assert_eq!(cocoa_win.minimum_size(), (200, 150));
         cocoa_win.set_opacity(0.75);
         assert!((cocoa_win.opacity() - 0.75).abs() < 1e-4);
-        // No mouse button is pressed (Qt: qcocoawindow.mm:366-370) and Cocoa has no system
-        // resize (qplatformwindow.cpp:495-498).
+        // No mouse button is pressed (Qt) and Cocoa has no system
+        // resize.
         assert!(!cocoa_win.start_system_move());
         assert!(!cocoa_win.start_system_resize(WindowEdges::RIGHT));
     }

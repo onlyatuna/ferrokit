@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! `QWidget::setMask` / `clearMask` / `mask` (`qwidget.cpp:13027-13129`) and top-level windows
+//! `QWidget::setMask` / `clearMask` / `mask` and top-level windows
 //! that have a parent (`QWidget(parent, Qt::Tool | ...)`, `QWindow::setTransientParent`).
 //!
 //! The windows are a fake platform that records what the widget layer hands the platform window:

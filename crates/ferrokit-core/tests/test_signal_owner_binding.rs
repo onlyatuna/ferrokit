@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Signal emitter binding: block state and sender tracking.
 //!
-//! Qt reference (`qtbase/src/corelib/kernel/qobject.cpp`):
-//! - `QObject::doActivate` reads the emitter's own `blockSig` flag (qobject.cpp:4273) and does not
+//! Qt reference (`reference):
+//! - `QObject::doActivate` reads the emitter's own `blockSig` flag and does not
 //!   consult the global object registry, so an unregistered emitter can still block its signals.
 //! - `QObject::blockSignals` only toggles that per-object flag.
 //! - A signal emitted with no sender leaves `QObject::sender()` as `nullptr` for the slot, even when

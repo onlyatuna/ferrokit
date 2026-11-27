@@ -685,7 +685,7 @@ fn adopt_entries(entries: Vec<MovedTimer>) {
 }
 
 /// Registers a timer and arms its delivery source (`QObject::startTimer` → `registerTimer`,
-/// ). Zero interval posts `ZeroTimer` (360-363); otherwise
+/// ). Zero interval posts `ZeroTimer`; otherwise
 /// `SetTimer` on Windows. Shared by `Timer::start` and `start_object_timer`.
 fn arm_in_context(
     ctx: &ThreadTimerContext,

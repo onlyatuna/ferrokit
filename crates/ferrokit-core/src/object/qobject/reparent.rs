@@ -1137,7 +1137,7 @@ pub fn reparent_owned_object(
 /// the `Box` is
 /// handed back and nothing is attached: the child gets no parent, the parent's children stay as
 /// they were, and no event is sent. For `DifferentThread` Qt's constructor ends the same way
-/// (994-997) but prints a warning; this prints nothing.
+/// but prints a warning; this prints nothing.
 ///
 /// On success the parent holds the child in an [`OwnedObject`] and the child is registered with
 /// that owner's pointer, so moving the child between parents leaves the registry's pointer valid.

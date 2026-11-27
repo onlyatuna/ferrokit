@@ -3,8 +3,8 @@
 //! does not.
 //!
 //! `pseudoClass(QStyle::State)` sets `PseudoClass_Enabled` with `State_Enabled` and
-//! `PseudoClass_Disabled` without it, never both (qstylesheetstyle.cpp:1756-1765; `"enabled"` is
-//! parsed at qcssparser.cpp:304).
+//! `PseudoClass_Disabled` without it, never both (`"enabled"` is
+//! parsed at).
 //! Reference: PySide6 6.11.2, sheet `S { color: blue } S:enabled { color: green }
 //! S:disabled { color: red }` for `QLabel`, `QFrame#F`, `QPushButton` and `QProgressBar`: green
 //! while enabled, red when disabled, green again when enabled; without the `:disabled` rule a

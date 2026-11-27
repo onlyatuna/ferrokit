@@ -2,8 +2,8 @@
 //! Widget events are delivered through the object filters (`QObject::eventFilter`) before
 //! the receiver's `event()`, as `QCoreApplicationPrivate::sendThroughObjectEventFilters` does.
 //! Covered here: `FontChange` (Button::set_font), `StyleChange` (a parent's `setStyleSheet` reaching
-//! a child, qwidget.cpp:2724-2725), `EnabledChange` (qwidget.cpp:3474-3475), and `Paint`
-//! (`QWidget::event(Paint)` runs `paintEvent`, qwidget.cpp:9186-9190; a consuming filter skips it).
+//! a child), `EnabledChange`, and `Paint`
+//! (`QWidget::event(Paint)` runs `paintEvent`,; a consuming filter skips it).
 
 use ferrokit_core::event::{Event, EventKind};
 use ferrokit_core::object::{ObjectData, ObjectId, OwnedObject, QObject, register_owned_qobject};

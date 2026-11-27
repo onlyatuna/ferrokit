@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! What a `QScrollArea` paints: its content widget once per paint, inside the viewport, with the
 //! scroll bars on top.
-//! Qt: `QScrollArea::setWidget` reparents the content to the viewport (qscrollarea.cpp:242-243);
+//! Qt: `QScrollArea::setWidget` reparents the content to the viewport;
 //! the viewport is created first and the scroll bar containers after it, as siblings
-//! (qabstractscrollarea.cpp:254, 258, 266), so the bars stack above it. A child paints once,
-//! clipped to its parent (`QWidgetPrivate::clipRect`, qwidget.cpp:1904-1922).
+//! (258, 266), so the bars stack above it. A child paints once,
+//! clipped to its parent (`QWidgetPrivate::clipRect`).
 #![cfg(windows)]
 
 use std::cell::{Cell, RefCell};

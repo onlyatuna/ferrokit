@@ -103,7 +103,7 @@ fn test_qobject_dynamic_properties_and_events() {
 
     assert!(obj.property("custom_color").is_none());
 
-    // Setting an undeclared property creates it, emits DynamicPropertyChange, and returns false (qobject.cpp:4574)
+    // Setting an undeclared property creates it, emits DynamicPropertyChange, and returns false
     let changed = obj.set_property("custom_color", Variant::Color(255, 128, 0, 255));
     assert!(
         !changed,
@@ -137,7 +137,7 @@ fn test_qobject_dynamic_properties_and_events() {
     );
     assert_eq!(*count.lock().unwrap(), 2);
 
-    // Setting Variant::Invalid on existing dynamic property removes it, emits DynamicPropertyChange, and returns false (qobject.cpp:4554-4574)
+    // Setting Variant::Invalid on existing dynamic property removes it, emits DynamicPropertyChange, and returns false
     let r_remove = obj.set_property("custom_color", Variant::Invalid);
     assert!(
         !r_remove,

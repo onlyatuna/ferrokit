@@ -3,12 +3,12 @@
 //!
 //! Qt delivers a mouse event to the widget under the cursor and, while the event comes back
 //! ignored (or the widget does not handle it), to each parent in turn, up to the top-level
-//! window (`QApplication::notify`, qapplication.cpp:2689-2762). A disabled widget does not handle
-//! mouse events at all (`QWidget::event`, qwidget.cpp:8978-8998), so they pass to its parent. A
+//! window (`QApplication::notify`). A disabled widget does not handle
+//! mouse events at all (`QWidget::event`), so they pass to its parent. A
 //! window close request becomes a `QCloseEvent` the window may ignore; if it is accepted the
-//! window is hidden (`QWidgetPrivate::handleClose`, qwidget.cpp:8604-8640). `Show`/`Hide` are
+//! window is hidden (`QWidgetPrivate::handleClose`). `Show`/`Hide` are
 //! delivered children-first on show and self-first on hide (`show_helper`/`hide_helper`,
-//! qwidget.cpp:8074-8130, 8238-8260).
+//! 8238-8260).
 
 use ferrokit_core::event::{Event, EventKind, MouseButtons};
 use ferrokit_core::object::{ObjectData, ObjectId, QObject};
@@ -301,7 +301,7 @@ fn press_on_child_of_disabled_parent_is_not_delivered_to_the_child() {
 
 #[test]
 fn double_click_a_widget_does_not_handle_is_delivered_to_it_as_a_press() {
-    // `QWidget::mouseDoubleClickEvent` calls `mousePressEvent` (qwidget.cpp:9636), so a button
+    // `QWidget::mouseDoubleClickEvent` calls `mousePressEvent`, so a button
     // that only knows presses still sees the second click of a double click.
     let log: Log = Default::default();
     let root = widget(Probe::new(
@@ -672,7 +672,7 @@ mod window_level {
     }
 
     /// `QWidget::setVisible` on a child of a shown window sends its own Show/Hide
-    /// (`qwidget.cpp:8401-8443`, `show_helper`/`hide_helper` at `:8074-8289`).
+    /// (`show_helper`/`hide_helper` at `:8074-8289`).
     #[test]
     fn child_set_visible_sends_hide_and_show_when_parent_is_shown() {
         let log: Log = Default::default();
@@ -698,7 +698,7 @@ mod window_level {
     }
 
     /// A child under a window that is not shown gets no Show/Hide when toggled
-    /// (`qwidget.cpp:8439`: only for a window, or a child whose parent is visible).
+    /// (only for a window, or a child whose parent is visible).
     #[test]
     fn child_set_visible_under_hidden_window_sends_nothing() {
         let log: Log = Default::default();
@@ -772,10 +772,10 @@ mod window_level {
         );
     }
 
-    /// `QWidgetWindow` sends the context menu after a right-button release (qwidgetwindow.cpp:639-640)
+    /// `QWidgetWindow` sends the context menu after a right-button release
     /// as a `ContextMenu` event to the widget under the cursor, which propagates like a mouse event.
     /// A widget that accepts it takes the menu, so the window's context-menu callback must not run
-    /// (qwidgetwindow.cpp:696-702 has no release-acceptance gate in Qt 6).
+    /// ( has no release-acceptance gate in Qt 6).
     #[test]
     fn context_menu_callback_skipped_when_widget_accepts_the_menu_event() {
         let log: Log = Default::default();

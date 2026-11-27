@@ -4,7 +4,7 @@
 //! registered with `QFontDatabase.addApplicationFontFromData`).
 //!
 //! Qt 6 derives the line metrics of every engine from the font's tables
-//! (`QFontEngine::initializeHeightMetrics`, qfontengine.cpp:419-448): the `hhea` ascender,
+//! (`QFontEngine::initializeHeightMetrics`): the `hhea` ascender,
 //! descender and line gap, replaced by the OS/2 typographic values (with their line gap) when
 //! `fsSelection` has `USE_TYPO_METRICS`, and by the OS/2 Windows ascent and descent (leading 0)
 //! otherwise. `QFontMetricsF` reports those 26.6 values; `QFontMetrics` rounds each separately
@@ -12,7 +12,7 @@
 //! engine has no sub-pixel positions (DirectWrite at a device pixel ratio of 1) the engine itself
 //! rounds ascent and descent and the leading takes up the rounding of the line (13 + 4 - 16 = -1).
 //! The average character width of Qt's Windows engines is the design advance of `x`
-//! (`QFontEngine::averageCharWidth`, qfontengine.cpp:246-251): the oracle font's `xAvgCharWidth`
+//! (`QFontEngine::averageCharWidth`): the oracle font's `xAvgCharWidth`
 //! (523) is not what Qt reports there.
 //!
 //! The ratio is process-wide state, so every test takes the lock and sets what it needs.
@@ -383,7 +383,7 @@ fn the_average_char_width_of_the_windows_engines_is_the_advance_of_x() {
 }
 
 /// Qt's FreeType and CoreText engines scale the OS/2 `xAvgCharWidth` instead
-/// (qfontengine_ft.cpp:2167-2178, qfontengine_coretext.mm:240-251): 523 * 16 / 1024 = 8.171875.
+/// : 523 * 16 / 1024 = 8.171875.
 /// [inferred] from the Qt source; checked against Qt's FreeType engine only on Windows
 /// (`QT_QPA_PLATFORM=windows:fontengine=freetype`, system fonts).
 #[cfg(not(windows))]

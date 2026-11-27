@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Port of `reference (`q_geom_calc`, `q_max_exp_calc`,
-//! `smart_min_size`, `smart_max_size`) and of the sizing rules of a widget layout item /
-//! a spacer layout item in, as of Qt 6.11.2.
+//! 1D constraint-distribution layout solver (`q_geom_calc`, `q_max_exp_calc`, `smart_min_size`,
+//! `smart_max_size`) and widget/spacer layout item sizing rules.
 //!
-//! Layouts (`BoxLayout`, `GridLayout`) feed [`LayoutStruct`] chains to [`q_geom_calc`], exactly as
-//! `BoxLayout` and `GridLayout` do, so the spare pixels, the spacing around empty items and the
-//! rounding all come out the same.
+//! Layouts (`BoxLayout`, `GridLayout`) feed [`LayoutStruct`] chains to [`q_geom_calc`], ensuring
+//! spare pixels, spacing around empty items, and integer rounding remain consistent.
 
 use crate::layout::Alignment;
 use crate::size_policy::Policy;
@@ -26,7 +24,7 @@ pub const WINDOW_LAYOUT_MARGIN: i32 = 11;
 pub const CHILD_LAYOUT_MARGIN: i32 = 9;
 
 /// default owner layout margin lookup for an owner without an explicit margin: the
-/// owner style's margin, 11 for a window (no parent) and 9 for a child. These are unscaled: Qt's
+/// owner style's margin for a window (no parent) and 9 for a child. These are unscaled: Qt's
 /// DPI scaling multiplies by `dpi / 96`, and the logical DPI
 /// is 96 on the Windows setup probed (PySide6 6.11.2, logicalDotsPerInch 96.0), so the scale is 1.
 pub fn owner_layout_margin(has_parent: bool) -> i32 {
@@ -611,7 +609,7 @@ pub fn item_set_geometry(widget: &dyn Widget, rect: Rect, align: Alignment) {
 
 /// The size limits `item_set_geometry` applies: the item's `smart_max_size`
 /// (`QWidgetItem::maximumSize`), the widget's own minimum and maximum size, which
-/// the widget bounds the result by (7300-7305), and, for an aligned
+/// the widget bounds the result by, and, for an aligned
 /// item, the size it is cut to on an aligned axis (`QWidgetItem::setGeometry`,
 /// ).
 ///
@@ -666,7 +664,7 @@ pub fn item_set_geometry_with(
 ) {
     if item_is_empty(widget) {
         // Qt `QWidgetItem::setGeometry` returns early for an empty item.
-        // Empty / hidden non-retained items keep their geometry rather than being set to (0,0,0,0).
+        // Empty / hidden non-retained items keep their geometry rather than being set to (0).
         return;
     }
     let max = limits.item_max;

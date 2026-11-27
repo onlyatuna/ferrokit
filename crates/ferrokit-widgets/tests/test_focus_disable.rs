@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Disabling the focus widget takes the focus away from it.
 //!
-//! `QWidgetPrivate::setEnabled_helper` (qwidget.cpp:3442-3446): when the widget being disabled is
+//! `QWidgetPrivate::setEnabled_helper`: when the widget being disabled is
 //! its window's focus widget, `focusNextChild()` moves the focus on (Tab reason), and when the
 //! parent is disabled or no widget is next, `clearFocus()` drops it (Other reason). All of it
 //! happens before `setEnabled` returns.

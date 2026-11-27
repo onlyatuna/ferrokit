@@ -3,12 +3,12 @@
 //! grid layouts.
 //!
 //! - A hidden widget whose size policy retains its size keeps its layout slot and its spacing
-//!   (`QWidgetItem::isEmpty`, qlayoutitem.cpp:691-693; `QBoxLayout` spacing, qboxlayout.cpp:258-296).
+//!   (`QWidgetItem::isEmpty`,; `QBoxLayout` spacing).
 //! - Under `RightToLeft` a box or grid mirrors its cells: `QBoxLayout::setGeometry`
-//!   (qboxlayout.cpp:788-790) and `QGridLayoutPrivate::distribute` (qgridlayout.cpp:921-922).
+//!   and `QGridLayoutPrivate::distribute`.
 //! - Explicit horizontal alignment flips unless `AlignAbsolute` is set
-//!   (`QStyle::visualAlignment`, qguiapplication_p.h:176-186; `QWidgetItem::setGeometry`,
-//!   qlayoutitem.cpp:451-455). An item with no horizontal flag gets `AlignLeft` first, so it also
+//!   (`QStyle::visualAlignment`,; `QWidgetItem::setGeometry`,
+//!   ). An item with no horizontal flag gets `AlignLeft` first, so it also
 //!   flips to the right under RTL.
 //!
 //! Every reference rectangle was measured with PySide6 6.11.2 offscreen.
@@ -255,7 +255,7 @@ fn hidden_non_retained_item_preserves_geometry() {
         Alignment::NONE,
         ferrokit_widgets::layout_engine::ItemLimits::of(&**b.borrow(), Alignment::NONE),
     );
-    // Qt `QWidgetItem::setGeometry` returns early for an empty item (qlayoutitem.cpp:410).
+    // Qt `QWidgetItem::setGeometry` returns early for an empty item.
     assert_eq!(
         rect_of(&b),
         (64, 35, 50, 30),
@@ -353,7 +353,7 @@ fn rtl_unaligned_fixed_item_sits_at_the_right_edge_ltr_at_the_left() {
 #[test]
 fn grid_unaligned_fixed_item_is_centred_by_column_distribution_in_both_directions() {
     // The item's column cannot grow past its maximum (60), so `qGeomCalc` centres the column
-    // (qlayoutengine.cpp:286-287). The item itself stays at its cell's left.
+    // . The item itself stays at its cell's left.
     for direction in [LayoutDirection::LeftToRight, LayoutDirection::RightToLeft] {
         let _dir = with_direction(direction);
         let item = probe_with(60, 20, QSizePolicy::fixed());

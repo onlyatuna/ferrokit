@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Longhand margin properties (margin-top, margin-right, margin-bottom, margin-left).
 //!
-//! Qt reference: `qcssparser.cpp:138-141` parses `margin-top`, `margin-right`, `margin-bottom`, `margin-left`.
-//! `qstylesheetstyle.cpp` applies individual margin sides to the box model.
+//! Qt reference: parses `margin-top`, `margin-right`, `margin-bottom`, `margin-left`.
+//! applies individual margin sides to the box model.
 
 use ferrokit_widgets::style::stylesheet::{QStyleSheetStyle, WidgetStyleContext};
 

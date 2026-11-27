@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Input events reach the object filters and the application filters before the widget, in Qt's
 //! order (`QCoreApplicationPrivate::sendThroughApplicationEventFilters`, then
-//! `sendThroughObjectEventFilters`, last installed first; qcoreapplication.cpp:1237-1268).
+//! `sendThroughObjectEventFilters`, last installed first).
 //! Covered: Wheel, ContextMenu, KeyPress, MouseMove, MouseButtonPress, Enter/Leave, a consuming
 //! filter, and `WA_UnderMouse` being set between the application and the object filters
-//! (qapplication.cpp:3246-3254).
 
 use ferrokit_core::application::CoreApplication;
 use ferrokit_core::event::{ContextMenuReason, Event, EventKind, MouseButtons};
@@ -189,7 +188,7 @@ fn filters_see_context_menu_press_and_tracking_move() {
 #[test]
 fn a_buttonless_move_over_a_widget_without_tracking_still_reaches_the_application_filters() {
     // `QApplication::notify` throws such a move away but sends it through the application event
-    // filters first (qapplication.cpp:2751-2756); the widget and its own filters never see it.
+    // filters first; the widget and its own filters never see it.
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let log: Log = Arc::default();
     let (root, child) = tree();

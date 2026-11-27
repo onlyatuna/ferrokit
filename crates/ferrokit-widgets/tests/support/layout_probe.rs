@@ -364,7 +364,7 @@ fn make_widget(spec: &WidgetSpec, holders: &[usize], out: &mut Vec<Leaf>) -> Wid
         .set_size_policy(QSizePolicy::new(spec.policy.0, spec.policy.1));
     probe.base.set_visible(!spec.hidden);
     // The Qt side creates a 100x30 widget and then calls `setMinimumSize` and `setMaximumSize`, which
-    // grow and shrink it to the bounds (qwidget.cpp:4013-4020, 4073-4080). A page that no layout
+    // grow and shrink it to the bounds (4073-4080). A page that no layout
     // places (a non-current `QStackedLayout` page) keeps that geometry.
     let width = 100.max(spec.min.width).min(spec.max.width);
     let height = 30.max(spec.min.height).min(spec.max.height);

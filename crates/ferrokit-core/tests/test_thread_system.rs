@@ -165,7 +165,7 @@ fn test_future_promise_and_watcher() {
     let watcher = future.watcher();
 
     // Qt: resultReadyAt is queued to the watcher's event loop, so the slot runs only
-    // after process_events (qfuturewatcher.cpp:521-537).
+    // after process_events.
     let received_result = Arc::new(StdMutex::new(String::new()));
     let rec_res = Arc::clone(&received_result);
     watcher.result_ready().connect(move |val| {

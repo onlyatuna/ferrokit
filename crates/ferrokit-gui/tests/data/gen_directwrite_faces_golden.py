@@ -7,7 +7,7 @@ collection, at device pixel ratios 1 and 1.25.
 Needs Windows and PySide6 (measured with 6.12.0) and the synthetic font tests/data/oracle_text.ttf.
 Run it with `python gen_directwrite_faces_golden.py > directwrite_faces_golden.txt`.
 
-Qt (qwindowsdirectwritefontdatabase.cpp `fontEngine`) creates the face of a request with
+DirectWrite creates the face of a request with
 `DWRITE_FONT_SIMULATIONS_BOLD` when the requested weight is at least DemiBold and the face is
 lighter, and with `DWRITE_FONT_SIMULATIONS_OBLIQUE` when the request is italic and the face is
 upright; the font family of a request is looked up among all faces of all font files, so the

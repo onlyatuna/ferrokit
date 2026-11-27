@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! A child attached by a `ThreadChange` handler during `moveToThread` moves with its new parent.
 //!
-//! Qt `QObjectPrivate::setThreadData_helper` (qobject.cpp:1706-1859) sends `ThreadChange` to the
+//! Qt `QObjectPrivate::setThreadData_helper` sends `ThreadChange` to the
 //! object and then walks its children as they are at that point, so a child added by a handler is
 //! moved too. A child left on the old thread under a moved parent would break the rule that a
 //! parent and its children share one thread.

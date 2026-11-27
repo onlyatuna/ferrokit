@@ -2,7 +2,7 @@
 //! The HarfBuzz face of a font engine is built once and reused for every string it shapes.
 //!
 //! Qt keeps the `hb_face_t` on the `QFontEngine` (`hb_qt_face_get_for_engine`,
-//! gui/text/qharfbuzzng.cpp:668-676) and the `hb_font_t` likewise (709), so shaping a
+//! ) and the `hb_font_t` likewise (709), so shaping a
 //! string does not parse the font's GSUB/GPOS tables again.
 
 use ferrokit_gui::text::font::Font;

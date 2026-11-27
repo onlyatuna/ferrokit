@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! `QWindowsCursor::size` (qwindowscursor.cpp:675-692) and `screenCursorSize` (:162-179).
+//! `QWindowsCursor::size` and `screenCursorSize` (162-179).
 //! Expected values are worked out by hand from that source with `SM_CXCURSOR` = 32 (the Windows
 //! default), i.e. `baseSize` = 16, not by running the port.
 
@@ -7,7 +7,7 @@ use ferrokit_platform::cursor::{GenericCursor, PlatformCursor, windows_cursor_si
 
 #[test]
 fn without_the_registry_value_the_cursor_is_half_the_base_size() {
-    // qwindowscursor.cpp:681-682: `QSize(baseSize / 2, baseSize / 2)` = 8.
+    // : `QSize(baseSize / 2, baseSize / 2)` = 8.
     assert_eq!(windows_cursor_size(32, None, 1.0, 1.0), 8);
 }
 
@@ -35,7 +35,7 @@ fn a_screen_with_another_dpi_rescales_the_primary_cursor_width() {
 
 #[test]
 fn the_platform_default_is_sixteen_by_sixteen() {
-    // QPlatformCursor::size (qplatformcursor.cpp:100-103).
+    // QPlatformCursor::size.
     assert_eq!(GenericCursor::new().size(1.0, 1.0), (16, 16));
     assert_eq!(GenericCursor::new().size(2.0, 1.0), (16, 16));
 }

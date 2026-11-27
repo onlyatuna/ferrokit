@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! `QCoreApplication::exit` called from a worker thread must end the application thread's `exec`
 //! with the requested return code. Qt exits every loop in the application thread's `QThreadData`
-//! (qcoreapplication.cpp:1534-1541). The worker is spawned from a timer inside `exec`, so the loop
+//! . The worker is spawned from a timer inside `exec`, so the loop
 //! is running before the cross-thread exit is issued.
 
 use std::sync::Arc;

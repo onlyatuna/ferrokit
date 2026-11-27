@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Native size limits from logical ones, independent of the platform: `toNativeSizeConstrained`
-//! (qwindowswindow.cpp:1055-1067) and the way `QWindowsGeometryHint::applyToMinMaxInfo`
+//! and the way `QWindowsGeometryHint::applyToMinMaxInfo`
 //! (:1238-1262) chooses which `MINMAXINFO` fields to write. Pure functions: this is not a test of
 //! any window system.
 
@@ -113,7 +113,7 @@ fn a_maximum_on_one_axis_leaves_the_other_axis_alone() {
 
 #[test]
 fn a_maximum_below_the_minimum_is_raised_to_it_per_axis() {
-    // qwindowswindow.cpp:1223-1224: `qMax(maximumSize, minimumSize)`, in native pixels.
+    // : `qMax(maximumSize, minimumSize)`, in native pixels.
     let t = limits((300, 200), (200, 500)).native_track(1.0);
     assert_eq!(t.min, (Some(300), Some(200)));
     assert_eq!(
@@ -153,7 +153,7 @@ fn a_fixed_size_is_the_same_native_size_as_minimum_and_maximum() {
 
 #[test]
 fn fixed_axes_need_a_minimum_that_is_not_empty_and_equal_to_the_maximum() {
-    // `QWindowsWindow::handleNonClientHitTest` (qwindowswindow.cpp:3500-3507).
+    // `QWindowsWindow::handleNonClientHitTest`.
     assert_eq!(limits((400, 300), (400, 300)).fixed_axes(), (true, true));
     assert_eq!(limits((400, 300), (400, 900)).fixed_axes(), (true, false));
     assert_eq!(limits((400, 300), (900, 300)).fixed_axes(), (false, true));
@@ -177,7 +177,7 @@ fn a_stored_limit_is_kept_between_zero_and_no_maximum() {
 
 #[test]
 fn a_requested_size_is_bounded_per_axis_and_the_minimum_wins() {
-    // `QWidgetPrivate::setGeometry_sys` (qwidget.cpp:7299-7305): `qMin` with the maximum, then
+    // `QWidgetPrivate::setGeometry_sys`: `qMin` with the maximum, then
     // `qMax` with the minimum.
     let l = limits((100, 80), (300, 200));
     assert_eq!(l.bound_size(50, 30), (100, 80));

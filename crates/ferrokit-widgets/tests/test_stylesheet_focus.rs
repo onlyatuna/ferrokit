@@ -2,7 +2,7 @@
 //! The widget with keyboard focus matches QSS `:focus` rules.
 //!
 //! `pseudoClass(QStyle::State)` maps `State_HasFocus` to `PseudoClass_Focus`
-//! (qstylesheetstyle.cpp:1772-1773; `"focus"` is parsed at qcssparser.cpp:309).
+//! (`"focus"` is parsed at).
 //! Reference: PySide6 6.11.2, two `QPushButton`s and a `StrongFocus` `QFrame#F` under one parent
 //! sheet `QPushButton:focus { background: red } QFrame#F:focus { background: blue }`: only the
 //! focused widget paints its `:focus` background, focus moving from `a` to `b` moves it along,

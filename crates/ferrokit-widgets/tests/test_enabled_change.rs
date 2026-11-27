@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! `QEvent::EnabledChange`.
 //!
-//! `QWidgetPrivate::setEnabled_helper` (qwidget.cpp:3429-3476) sends `EnabledChange` to each widget
+//! `QWidgetPrivate::setEnabled_helper` sends `EnabledChange` to each widget
 //! whose effective state changes, after its children (and after the focus move when it was the
 //! focus widget); nothing when the state does not change.
 //! Reference: PySide6 6.11.2, `root` holding `c` (with buttons `x`, `a`) and button `b`:
@@ -293,7 +293,7 @@ fn container_tree(
 }
 
 /// `setEnabled_helper` picks the next focus widget before it disables the children
-/// (qwidget.cpp:3439-3445), so a focusable child takes the focus, then loses it when it is
+/// so a focusable child takes the focus, then loses it when it is
 /// disabled under its disabled parent. Reference: PySide6 6.11.2, `container.setEnabled(False)`
 /// -> `container:Out`, `child:In`, `child:Out`, `child:EC:off`, `container:EC:off`; focus widget
 /// `None` afterwards.

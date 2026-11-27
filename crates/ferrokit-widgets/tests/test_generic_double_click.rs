@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Headless generic double-click tests (`qguiapplication.cpp:2401-2426`). The fake platform
+//! Headless generic double-click tests. The fake platform
 //! hands each window's `WindowSystemEventHandler` to a thread-local slot; the tests feed events
 //! directly. No real HWND, no mouse moves, no real_windows.
 
@@ -302,7 +302,7 @@ fn double_press_cycle_is_double_single_double() {
     release(h, 60, 40, MouseButton::Left);
     press(h, 60, 40, MouseButton::Left, 1100); // double
     release(h, 60, 40, MouseButton::Left);
-    // Qt updates the press record on every press (qguiapplication.cpp:2424-2426), so 1200 would
+    // Qt updates the press record on every press, so 1200 would
     // pair with the double at 1100. A 500 ms gap is what breaks the chain.
     press(h, 60, 40, MouseButton::Left, 1600); // single: delta 500 from 1100
     release(h, 60, 40, MouseButton::Left);

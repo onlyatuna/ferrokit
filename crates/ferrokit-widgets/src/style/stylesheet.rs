@@ -237,7 +237,7 @@ fn selector_matches(selector: &QCssBasicSelector, ctx: &WidgetStyleContext) -> b
 
 /// Whether a widget of Qt class `type_name` matches the type selector `class`, as
 /// `QStyleSheetStyleSelector::nodeNameEquals` decides it. A
-/// tip (`QTipLabel`) matches `the tooltip controller` only (1585-1586). Any other widget matches its own class,
+/// tip (`QTipLabel`) matches `the tooltip controller` only. Any other widget matches its own class,
 /// every class it inherits from, a widget and `QObject`. The base-class pairs are the ones ferrokit
 /// models; a class ferrokit does not know matches its own name and the base classes above.
 fn node_name_equals(type_name: &str, class: &str) -> bool {

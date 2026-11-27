@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! A top-level `Window`'s size limits: what `set_maximum_size`, `set_fixed_size` and the root
 //! layout's size constraint do to the window's minimum, maximum and geometry
-//! (`QWidget::setMaximumSize`/`setFixedSize`, qwidget.cpp:4065-4170; `QLayout::activate`,
-//! qlayout.cpp:996-1129).
+//! (`QWidget::setMaximumSize`/`setFixedSize`,; `QLayout::activate`,
+//! ).
 //!
 //! The limits are read back from the window, which keeps them in its platform window; what the
 //! window system does with them is covered by `ferrokit-platform/tests/test_window_size_limits.rs`.
@@ -77,7 +77,6 @@ fn a_window_keeps_its_own_maximum_when_the_layout_has_none() {
 #[test]
 fn the_layouts_maximum_replaces_the_one_the_window_was_given() {
     // `QLayout::activate` calls `setMaximumSize(totalMaximumSize())` whatever it was
-    // (qlayout.cpp:1096-1122).
     let (root, layout_max) = root_with_bounded_child(SizeConstraint::SetMaximumSize);
     let mut win = window(Rect::new(100, 100, 200, 50));
     win.set_maximum_size(1000, 1000);
@@ -124,7 +123,7 @@ fn a_fixed_size_sets_both_limits_and_resizes() {
 
 #[test]
 fn a_fixed_size_that_changes_nothing_does_not_resize() {
-    // qwidget.cpp:4160-4161: when neither limit changed the call returns before `resize`.
+    // : when neither limit changed the call returns before `resize`.
     let resizes = Rc::new(std::cell::Cell::new(0));
     let mut win = window(Rect::new(10, 20, 400, 300));
     win.set_fixed_size(200, 150);
@@ -139,7 +138,7 @@ fn a_fixed_size_that_changes_nothing_does_not_resize() {
 
 #[test]
 fn a_fixed_size_of_no_maximum_unlocks_the_window_without_resizing() {
-    // qwidget.cpp:3947-3950 reads a minimum of `QWIDGETSIZE_MAX` as 0, and :4168 does not resize
+    // reads a minimum of `QWIDGETSIZE_MAX` as 0, and:4168 does not resize
     // for `QWIDGETSIZE_MAX` on both axes: the Qt idiom for removing a fixed size.
     let mut win = window(Rect::new(10, 20, 400, 300));
     win.set_fixed_size(200, 150);
@@ -155,7 +154,7 @@ fn a_fixed_size_of_no_maximum_unlocks_the_window_without_resizing() {
 
 #[test]
 fn a_minimum_of_no_maximum_is_no_minimum() {
-    // `QWidget::setMinimumSize` reads `QWIDGETSIZE_MAX` as 0 per axis (qwidget.cpp:3947-3950).
+    // `QWidget::setMinimumSize` reads `QWIDGETSIZE_MAX` as 0 per axis.
     let mut win = window(Rect::new(0, 0, 100, 100));
     win.set_minimum_size(WINDOW_SIZE_MAX, 5);
     assert_eq!(win.minimum_size(), (0, 5));
@@ -165,7 +164,7 @@ fn a_minimum_of_no_maximum_is_no_minimum() {
 //
 // `WM_GETMINMAXINFO` only limits what the user drags: Windows does not apply it to a programmatic
 // resize of a `WS_POPUP` window (a layered popup's style). `QWidget` brings every requested geometry inside
-// the limits itself (`setGeometry_sys`, qwidget.cpp:7299-7305: maximum first, then minimum, so the
+// the limits itself (`setGeometry_sys`,: maximum first, then minimum, so the
 // minimum wins), and so does `Window::set_geometry`/`set_geometry_silent`.
 
 fn geometry_of(w: &Window) -> (i32, i32, i32, i32) {
@@ -224,7 +223,7 @@ fn only_a_minimum_only_a_maximum_or_neither() {
 
 #[test]
 fn a_maximum_below_the_minimum_gives_the_minimum_on_that_axis() {
-    // qwidget.cpp:7301-7304: `qMin` with the maximum, then `qMax` with the minimum.
+    // : `qMin` with the maximum, then `qMax` with the minimum.
     let mut win = window(Rect::new(0, 0, 200, 150));
     win.set_minimum_size(200, 100);
     win.set_maximum_size(150, 300);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Button::minimum_size_hint matches size_hint.
 //!
-//! Qt reference: `QPushButton::minimumSizeHint` returns `sizeHint()` (`qpushbutton.cpp:398-401`).
+//! Qt reference: `QPushButton::minimumSizeHint` returns `sizeHint`.
 //! PySide6: `QPushButton("Test").minimumSizeHint() == QPushButton("Test").sizeHint()`.
 
 use ferrokit_widgets::button::Button;

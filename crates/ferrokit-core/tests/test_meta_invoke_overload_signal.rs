@@ -45,7 +45,7 @@ fn derived_signal_invoke_by_name_emits_like_emit() {
 
 #[test]
 fn derived_signal_invoke_checks_argument_type_before_emitting() {
-    // Qt: invokeImpl checks argument types before calling the target (qmetaobject.cpp:2774-2809).
+    // Qt: invokeImpl checks argument types before calling the target.
     let mut probe = InvokeProbe::new();
     let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let s = Arc::clone(&seen);
@@ -111,8 +111,8 @@ static OVERLOAD_META: MetaObject = MetaObject::new(
 #[test]
 fn name_only_invoke_picks_first_declared_compatible_overload() {
     // Qt: invokeMethodImpl scans methods in declaration order and runs the first whose parameter
-    // types match; a FormalParameterMismatch moves on to the next candidate (qmetaobject.cpp:1693-1708,
-    // qmetaobject_p.h:98-102).
+    // types match; a FormalParameterMismatch moves on to the next candidate (
+    // ).
     OVERLOAD_RAN.store(0, Ordering::SeqCst);
     let mut target = 0u8;
     let r = OVERLOAD_META.invoke_method(&mut target, "tag", &[Variant::I64(3)]);
@@ -126,7 +126,7 @@ fn name_only_invoke_picks_first_declared_compatible_overload() {
 
 #[test]
 fn name_only_invoke_without_compatible_overload_is_method_not_found() {
-    // Qt: no method matches the argument types, so invokeMethod fails (qmetaobject.cpp:651-687).
+    // Qt: no method matches the argument types, so invokeMethod fails.
     OVERLOAD_RAN.store(0, Ordering::SeqCst);
     let mut target = 0u8;
     let r = OVERLOAD_META.invoke_method(&mut target, "tag", &[Variant::String("x".into())]);
@@ -140,7 +140,7 @@ fn name_only_invoke_without_compatible_overload_is_method_not_found() {
 
 #[test]
 fn signature_invoke_rejects_string_for_int_parameter() {
-    // Qt: invokeImpl checks each argument type before calling the slot (qmetaobject.cpp:2774-2809).
+    // Qt: invokeImpl checks each argument type before calling the slot.
     OVERLOAD_RAN.store(0, Ordering::SeqCst);
     let mut target = 0u8;
     let r = OVERLOAD_META.invoke_method(&mut target, "tag(int)", &[Variant::String("5".into())]);

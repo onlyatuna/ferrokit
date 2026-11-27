@@ -336,7 +336,7 @@ fn blocking_queued_emit_returns_when_the_receiver_thread_has_ended() {
 }
 
 /// Emitter and receiver on one thread: Qt reports a dead lock for this combination
-/// (`QMetaObject::activate`, qobject.cpp). Here the slot runs in place and the emit returns, which
+/// (`QMetaObject::activate`). Here the slot runs in place and the emit returns, which
 /// is what this crate has always done; the call is neither queued nor waited for.
 #[test]
 fn blocking_queued_emit_on_the_receiver_thread_runs_the_slot_in_place() {

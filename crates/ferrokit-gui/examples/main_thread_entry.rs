@@ -13,18 +13,18 @@
 //! - `core`: the same with `CoreApplication::new`, which must create `UnixEventDispatcher`.
 //! - `runloop`: a `CFRunLoopTimer` on the main run loop's default mode must fire while `exec` runs
 //!   (the Cocoa event loop runs). Qt waits in `[NSApp nextEventMatchingMask:…]` or `[NSApp run]`,
-//!   both of which run the main run loop (qcocoaeventdispatcher.mm:273-285, 375, 428-431).
+//!   both of which run the main run loop (375, 428-431).
 //! - `nsevent`: two `NSEventTypeApplicationDefined` events posted with `[NSApp postEvent:atStart:]`
 //!   must reach the native event filter as `"NSEvent"`, and the one the filter does not consume must
-//!   reach `[NSApp sendEvent:]` (qcocoaeventdispatcher.mm:428-445). The events are injected by this
+//!   reach `[NSApp sendEvent:]`. The events are injected by this
 //!   program, not real user input.
 //! - `wake_chain`: an event posted by a handler of an event that another thread posted must run on
-//!   the next turn. Qt's `wakeUp` always signals its run loop source (qcocoaeventdispatcher.mm:525-531).
+//!   the next turn. Qt's `wakeUp` always signals its run loop source.
 //! - `exit_from_thread`: `exit` called from another thread must end `exec` with no ferrokit timer running.
 //!
-//! Qt: `QCoreApplication` gets `QEventDispatcherUNIX` on Darwin (qcoreapplication.cpp:518-523,
-//! qthread_unix.cpp:316-325); `QGuiApplication` takes its dispatcher from the platform plugin
-//! (qguiapplication.cpp:1629-1643), `QCocoaEventDispatcher` on macOS (qcocoaintegration.mm:353-356).
+//! Qt: `QCoreApplication` gets `QEventDispatcherUNIX` on Darwin (
+//! ); `QGuiApplication` takes its dispatcher from the platform plugin
+//! `QCocoaEventDispatcher` on macOS.
 //!
 //! Usage: cargo run -p ferrokit-gui --example main_thread_entry   (macOS only)
 
@@ -239,7 +239,7 @@ mod macos {
     }
 
     /// Replacement for `-[NSApplication sendEvent:]` that records the check's events and then
-    /// calls the original implementation (Qt redirects the same method, qcocoaapplication.mm:117-141).
+    /// calls the original implementation (Qt redirects the same method).
     extern "C" fn recording_send_event(this: Id, cmd: appkit::Sel, event: Id) {
         if let Some(data) = check_event_data(event) {
             SENT.lock().push(data);

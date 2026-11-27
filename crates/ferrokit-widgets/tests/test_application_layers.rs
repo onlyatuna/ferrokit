@@ -116,15 +116,15 @@ fn test_core_application_exec_quit_and_about_to_quit() {
         count_clone.fetch_add(1, Ordering::SeqCst);
     });
 
-    // Qt: exit() before exec() emits aboutToQuit (qcoreapplication.cpp:1532-1535)
-    // but does not end the next exec (qeventloop.cpp:157-158).
+    // Qt: exit before exec emits aboutToQuit
+    // but does not end the next exec.
     CoreApplication::exit(42);
     assert_eq!(about_to_quit_count.load(Ordering::SeqCst), 1);
 
     ferrokit_core::timer::Timer::single_shot(10, || CoreApplication::exit(42));
     let code = app.exec();
     assert_eq!(code, 42);
-    // aboutToQuit flag reset on exec entry (qcoreapplication.cpp:1468), emitted again in exit().
+    // aboutToQuit flag reset on exec entry, emitted again in exit.
     assert_eq!(about_to_quit_count.load(Ordering::SeqCst), 2);
 
     // Process events test - ensure non-blocking call succeeds without panic
@@ -144,7 +144,7 @@ fn about_to_quit_emitted_inside_exit_before_exec_returns() {
         count_clone.fetch_add(1, Ordering::SeqCst);
     });
 
-    // Qt emits aboutToQuit from QCoreApplication::exit itself (qcoreapplication.cpp:1532-1535),
+    // Qt emits aboutToQuit from QCoreApplication::exit itself,
     // not after exec() returns.
     let seen_inside_exit = Arc::new(AtomicI32::new(-1));
     let seen_clone = Arc::clone(&seen_inside_exit);
@@ -172,7 +172,7 @@ fn quit_ignored_before_exec() {
         count_clone.fetch_add(1, Ordering::SeqCst);
     });
 
-    // QCoreApplication::quit() is a no-op outside exec (qcoreapplication.cpp:2143-2144).
+    // QCoreApplication::quit is a no-op outside exec.
     CoreApplication::quit();
     assert_eq!(count.load(Ordering::SeqCst), 0);
 
@@ -407,7 +407,7 @@ fn test_widget_application_window_registry_and_focus() {
 // -----------------------------------------------------------------------------
 
 /// Dropping a window is not a close: Qt's `~QWindow` never emits `lastWindowClosed` or quits
-/// (`qwindow.cpp:175-208`). Only the close path can end the application.
+/// . Only the close path can end the application.
 /// Not on macOS: creating a window inside `exec` on a test-harness thread traps with SIGTRAP on the
 /// macOS runner (CI run 38174902623; presumably AppKit's main-thread requirement, not verified).
 #[cfg(not(target_os = "macos"))]
@@ -433,8 +433,8 @@ mod close_quit {
     use super::*;
     use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_CLOSE};
 
-    /// Qt default: closing the last visible window quits (`qwindow.cpp:2722-2735`,
-    /// `qguiapplication.cpp:3933-3943`).
+    /// Qt default: closing the last visible window quits (
+    /// ).
     #[test]
     fn closing_last_visible_window_quits_when_quit_on_last_window_closed_is_default() {
         let _guard = TEST_MUTEX.lock().unwrap();
@@ -487,7 +487,7 @@ mod close_quit {
     }
 
     /// Qt: `QApplication::event(Quit)` leaves the application running when a top-level window
-    /// ignores its close (`qapplication.cpp:1675-1697`), so exec does not return.
+    /// ignores its close, so exec does not return.
     #[test]
     fn quit_refused_by_window_close_keeps_exec_running() {
         let _guard = TEST_MUTEX.lock().unwrap();
@@ -514,7 +514,7 @@ mod close_quit {
     }
 
     /// Qt: `QApplication::event(Quit)` calls `closeAllWindows()` before quitting
-    /// (`qapplication.cpp:1675-1697`, `:1635-1639`), so an accepted close hides each open window.
+    /// (`:1635-1639`), so an accepted close hides each open window.
     #[test]
     fn quit_closes_open_windows_before_exiting() {
         let _guard = TEST_MUTEX.lock().unwrap();
@@ -536,7 +536,7 @@ mod close_quit {
     }
 
     /// Qt: a posted Quit is `QApplication::event(Quit)`, which closes the windows and is vetoed
-    /// by a refusing one (qapplication.cpp:1675-1697).
+    /// by a refusing one.
     #[test]
     fn posted_quit_is_vetoed_by_refusing_window() {
         let _guard = TEST_MUTEX.lock().unwrap();
@@ -566,7 +566,7 @@ mod close_quit {
     }
 
     /// Qt: `QCoreApplication::quit` from a worker thread posts Quit to the application
-    /// (qcoreapplication.cpp:2156-2157), which runs the window veto on the application thread.
+    /// which runs the window veto on the application thread.
     #[test]
     fn quit_from_worker_thread_is_vetoed_by_refusing_window() {
         let _guard = TEST_MUTEX.lock().unwrap();

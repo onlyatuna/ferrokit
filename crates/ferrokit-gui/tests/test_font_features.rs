@@ -2,7 +2,7 @@
 //! `QFont::Tag` / `QFont::setFeature` and what the features do to shaping.
 //!
 //! The tag and feature-map tests mirror `QFont::Tag` and `QFont::setFeature`/`unsetFeature`/
-//! `featureValue`/`isFeatureSet`/`featureTags`/`clearFeatures` (qfont.cpp, Qt 6.11.2). The
+//! `featureValue`/`isFeatureSet`/`featureTags`/`clearFeatures` (Qt 6.11.2). The
 //! shaping tests need an installed Arial and run on Windows only: the numbers they were checked
 //! against were measured with `QFontMetricsF::horizontalAdvance` in PySide6 6.11.2 (Arial 20 px,
 //! DPR 1.25, i.e. the DirectWrite engine): "1111" 39.984375 by default and 44.4375 with `tnum` 1

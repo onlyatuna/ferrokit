@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! `QObject::killTimer` kills only a timer the object started (Qt `QObject::killTimer`,
-//! qobject.cpp: "Timers cannot be stopped from another thread" and an id that is not the
+//! : "Timers cannot be stopped from another thread" and an id that is not the
 //! object's is refused with a warning).
 
 use ferrokit_core::event_loop::EventLoop;

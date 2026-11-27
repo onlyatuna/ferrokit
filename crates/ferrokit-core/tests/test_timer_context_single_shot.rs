@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! `Timer::single_shot_with_context` (Qt `QTimer::singleShot(msec, context, functor)`,
-//! qsingleshottimer.cpp:46-59): runs once on the context's thread, never early, follows the
+//! ): runs once on the context's thread, never early, follows the
 //! context across `move_to_thread`, and is dropped unrun when the context is destroyed first.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

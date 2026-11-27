@@ -1212,7 +1212,7 @@ impl Menu {
     fn popup_window_origin(&self, pos: Point, size: Size) -> (Point, Rect) {
         use ferrokit_platform::platform;
 
-        // `popupGeometry(QGuiApplication::screenAt(p))` (292-308): the work area of
+        // `popupGeometry(QGuiApplication::screenAt(p))`: the work area of
         // the screen whose geometry contains the point; without one, the primary screen's.
         let s_geom = platform()
             .screens()
@@ -1810,7 +1810,7 @@ impl Menu {
     }
 
     /// `handle_key` for a key already run through `normalize_key`; recursion must not normalize
-    /// again (the apostrophe, 0x27, would become VK_RIGHT).
+    /// again (the apostrophex27, would become VK_RIGHT).
     fn handle_normalized_key(&mut self, key: u32, modifiers: u32) -> MenuOutcome {
         if let Some((_, submenu)) = self.open_submenu.clone() {
             let outcome = submenu.borrow_mut().handle_normalized_key(key, modifiers);
@@ -2577,7 +2577,7 @@ fn paint_common_check_mark(painter: &mut Painter, rect: Rect, color: Color, anti
 
 /// `QMacStyle` `PE_IndicatorArrowRight`: a stroked chevron (round caps and joins, anti-aliased) of
 /// half-size `min(w, h) / 2`, the "down" chevron rotated by -90 degrees about the square's centre
-/// shifted by (1, 2) px. Qt strokes it with the palette's text colour.
+/// shifted by (1) px. Qt strokes it with the palette's text colour.
 fn paint_macos_arrow(painter: &mut Painter, rect: Rect, color: Color) {
     painter.set_render_hint(RenderHint::Antialiasing, true);
     let half = 0.5 * rect.width.min(rect.height) as f32;
@@ -2627,7 +2627,7 @@ fn paint_submenu_arrow(painter: &mut Painter, item: Rect, color: Color) {
 fn paint_fluent_chevron(painter: &mut Painter, rect: Rect, color: Color) {
     const CHEVRON_RIGHT_MED: &str = "\u{E974}";
     // `assetFont` is a `QFont(QStringList)` with no size, so it takes the application font's
-    // 9 pt = 12 px (measured: the glyph is 8 px tall, 5 px wide).
+    // 9 pt = 12 px (measured: the glyph is 8 px tall px wide).
     let font = Font::new("Segoe Fluent Icons, Segoe MDL2 Assets", 12.0);
     let metrics = FontMetrics::from_font(&font);
     let advance = metrics.horizontal_advance_exact(CHEVRON_RIGHT_MED, &font);
@@ -2704,7 +2704,7 @@ mod tests {
 
     /// Red channel of Qt's own check mark (PySide6 6.11.2, a card-style sheet: text
     /// `#e2e8f0` over `#161920`), rows y = 4..=11 and columns x = 3..=15 of a 16 px indicator box
-    /// whose top-left is (1, 0).
+    /// whose top-left is (1).
     const QT_CHECK: [[u8; 13]; 8] = [
         [22, 22, 22, 22, 22, 22, 22, 22, 73, 73, 22, 22, 22],
         [22, 22, 22, 22, 22, 22, 22, 73, 150, 124, 22, 22, 22],
@@ -2737,7 +2737,7 @@ mod tests {
         }
     }
 
-    /// Plain-pixel check mark (`windowsvista`: indicator box 13 px at (1, 7); PySide6 6.11.2):
+    /// Plain-pixel check mark (`windowsvista`: indicator box 13 px at (1); PySide6 6.11.2):
     /// the 226-valued pixels per row, rows 11..=17.
     const QT_PLAIN_CHECK: [(u32, &[u32]); 7] = [
         (11, &[11]),
@@ -2768,7 +2768,7 @@ mod tests {
         }
     }
 
-    /// `windowsvista` (QCommonStyle) submenu arrow in a 13 px square whose top-left is (8, 7):
+    /// `windowsvista` (QCommonStyle) submenu arrow in a 13 px square whose top-left is (8):
     /// per row, how many 226-valued pixels start at x = 12 (PySide6 6.11.2, rows 8..=18).
     const QT_COMMON_ARROW_WIDTHS: [u32; 11] = [1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1];
 

@@ -3,13 +3,13 @@
 //! properties must reach the repaint and layout machinery without any manual `update_layout()`
 //! or `render_and_present()`.
 //!
-//! Qt (`QWidget::event`, qwidget.cpp:9502-9510): `FontChange` / `StyleChange` run
-//! a repaint, a geometry update and a layout invalidation. `updateGeometry` (qwidget.cpp:10571-10587)
+//! Qt (`QWidget::event`): `FontChange` / `StyleChange` run
+//! a repaint, a geometry update and a layout invalidation. `updateGeometry`
 //! invalidates the parent layout, which posts a `LayoutRequest`. `QWidget::setSizePolicy` calls
 //! `updateGeometry`. Unpolishing then polishing the style (what a PySide application does after
 //! `setProperty`) ends in a `StyleChange`; `setProperty` alone restyles nothing in Qt, because
-//! `QWidget` and `QApplication` ignore `DynamicPropertyChange` (qwidget.cpp:9449,
-//! qapplication.cpp:2594).
+//! `QWidget` and `QApplication` ignore `DynamicPropertyChange` (
+//! ).
 
 use ferrokit_widgets::button::Button;
 use ferrokit_widgets::frame::Frame;
@@ -104,7 +104,7 @@ fn changing_the_size_policy_requests_a_parent_layout_and_an_unchanged_one_does_n
 }
 
 /// `QWidget::updateGeometry` on a font, text or alignment change invalidates the parent
-/// layout (`FontChange` runs `updateGeometry`, qwidget.cpp:9502; `QLabel::setAlignment` and
+/// layout (`FontChange` runs `updateGeometry`,; `QLabel::setAlignment` and
 /// `QPushButton::setText` both call `updateGeometry`). Each setter must queue a parent layout request.
 #[test]
 fn label_and_button_text_font_and_alignment_setters_request_a_parent_layout() {
@@ -154,7 +154,7 @@ fn label_and_button_text_font_and_alignment_setters_request_a_parent_layout() {
 }
 
 /// `QLabel::setText` and `QPushButton::setText` return early when the text is unchanged
-/// (qlabel.cpp:244-245, qabstractbutton.cpp:496-497): no `updateGeometry`, no repaint.
+/// : no `updateGeometry`, no repaint.
 #[test]
 fn label_and_button_set_text_with_unchanged_text_requests_nothing() {
     use ferrokit_widgets::command::WidgetCommandQueue;
@@ -248,7 +248,7 @@ fn set_visible_on_every_widget_type_requests_a_parent_layout_only_when_it_change
 }
 
 /// `QWidgetPrivate::update` returns for a widget that is not visible, which includes one whose
-/// parent is hidden (qwidget.cpp:11367-11368): nothing is marked for repaint. Every widget type
+/// parent is hidden: nothing is marked for repaint. Every widget type
 /// is checked under a hidden parent, and once the parent is shown again `update` repaints.
 #[test]
 fn update_under_a_hidden_parent_marks_nothing_until_the_parent_is_shown() {
@@ -284,7 +284,7 @@ fn update_under_a_hidden_parent_marks_nothing_until_the_parent_is_shown() {
 }
 
 /// `hide_sys` invalidates the area the widget leaves before it stops counting as visible
-/// (qwidget.cpp:8312-8319), so its parent repaints there.
+/// so its parent repaints there.
 #[test]
 fn hiding_a_widget_repaints_the_area_it_leaves() {
     use std::cell::RefCell;
@@ -524,7 +524,7 @@ mod pumped {
     }
 
     /// A size-hint change two levels down reaches the root layout. Qt's
-    /// `QLayout::activate` ends with `mw->updateGeometry()` (qlayout.cpp:1131), so after the
+    /// `QLayout::activate` ends with `mw->updateGeometry`, so after the
     /// wrapper's layout runs, the wrapper's own parent layout is invalidated in turn.
     #[test]
     fn a_label_text_change_inside_a_fixed_wrapper_resizes_the_wrapper_and_moves_the_sibling() {
@@ -563,7 +563,7 @@ mod pumped {
     }
 
     /// `QWidget::setVisible` on a child runs `QLayout::invalidate` on the parent
-    /// (qwidget.cpp:8465-8468), and a hidden `QWidgetItem` is empty (qlayoutitem.cpp:691-693).
+    /// and a hidden `QWidgetItem` is empty.
     #[test]
     fn hide_and_show_relayout_the_parent_after_one_pump_without_a_manual_call() {
         let mut fx = label_pair();
@@ -609,7 +609,7 @@ mod pumped {
         assert_eq!(left_of_second(&fx), hint + fx.spacing);
     }
 
-    /// Qt `QLayout::widgetEvent` (qlayout.cpp:520-535): a Resize re-lays out the widget's own
+    /// Qt `QLayout::widgetEvent`: a Resize re-lays out the widget's own
     /// layout. `inner` owns a layout and is resized by a layout-less parent (`first`, a plain
     /// `EmptyWidget` with no layout), so nothing else queues `inner`'s layout pass.
     #[test]

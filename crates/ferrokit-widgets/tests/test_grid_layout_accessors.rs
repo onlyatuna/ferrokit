@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use ferrokit_widgets::*;
 
-// Qt: rowStretch/columnStretch/columnMinimumWidth/rowMinimumHeight (qgridlayout.cpp:1506, 1517,
+// Qt: rowStretch/columnStretch/columnMinimumWidth/rowMinimumHeight (1517,
 // 1589, 1566) read back the values set by setRowStretch/setColumnStretch/setColumnMinimumWidth/
-// setRowMinimumHeight (qgridlayout.cpp:1494, 1540, 1577, 1554).
+// setRowMinimumHeight (1540, 1577, 1554).
 #[test]
 fn grid_stretch_and_minimum_read_back_what_was_set() {
     let mut grid = GridLayout::new();
@@ -18,7 +18,7 @@ fn grid_stretch_and_minimum_read_back_what_was_set() {
 }
 
 // Unset entries read 0 (QGridLayoutPrivate expands with zero-initialised entries; see
-// qgridlayout.cpp:88-101 and the setters at :90-99).
+// and the setters at:90-99).
 #[test]
 fn grid_unset_stretch_and_minimum_read_zero() {
     let grid = GridLayout::new();
@@ -28,7 +28,7 @@ fn grid_unset_stretch_and_minimum_read_zero() {
     assert_eq!(grid.row_minimum_height(0), 0);
 }
 
-// Qt: horizontalSpacing()/verticalSpacing() (qgridlayout.cpp:1093-1101, 1121-1129).
+// Qt: horizontalSpacing/verticalSpacing (1121-1129).
 #[test]
 fn grid_per_axis_spacing_reads_back() {
     let mut grid = GridLayout::new();

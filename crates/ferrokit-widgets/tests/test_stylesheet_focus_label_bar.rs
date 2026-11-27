@@ -4,7 +4,6 @@
 //! no-op `set_has_focus`; `ProgressBar` already stored the flag through `leaf_widget_common!`.
 //!
 //! `pseudoClass(QStyle::State)` maps `State_HasFocus` to `PseudoClass_Focus`
-//! (qstylesheetstyle.cpp:1772-1773).
 //! Reference: PySide6 6.11.2, a `QLabel` and a `QProgressBar` under one parent sheet
 //! `QLabel { background: green } QLabel:focus { background: red } QProgressBar { background:
 //! green } QProgressBar:focus { background: blue }`: the label is red while focused, the bar blue

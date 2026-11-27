@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! A popup menu's loop is a nested event loop: `QMenu::exec` runs a `QEventLoop`
-//! (qmenu.cpp:2691-2697), so events posted while the menu is open — an application's hotkey and theme
+//! so events posted while the menu is open — an application's hotkey and theme
 //! `run_on_main_thread` calls, repaint requests — are delivered before `exec` returns. An
 //! application can open its menu from `Timer::single_shot(0)`, i.e. from inside the posted-event pump.
 #![cfg(windows)]

@@ -2,7 +2,7 @@
 //! `letter-spacing` in a `Label`'s size hint (a card title style).
 //!
 //! Qt stores the spacing as `QFixed::fromReal(0.4)` = 25/64 px, truncated to 26.6 fixed point
-//! (`qfont.cpp` `setLetterSpacing`, `qfixed_p.h`), and adds it to every glyph advance
+//! ( `setLetterSpacing`), and adds it to every glyph advance
 //! (`QTextEngine::shapeText`). Adding 0.4 exactly makes a 28-character title a pixel wider at DPR 1.0
 //! (184 instead of 183). Expected values are PySide6 6.11.2 measurements on Windows (DirectWrite)
 //! at DPR 1.25 and DPR 1.0.

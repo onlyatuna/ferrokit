@@ -159,7 +159,7 @@ fn grid_with_one_fixed_leaf(alignment: Option<Alignment>) -> WidgetRef {
 #[test]
 fn grid_layout_alignment_unbounds_maximum_on_aligned_axis() {
     // PySide: unaligned maximumSize (40,20); setAlignment(AlignHCenter) (524287,20);
-    // setAlignment(AlignVCenter) (40,524287). qgridlayout.cpp:1216
+    // setAlignment(AlignVCenter) (40,524287).
     assert_eq!(maximum_of(&grid_with_one_fixed_leaf(None)), (40, 20));
     assert_eq!(
         maximum_of(&grid_with_one_fixed_leaf(Some(Alignment::H_CENTER))),
@@ -317,7 +317,7 @@ fn grid_remove_widget_takes_the_widget_out_and_reports_it() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Spacing defaults: a parentless grid reports -1 (qSmartSpacing, qlayoutengine.cpp:390-401).
+// Spacing defaults: a parentless grid reports -1 (qSmartSpacing).
 // ---------------------------------------------------------------------------------------------
 
 #[test]
@@ -342,7 +342,7 @@ fn parentless_grid_spacing_is_minus_one_and_follows_the_axes() {
 #[test]
 fn grid_height_for_width_follows_its_height_for_width_child() {
     // Probe child with heightForWidth(w) = 2w: grid.hasHeightForWidth() true, heightForWidth(40) = 80.
-    // qgridlayout.cpp:358-372; PySide QLabel(wordWrap) in a grid also reports hasHeightForWidth true.
+    // PySide QLabel(wordWrap) in a grid also reports hasHeightForWidth true.
     let mut grid = GridLayout::new();
     grid.set_margins(Margins::new(0, 0, 0, 0));
     grid.add_widget(widget_with(40, 20, Policy::Preferred, true), 0, 0);
@@ -356,7 +356,7 @@ fn grid_minimum_height_for_width_uses_row_minimum_size() {
     // Row 1: HFW widget with heightForWidth(w) = 2 * w (at w=40, h=80)
     // Total heightForWidth(40) = 50 + 80 = 130
     // Total minimumHeightForWidth(40) = 20 + 80 = 100
-    // qgridlayout.cpp:374-382; expected values measured with PySide6
+    // expected values measured with PySide6
     let mut grid = GridLayout::new();
     grid.set_margins(Margins::new(0, 0, 0, 0));
     grid.set_horizontal_spacing(0);

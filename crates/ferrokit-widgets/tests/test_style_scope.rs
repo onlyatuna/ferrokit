@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Where a style sheet applies, and who is told when it changes.
 //!
-//! Qt (`QWidget::setStyleSheet`, qwidget.cpp:2594-2631): a widget's sheet applies to that widget
+//! Qt (`QWidget::setStyleSheet`): a widget's sheet applies to that widget
 //! and its subtree; `QStyleSheetStyle::repolish(w)` sends `StyleChange` to `w` and every
-//! descendant (`updateObjects`, qstylesheetstyle.cpp:2780). A top-level window is a `QWidget`, so
+//! descendant (`updateObjects`). A top-level window is a `QWidget`, so
 //! `setStyleSheet` on a window reaches only that window. `QApplication::setStyleSheet`
-//! (qapplication.cpp:885) repolishes every widget of every window. `StyleChange` is
-//! a repaint, a geometry update and a layout invalidation (qwidget.cpp:9502). A `QMenu` finds its sheet
-//! through its parent chain (`styleRules`, qstylesheetstyle.cpp:1654).
+//! repolishes every widget of every window. `StyleChange` is
+//! a repaint, a geometry update and a layout invalidation. A `QMenu` finds its sheet
+//! through its parent chain (`styleRules`).
 //!
 //! Every observation here is one event-loop pump away from the change; nothing calls
 //! `update_layout()` or `render_and_present()` to help.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! A `Window` owns its platform window, root widget and the widgets below it; dropping the last
-//! owner destroys all of them (`QWidget::~QWidget` deletes its children, `qwidget.cpp`).
+//! owner destroys all of them (`QWidget::~QWidget` deletes its children).
 //!
 //! The platform window owns the window event handler, so the handler must not own the platform
 //! window back: that cycle kept every window, its backing store and its widget tree alive for the

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! `qGeomCalc` (`qlayoutengine.cpp`) on equal-stretch chains, the shape of a `QGridLayout` whose
+//! `qGeomCalc` on equal-stretch chains, the shape of a `QGridLayout` whose
 //! columns all have stretch 1: each entry's smart size hint is its minimum, an entry that needs
 //! more than its share keeps its minimum and the others share the rest.
 use ferrokit_widgets::layout_engine::{LAYOUT_SIZE_MAX, LayoutStruct, q_geom_calc};

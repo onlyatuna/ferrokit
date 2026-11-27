@@ -70,7 +70,6 @@ impl EventFilterChain {
 
     /// Raw slot `index` of the live chain: `None` past the end, `Some(None)` for a tombstone.
     /// `notify_helper` reads one slot per step, mirroring Qt's `eventFilters.at(i)` walk
-    /// (1255-1256).
     pub fn slot_at(&self, index: usize) -> Option<Option<ObjectId>> {
         self.filters.get(index).copied()
     }

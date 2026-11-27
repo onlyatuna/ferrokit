@@ -23,8 +23,8 @@ fn frameless_window(title: &str, rect: Rect) -> Window {
 }
 
 /// With no explicit top-level minimum, the window minimum follows the root layout
-/// minimum, and a window smaller than it grows to it (`qlayout.cpp:1035-1048`, `:1108-1113`).
-/// The layout is activated on show (`qlayout.cpp:546-548`), so the window is shown first.
+/// minimum, and a window smaller than it grows to it (`:1108-1113`).
+/// The layout is activated on show, so the window is shown first.
 #[test]
 fn test_top_level_minimum_follows_root_layout_without_explicit_min() {
     let root = root_with_fixed_child();
@@ -53,7 +53,7 @@ fn test_top_level_minimum_follows_root_layout_without_explicit_min() {
 }
 
 /// A hidden window does not activate its layout, so its minimum is not derived
-/// until it is shown (Qt activates on show, `qlayout.cpp:546-548`).
+/// until it is shown (Qt activates on show).
 #[test]
 fn test_hidden_window_does_not_derive_minimum_from_layout() {
     let root = root_with_fixed_child();

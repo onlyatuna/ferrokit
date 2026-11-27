@@ -2,7 +2,7 @@
 //! Widget signals honour `block_signals`.
 //!
 //! Qt reference: `QAbstractButton::click` emits `clicked` through `QObject::doActivate`, which checks
-//! the button's own `blockSig` flag (qobject.cpp:4273). A blocked button emits nothing; unblocking
+//! the button's own `blockSig` flag. A blocked button emits nothing; unblocking
 //! restores emission.
 
 use ferrokit_core::object::QObject;

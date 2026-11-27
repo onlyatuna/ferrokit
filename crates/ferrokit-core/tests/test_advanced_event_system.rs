@@ -337,7 +337,7 @@ fn test_event_compression_with_high_frequency_events() {
     let compressor = compressor::CoreCompressor;
     let target = ObjectId::next();
 
-    // 1. MouseMove is not compressed (QApplicationPrivate::compressEvent: qapplication.cpp:794-804)
+    // 1. MouseMove is not compressed (QApplicationPrivate::compressEvent)
     let mut ev_move1 = Event::new(EventKind::MouseMove { x: 10, y: 10 });
     let ev_move2 = Event::new(EventKind::MouseMove { x: 25, y: 35 });
     assert!(
@@ -345,7 +345,7 @@ fn test_event_compression_with_high_frequency_events() {
         "MouseMove events must not be compressed"
     );
 
-    // 2. HoverMove is not compressed (QApplicationPrivate::compressEvent: qapplication.cpp:794-804)
+    // 2. HoverMove is not compressed (QApplicationPrivate::compressEvent)
     let mut ev_hover1 = Event::new(EventKind::HoverMove {
         pos: EventPointPos::new(10.0, 10.0),
         old_pos: EventPointPos::new(0.0, 0.0),

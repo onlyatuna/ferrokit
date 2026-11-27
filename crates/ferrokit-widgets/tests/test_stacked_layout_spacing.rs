@@ -2,8 +2,8 @@
 //! StackedLayout set_spacing and spacing.
 //!
 //! Qt reference:
-//! - `QLayout::setSpacing(int spacing)` (`qlayout.cpp:257-262`): stores the value as the inside spacing and invalidates the layout.
-//! - `QLayout::spacing()` (`qlayout.cpp:246-255`): returns the stored inside spacing if it is `>= 0`, else smart spacing (-1 when parentless).
+//! - `QLayout::setSpacing(int spacing)`: stores the value as the inside spacing and invalidates the layout.
+//! - `QLayout::spacing`: returns the stored inside spacing if it is `>= 0`, else smart spacing (-1 when parentless).
 
 use ferrokit_widgets::layout::Layout;
 use ferrokit_widgets::stacked::StackedLayout;

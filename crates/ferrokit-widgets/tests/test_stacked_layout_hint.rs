@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! `QStackedLayout::sizeHint` and `minimumSize` cover every page, not only the
-//! current one (qstackedlayout.cpp:406-442): the hint is the component-wise maximum of the pages'
+//! current one: the hint is the component-wise maximum of the pages'
 //! hints, an `Ignored` axis counting as 0; the minimum is the maximum of `qSmartMinSize`.
 //!
 //! Expected values were measured with PySide6 6.x (`QStackedLayout` on a `QWidget`, offscreen,
@@ -234,7 +234,7 @@ fn removing_a_page_drops_its_contribution() {
 }
 
 /// `QStackedLayout` gives the whole rectangle to the current page and hides every other
-/// page (qstackedlayout.cpp:453); a hidden page is skipped by hit testing (`QWidget::isVisible`
+/// page; a hidden page is skipped by hit testing (`QWidget::isVisible`
 /// gates the child search). After a page switch the old page must not receive the click.
 #[test]
 fn stacked_hides_non_current_page_and_hit_test_skips_it() {

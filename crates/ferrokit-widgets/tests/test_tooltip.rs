@@ -3,12 +3,11 @@
 //!
 //! Qt starts a 700 ms wake-up timer when the cursor moves with no button down; when it fires and
 //! the window is active (or has `WA_AlwaysShowToolTips`) a `QHelpEvent` goes to the widget and
-//! bubbles to its parents until one accepts (`QApplication::notify`, qapplication.cpp:2712-2737,
-//! 1710-1740, 2940-2962). `QWidget::event` shows the widget's own `toolTip` (qwidget.cpp:
+//! bubbles to its parents until one accepts (`QApplication::notify`,
+//! 1710-1740, 2940-2962). `QWidget::event` shows the widget's own `toolTip` (
 //! 9381-9386). An accepted tip starts a 2 s fall-asleep timer during which the next wake-up takes
-//! 20 ms. User input and `Leave` cancel (qapplication.cpp:2622-2637). The tip's position is
-//! `QTipLabel::placeTip` (qtooltip.cpp:296-370) and its lifetime `10000 + 40 * max(0, len - 100)`
-//! (qtooltip.cpp:117-126).
+//! 20 ms. User input and `Leave` cancel. The tip's position is
+//! `QTipLabel::placeTip` and its lifetime `10000 + 40 * max(0, len - 100)`
 //!
 //! Real `ferrokit_widgets::Window`s, real HWNDs, real timers and the event loop's message pump. The
 //! tip appearance (colours, font, corners) is not asserted; it is verified by eye.
@@ -117,7 +116,7 @@ fn tip_is_clamped_into_the_screen() {
     );
     assert_eq!(p.x, 0, "wider than the screen: left edge");
     // Taller than the screen: flipped above, raised to the top, then pushed back up by the
-    // bottom clamp, which is the last word (qtooltip.cpp:362-364).
+    // bottom clamp, which is the last word.
     let p = place_tip(
         Point::new(100, 10),
         Size::new(120, 900),
@@ -128,7 +127,7 @@ fn tip_is_clamped_into_the_screen() {
     // A secondary screen offset from the origin.
     let second = Rect::new(1000, 0, 500, 400);
     let p = place_tip(Point::new(1495, 395), TIP, CURSOR_SIZE, second);
-    // Hand-derived from qtooltip.cpp:349-361: x = 1495+2 = 1497, 1497+120 > 1500 so x -= 4+120 -> 1373;
+    // Hand-derived from: x = 1495+2 = 1497, 1497+120 > 1500 so x -= 4+120 -> 1373;
     // y = 395+16 = 411, 411+30 > 400 so y -= 24+30 -> 357; no clamp applies.
     assert_eq!(p, Point::new(1373, 357));
 }
@@ -371,7 +370,7 @@ fn the_tip_falls_asleep_after_two_seconds() {
         !visible()
     }));
     // The fall-asleep timer starts when the tip appears. Qt starts it as a coarse timer
-    // (qbasictimer.cpp:146), which on Windows may fire up to 5% late (qeventdispatcher_win.cpp:
+    // which on Windows may fire up to 5% late (
     // 312-326, 374); wait that long plus a timer tick past it.
     let asleep = Duration::from_millis(FALL_ASLEEP_DELAY_MS + FALL_ASLEEP_DELAY_MS / 20 + 50);
     pump_until(&mut el, asleep, || shown_at.elapsed() >= asleep);
@@ -677,7 +676,7 @@ fn show_text_places_and_replaces_the_tip() {
         "a changed text moves the tip to the new position"
     );
 
-    // show_text_rect replaces tip when rect changes (qtooltip.cpp:428)
+    // show_text_rect replaces tip when rect changes
     let rect1 = Rect::new(10, 10, 50, 50);
     ToolTip::show_text_rect(p2, "rect tip", None, Some(rect1), -1);
     let gr1 = ToolTip::geometry().expect("visible");
@@ -762,7 +761,7 @@ fn an_empty_text_hides_the_tip_after_the_hide_delay() {
         !ToolTip::is_visible()
     }));
 }
-// Tip text geometry: QToolTip::updateSize (qtooltip.cpp:143-160) and QLabel::sizeForWidth.
+// Tip text geometry: QToolTip::updateSize and QLabel::sizeForWidth.
 
 fn tip_height(text: &str) -> i32 {
     ToolTip::show_text(Point::new(300, 300), text, None, -1);
@@ -1186,7 +1185,7 @@ mod real_windows {
     /// Moving the real cursor makes Windows send the window a real `WM_MOUSEMOVE` (sometimes more
     /// than one), after which Windows tracks the cursor as inside the window. Until then Windows
     /// answers every `WM_MOUSEMOVE` the test sends with `WM_MOUSELEAVE`, a real `Leave` that
-    /// cancels the wake-up, as it would in Qt (qwindowspointerhandler.cpp:265-273, 354-357,
+    /// cancels the wake-up, as it would in Qt (354-357,
     /// 868-876). On CI runners the move sometimes never comes; nudge the cursor until it does.
     /// Let every move arrive, then cancel the wake-up they started the way a user would: a click.
     fn settle(el: &mut EventLoop, f: &Fixture) {
@@ -1266,7 +1265,7 @@ mod real_windows {
             // The messages carry the real cursor position. Windows also sends buttonless
             // `WM_MOUSEMOVE`s of its own at the real cursor position (e.g. after a capture is
             // released); the platform layer drops those as Qt does when they repeat the last
-            // position (qwindowspointerhandler.cpp:800-809). A test move elsewhere would make
+            // position. A test move elsewhere would make
             // such a move look like real motion that starts the wake-up timer.
             let (x, y) = cursor_in_client(&f);
             mouse_move(&f, x, y, MK_LBUTTON);

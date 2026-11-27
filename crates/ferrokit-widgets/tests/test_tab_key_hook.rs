@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! A focus widget can keep Tab/Backtab for itself instead of letting them move the focus
 //! (`QWidget::event` is overridable in Qt). `KeySequenceEdit` keeps them unless they are among its
-//! finishing key combinations, which default to Tab and Backtab (`qkeysequenceedit.cpp`).
+//! finishing key combinations, which default to Tab and Backtab.
 
 #[path = "support/probe_widget.rs"]
 mod probe_widget;

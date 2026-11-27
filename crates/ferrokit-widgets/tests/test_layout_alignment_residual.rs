@@ -193,7 +193,7 @@ fn nested_alignment(holder: &WidgetRef) -> u32 {
 
 // ---------------------------------------------------------------------------------------------
 // (1) A vertically aligned item with heightForWidth takes heightForWidth(width)
-//     (`QWidgetItem::setGeometry`, qlayoutitem.cpp:441-447).
+//     (`QWidgetItem::setGeometry`).
 // ---------------------------------------------------------------------------------------------
 
 #[test]
@@ -230,8 +230,8 @@ fn item1_vbox_top_hfw_item_takes_its_height_for_its_width() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// (2) A layout's own alignment (`QLayout::alignmentRect`, qlayout.cpp:1410-1455; maximum size
-//     qboxlayout.cpp:618-623, qgridlayout.cpp:1216-1219).
+// (2) A layout's own alignment (`QLayout::alignmentRect`,; maximum size
+//     ).
 // ---------------------------------------------------------------------------------------------
 
 #[test]
@@ -274,7 +274,6 @@ fn item2_top_aligned_layout_takes_the_height_for_its_width() {
 
 // ---------------------------------------------------------------------------------------------
 // (3) Right-to-left: `QStyle::visualAlignment` flips Left/Right unless `AlignAbsolute`
-//     (qguiapplication_p.h:176-186).
 // ---------------------------------------------------------------------------------------------
 
 #[test]
@@ -332,7 +331,7 @@ fn item3_rtl_grid_item_right_absolute_stays_on_the_right() {
 
 // ---------------------------------------------------------------------------------------------
 // (4) `QLayout::setAlignment(QLayout*, align)` stores the alignment on the nested layout
-//     (qlayout.cpp:213-227); `QGridLayout::addLayout(.., align)` does the same.
+//     `QGridLayout::addLayout(.., align)` does the same.
 // ---------------------------------------------------------------------------------------------
 
 #[test]
@@ -489,7 +488,7 @@ mod label {
     #[test]
     fn item5_label_aligned_left_only_draws_its_text_at_the_top() {
         // probe: item5_label_ink_left_only (0,2,14,12) == item5_label_ink_left_top (0,2,14,12):
-        // no vertical flag puts the text at the top (qt_format_text, qpainter.cpp:7419-7424).
+        // no vertical flag puts the text at the top (qt_format_text).
         let _dir = with_direction(LayoutDirection::LeftToRight);
         let got = painted(&mut label(TEXT, Alignment::LEFT, W, H, None));
         assert_same_pixels(
@@ -560,7 +559,7 @@ mod label {
     fn item5_framed_label_adds_the_indent_on_its_top_and_bottom() {
         // probe (1px border): item5_framed_hint_left_vcenter (24,16), hcenter_vcenter (18,16),
         // hcenter_top (18,22), left_top (24,22), hcenter_bottom (18,22), x_adv=6: the 'x' advance
-        // is added on each aligned side (qlabel.cpp:558-568).
+        // is added on each aligned side.
         let _dir = with_direction(LayoutDirection::LeftToRight);
         let qss = Some("border: 1px solid black;");
         let hint = |align: Alignment| {
@@ -587,7 +586,7 @@ mod label {
     fn item5_framed_label_insets_its_text_by_half_the_indent_on_the_aligned_sides() {
         // probe (1px transparent border): item5_framed_ink_left_top (4,6,18,16) — 1 + 6/2 from the
         // left and the top; item5_framed_ink_left_vcenter (4,25,..) — no vertical inset;
-        // item5_framed_ink_right_bottom (180,44,194,54) (qlabel.cpp:1474-1488).
+        // item5_framed_ink_right_bottom (180,44,194,54).
         let _dir = with_direction(LayoutDirection::LeftToRight);
         let (f, m) = (font(), metrics());
         let qss = Some("border: 1px solid transparent;");
@@ -630,7 +629,7 @@ mod label {
     #[test]
     fn item5_rich_label_taller_than_its_rect_never_starts_above_it() {
         // probe (200x8): item5_short_label_ink_rich_vcenter == rich_bottom == rich_top (0,2,15,7):
-        // `QLabelPrivate::layoutRect` clamps the offset at 0 (qlabel.cpp:1632-1635).
+        // `QLabelPrivate::layoutRect` clamps the offset at 0.
         let _dir = with_direction(LayoutDirection::LeftToRight);
         let rich = |align: Alignment| {
             let mut l = label("<b>Hg</b>", align, W, 8, None);
@@ -653,7 +652,7 @@ mod label {
     #[test]
     fn item5_plain_label_taller_than_its_rect_is_centred_unclamped() {
         // probe (200x8): item5_short_label_ink_plain_vcenter (0,0,14,7) vs plain_top (0,2,14,7):
-        // plain text is offset by (h - height) / 2 (qpainter.cpp:7421-7424).
+        // plain text is offset by (h - height) / 2.
         let _dir = with_direction(LayoutDirection::LeftToRight);
         let got = painted(&mut label(
             TEXT,
@@ -669,7 +668,7 @@ mod label {
     #[test]
     fn item3_rtl_label_keeps_latin_text_on_the_left() {
         // probe: item3_rtl_label_left_ink (0,15,14,25) layoutDirection=1: a label aligns by its
-        // text's direction (qlabel.cpp:996, 1456-1464), left-to-right for Latin text.
+        // text's direction (1456-1464), left-to-right for Latin text.
         let ltr = {
             let _dir = with_direction(LayoutDirection::LeftToRight);
             painted(&mut label(

@@ -211,8 +211,8 @@ fn update_alone_is_deferred_through_the_gate() {
     for _ in 0..5 {
         root.borrow().update();
     }
-    // `QWidget::update` only marks dirty and posts (qwidget.cpp:11380-11382,
-    // qwidgetrepaintmanager.cpp:356-363): nothing is painted inside `update()`.
+    // `QWidget::update` only marks dirty and posts (
+    // ): nothing is painted inside `update`.
     assert_eq!(fx.win.render_stats().render_count, before.render_count);
     assert_eq!(
         fx.paint_calls.get(),

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! A pool worker that queries main-thread status before any application exists must not be
 //! reported as the main thread. Qt has no such notion: `QThread::isMainThread` is true only on
-//! the thread that created the `QCoreApplication` (qthread.cpp:52-54, 416-419).
+//! the thread that created the `QCoreApplication` (416-419).
 
 use ferrokit_core::object::ThreadContext;
 use ferrokit_core::thread::ThreadPool;

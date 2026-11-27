@@ -166,8 +166,8 @@ fn test_loom_negative_mutant_skip_revalidation_fails() {
     });
 }
 
-// ---- Thread-owned slot protocol (`src/local_slots.rs`) ----
-// Loom model tests of the thread-owned slot protocol (see `src/local_slots.rs` for the scope of
+// ---- Thread-owned slot protocol ----
+// Loom model tests of the thread-owned slot protocol (see for the scope of
 // the model): every interleaving of two active threads (an owner and a foreign thread, or two
 // owners) is explored, within a preemption bound.
 

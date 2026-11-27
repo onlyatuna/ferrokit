@@ -7,7 +7,7 @@
 //!
 //! The negative guarantees (no `&mut T` through the guard without `DerefMut`, and the guard is
 //! `!Send`) are NOT tested here; they live in the `compile_fail` doctests on
-//! `RecursiveMutexGuard` in `src/thread/sync.rs`.
+//! `RecursiveMutexGuard` in.
 
 use std::cell::{Cell, RefCell};
 use std::thread;

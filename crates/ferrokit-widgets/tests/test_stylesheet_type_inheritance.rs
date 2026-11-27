@@ -2,9 +2,9 @@
 //! A QSS type selector matches the class and every class it inherits from.
 //!
 //! `QStyleSheetStyleSelector::nodeNameEquals` walks `metaObject()->superClass()`
-//! (qstylesheetstyle.cpp:1579-1601), so `QFrame { }` styles a `QLabel` and `QAbstractButton { }`
+//! so `QFrame { }` styles a `QLabel` and `QAbstractButton { }`
 //! a `QPushButton`, but not the other way round. A type selector weighs the same whichever class
-//! it names (qcssparser.cpp:1973-1974), so between `QLabel` and `QFrame` the later rule wins.
+//! it names, so between `QLabel` and `QFrame` the later rule wins.
 //! Reference colours: PySide6 6.11.2, the widget's own style sheet, `palette().color(...)`.
 
 use ferrokit_gui::tiny_skia::Color;

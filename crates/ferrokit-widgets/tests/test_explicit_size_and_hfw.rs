@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Explicit `minimumSize` / `maximumSize` / `fixedSize` on a widget are the limits the
-//! layout engine uses (`qSmartMinSize` / `qSmartMaxSize`, qlayoutengine.cpp:309-375), and
+//! layout engine uses (`qSmartMinSize` / `qSmartMaxSize`), and
 //! `QWidget::setMinimumSize` / `setMaximumSize` / `setFixedSize` resize the widget when it violates
-//! the new limit (qwidget.cpp:3942-4087, 4155-4170). Policy is not changed by `setFixedSize`.
+//! the new limit (4155-4170). Policy is not changed by `setFixedSize`.
 //!
 //! A widget with height-for-width is given the height `heightForWidth(width)`
-//! in a vertical box (qboxlayout.cpp:755-764) and in a grid cell on an aligned vertical axis
-//! (QWidgetItem::setGeometry, qlayoutitem.cpp:432-474).
+//! in a vertical box and in a grid cell on an aligned vertical axis
+//! (QWidgetItem::setGeometry).
 //!
 //! Reference rectangles: PySide6 6.11.2. Box layouts use margins 0 and spacing 6 with stretch-0
 //! spacers at both ends, as in `test_box_layout_add_stretch_zero.rs`.
@@ -163,14 +163,14 @@ fn set_fixed_size_caps_an_expanding_item_and_keeps_its_policy() {
 
 #[test]
 fn set_minimum_size_grows_the_widget_and_set_maximum_size_shrinks_it() {
-    // PySide6: a 100x30 widget, setMinimumSize(120, 40) -> 120x40 (qwidget.cpp:4005-4028).
+    // PySide6: a 100x30 widget, setMinimumSize(120, 40) -> 120x40.
     let w1 = probe(50, 20, Policy::Preferred);
     assert_eq!(rect_of(&w1), (0, 0, 100, 30));
     w1.borrow().set_minimum_size(Size::new(120, 40));
     assert_eq!(rect_of(&w1), (0, 0, 120, 40));
     assert_eq!(w1.borrow().minimum_size(), Size::new(120, 40));
 
-    // PySide6: another 100x30 widget, setMaximumSize(60, 10) -> 60x10 (qwidget.cpp:4065-4087).
+    // PySide6: another 100x30 widget, setMaximumSize(60, 10) -> 60x10.
     // (If min > max, Qt's setGeometry_sys keeps the minimum size).
     let w2 = probe(50, 20, Policy::Preferred);
     assert_eq!(rect_of(&w2), (0, 0, 100, 30));
@@ -181,7 +181,7 @@ fn set_minimum_size_grows_the_widget_and_set_maximum_size_shrinks_it() {
 
 #[test]
 fn set_fixed_size_sets_minimum_and_maximum_and_resizes() {
-    // setFixedSize(40, 20) on a 100x30 widget -> 40x20, min == max == 40x20 (qwidget.cpp:4155-4170).
+    // setFixedSize(40, 20) on a 100x30 widget -> 40x20, min == max == 40x20.
     let w = probe(50, 20, Policy::Preferred);
     w.borrow().set_fixed_size(Size::new(40, 20));
     assert_eq!(rect_of(&w), (0, 0, 40, 20));
@@ -193,7 +193,7 @@ fn set_geometry_clamps_to_explicit_minimum_and_maximum_size() {
     // PySide6: a widget with setMinimumSize(50, 50) and setMaximumSize(150, 150):
     // setGeometry(10, 10, 20, 20) -> (10, 10, 50, 50)
     // setGeometry(10, 10, 200, 200) -> (10, 10, 150, 150)
-    // (qwidget.cpp:7286, 7300-7305).
+    // (7300-7305).
     let w = probe(50, 20, Policy::Preferred);
     w.borrow().set_minimum_size(Size::new(50, 50));
     w.borrow().set_maximum_size(Size::new(150, 150));

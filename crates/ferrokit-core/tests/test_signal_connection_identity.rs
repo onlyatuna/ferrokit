@@ -2,7 +2,7 @@
 //! Connection identity across signals.
 //!
 //! Qt keeps connections on the sender and disconnects every one that has a destroyed object as
-//! receiver (`~QObject`, qobject.cpp:1046-1180). A connection of one signal must never be
+//! receiver (`~QObject`). A connection of one signal must never be
 //! confused with the connection of another signal.
 
 use std::sync::Arc;

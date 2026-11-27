@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! `Timer::single_shot(ms > 0)` armed on a thread that has no event loop yet.
 //!
-//! Qt registers a single-shot timer on the thread's existing dispatcher (`qsingleshottimer.cpp:15-59`)
+//! Qt registers a single-shot timer on the thread's existing dispatcher
 //! and keeps it until it fires; the arm is never dropped. The timer must therefore fire once a loop
 //! runs on that thread. Each test uses a fresh thread, so the "no loop yet" state is exact.
 

@@ -2,11 +2,11 @@
 //! Moving or resizing a child must repaint its old footprint in the parent, and a child's paint
 //! must stay inside its own geometry.
 //!
-//! Qt: `QWidgetPrivate::setGeometry_sys` (qwidget.cpp:7297-7410) calls `moveRect` (:7380) or
+//! Qt: `QWidgetPrivate::setGeometry_sys` calls `moveRect` (7380) or
 //! `invalidateBackingStore_resizeHelper` (:7382) on the old rect of a visible widget, so the parent
-//! repaints the vacated area (`QWidgetRepaintManager::moveRect`, qwidgetrepaintmanager.cpp:382-430).
+//! repaints the vacated area (`QWidgetRepaintManager::moveRect`).
 //! Dirty regions accumulate: a later `update()` adds to the pending one instead of replacing it.
-//! `QWidget::paintEvent` output is clipped to the widget's own rect (`clipRect`, qwidget.cpp:1904-1923).
+//! `QWidget::paintEvent` output is clipped to the widget's own rect (`clipRect`).
 #![cfg(windows)]
 
 use std::cell::{Cell, RefCell};

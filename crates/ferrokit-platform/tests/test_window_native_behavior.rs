@@ -304,7 +304,7 @@ fn move_loop_ends(hwnd: HWND) {
 /// release. Qt does nothing with them: the windows plugin of Qt 6.12.0 has no
 /// `WM_CAPTURECHANGED` handling, `QGuiApplication::mouseButtons()` keeps the held button for the
 /// whole loop and `WM_EXITSIZEMOVE` reconciles it (`QWindowsContext::handleExitSizeMove`,
-/// qwindowscontext.cpp:1261-1290). An application that asks "is a button held?" while its window
+/// ). An application that asks "is a button held?" while its window
 /// is dragged (to show where the window will dock, say) must get yes.
 #[test]
 fn the_move_loops_own_capture_changes_keep_the_pressed_button_until_the_loop_ends() {
@@ -341,7 +341,7 @@ fn the_move_loops_own_capture_changes_keep_the_pressed_button_until_the_loop_end
 }
 
 /// A system resize is the same kind of loop (`startSystemResize` releases the capture and posts
-/// `SC_SIZE*` just as `startSystemMove` posts `SC_DRAGMOVE`, qwindowswindow.cpp:3303-3313).
+/// `SC_SIZE*` just as `startSystemMove` posts `SC_DRAGMOVE`).
 #[test]
 fn the_resize_loops_own_capture_changes_keep_the_pressed_button_until_the_loop_ends() {
     use ferrokit_core::event::MouseButtons;
@@ -455,7 +455,7 @@ fn a_move_loop_that_ends_outside_the_window_forgets_the_button_without_a_release
 /// `handleExitSizeMove` compares the application's buttons with the physical ones. Left, right and
 /// middle that the application has down and the system does not get a release; every release
 /// carries the physical buttons, so a button the application had down is dropped with them
-/// (`mouse_buttons = e->buttons`, qguiapplication.cpp:2431), the X ones included.
+/// (`mouse_buttons = e->buttons`), the X ones included.
 #[test]
 fn the_loop_end_releases_every_stale_button_and_takes_the_physical_ones_over() {
     use ferrokit_core::event::MouseButtons;

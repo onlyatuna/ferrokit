@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! `QProgressBar::sizeHint`/`minimumSizeHint` (`qprogressbar.cpp:396-418`), passed through
-//! `QStyleSheetStyle::sizeFromContents(CT_ProgressBar)` (`qstylesheetstyle.cpp:5311-5320,5485-5490`).
+//! `QProgressBar::sizeHint`/`minimumSizeHint`, passed through
+//! `QStyleSheetStyle::sizeFromContents(CT_ProgressBar)` (5485-5490`).
 //! Expected numbers are PySide6 measurements (cases P4-P15) taken
 //! with explicit `font-family`/`font-size` so they do not depend on the application font.
 #![cfg(windows)]
@@ -107,7 +107,7 @@ fn test_vertical_progress_bar_min_max_are_not_transposed() {
 
 /// QSS `width`/`height` are the contents size (`QRenderRule::contentsSize`). They
 /// are not `min-*`/`max-*`: `setGeometry` sets `minimumSize`/`maximumSize` only for an axis that has
-/// a `min-*`/`max-*` declaration (`qstylesheetstyle.cpp:2595-2612`); `CT_ProgressBar` returns
+/// a `min-*`/`max-*` declaration; `CT_ProgressBar` returns
 /// `rule.size(sz)` when there is a contents size (`:5487-5489`).
 /// Expected numbers are PySide6 measurements (DPR 1.25 and 1.0 agree).
 fn limits(qss: &str) -> ([i32; 2], [i32; 2], [i32; 2], [i32; 2]) {

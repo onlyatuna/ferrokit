@@ -2,7 +2,7 @@
 //! Width and range rules of the text stream and of typed variant extraction.
 //!
 //! Qt references: `QTextStreamPrivate::putStringImpl` pads by the length of the text rather than
-//! its byte size (qtextstream.cpp:874-897); `QVariant::toInt` of a `LongLong` outside the `int`
+//! its byte size; `QVariant::toInt` of a `LongLong` outside the `int`
 //! range fails (`ok == false`) instead of wrapping.
 
 use ferrokit_core::serialize::{FieldAlignment, TextStream};

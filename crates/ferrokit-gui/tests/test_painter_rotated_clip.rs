@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! A rect clip under a rotated transform stays a rotated rectangle (a transformed path clip),
 //! not its bounding box: `QPainter::setClipRect(QRectF)` goes to `QPaintEngine::clip(QVectorPath)`
-//! (`qpainter.cpp:2744-2770`), and `QRasterPaintEngine::clip(const QRect&)` falls back to
-//! `QPaintEngineEx::clip` once the matrix is more than a scale (`qpaintengine_raster.cpp:1212`).
+//! and `QRasterPaintEngine::clip(const QRect&)` falls back to
+//! `QPaintEngineEx::clip` once the matrix is more than a scale.
 
 use ferrokit_gui::geometry::primitives::RectF;
 use ferrokit_gui::paint::{Painter, Pixmap};

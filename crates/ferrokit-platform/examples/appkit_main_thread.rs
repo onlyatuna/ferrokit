@@ -750,7 +750,6 @@ mod checks {
     }
 
     /// Height of the screen with the menu bar, the reference of Qt's `qt_mac_flip`
-    /// (qcocoascreen.mm:227-229).
     fn primary_screen_height() -> f64 {
         let screens = array(send(class("NSScreen"), "screens"));
         rect(screens[0], "frame").size.height
@@ -785,13 +784,13 @@ mod checks {
             string(send(w, "title")),
             Some("macOS HUD Panel".into()),
         );
-        // Qt: FramelessWindowHint -> NSWindowStyleMaskBorderless (qcocoawindow.mm:605-622).
+        // Qt: FramelessWindowHint -> NSWindowStyleMaskBorderless.
         t.eq(
             "[window styleMask] of a frameless window",
             send::<usize>(w, "styleMask"),
             0,
         );
-        // Qt: WindowTransparentForInput -> ignoresMouseEvents (qcocoawindow.mm:759-767).
+        // Qt: WindowTransparentForInput -> ignoresMouseEvents.
         t.expect(
             yes(w, "ignoresMouseEvents"),
             "[window ignoresMouseEvents] for CLICK_THROUGH",
@@ -805,7 +804,7 @@ mod checks {
 
     fn window_geometry(t: &mut Recorder) {
         // Qt maps its top-left geometry to Cocoa's bottom-left screen coordinates with
-        // QCocoaScreen::mapToNative (setCocoaGeometry, qcocoawindow.mm:304).
+        // QCocoaScreen::mapToNative (setCocoaGeometry).
         let height = primary_screen_height();
         t.info(&format!("primary screen height {height}"));
         let expect_frame = |t: &mut Recorder, w: Id, g: Rect, what: &str| {
@@ -847,7 +846,7 @@ mod checks {
     }
 
     fn window_level(t: &mut Recorder) {
-        // Qt: QCocoaWindow::windowLevel (qcocoawindow.mm:548-563).
+        // Qt: QCocoaWindow::windowLevel.
         let cases = [
             (WindowFlags::NORMAL, 0, "NORMAL: NSNormalWindowLevel"),
             (WindowFlags::TOOL, 3, "TOOL: NSFloatingWindowLevel"),
@@ -968,8 +967,8 @@ mod checks {
     }
 
     /// Qt's `QCocoaIntegration` constructor calls `qt_mac_transformProccessToForegroundApplication`
-    /// (qcocoaintegration.mm:140-147), which sets `NSApplicationActivationPolicyRegular` unless
-    /// the Info.plist sets `LSUIElement` or `LSBackgroundOnly` (qcocoahelpers.mm:138-180). This
+    /// which sets `NSApplicationActivationPolicyRegular` unless
+    /// the Info.plist sets `LSUIElement` or `LSBackgroundOnly`. This
     /// executable has no Info.plist.
     fn app_activation_policy(t: &mut Recorder) {
         let _integration = ferrokit_platform::platform();
@@ -997,7 +996,7 @@ mod checks {
         );
         win.set_minimum_size(200, 150);
         t.eq("ferrokit minimum_size()", win.minimum_size(), (200, 150));
-        // Qt: window.contentMinSize (qcocoawindow.mm:1185).
+        // Qt: window.contentMinSize.
         t.eq(
             "[window contentMinSize]",
             send::<CGSize>(w, "contentMinSize"),
@@ -1008,9 +1007,9 @@ mod checks {
             (win.opacity() - 0.75).abs() < 1e-4,
             "ferrokit opacity() is 0.75",
         );
-        // Qt: window.alphaValue = level (qcocoawindow.mm:1212).
+        // Qt: window.alphaValue = level.
         t.eq("[window alphaValue]", send::<f64>(w, "alphaValue"), 0.75);
-        // Qt: startSystemMove only while the left button alone is pressed (qcocoawindow.mm:366-370).
+        // Qt: startSystemMove only while the left button alone is pressed.
         let pressed: usize = send(class("NSEvent"), "pressedMouseButtons");
         t.eq(
             &format!("start_system_move() with [NSEvent pressedMouseButtons] = {pressed}"),
@@ -1018,7 +1017,6 @@ mod checks {
             pressed == 1,
         );
         // Qt: QCocoaWindow has no startSystemResize; QPlatformWindow's returns false
-        // (qplatformwindow.cpp:495-498).
         t.eq(
             "start_system_resize(RIGHT)",
             win.start_system_resize(WindowEdges::RIGHT),
@@ -1052,8 +1050,8 @@ mod checks {
             WindowFlags::NORMAL,
         );
         let content: Id = send(win.ns_window(), "contentView");
-        // Qt: FerrokitNSView -isFlipped returns YES (qnsview_drawing.mm:67-70), and every QCocoaWindow's
-        // view is a FerrokitNSView (qcocoawindow.mm:120).
+        // Qt: FerrokitNSView -isFlipped returns YES, and every QCocoaWindow's
+        // view is a FerrokitNSView.
         t.info(&format!(
             "content view class responds as NSView: {}",
             is_kind_of(content, "NSView")
@@ -1071,7 +1069,7 @@ mod checks {
 
     fn window_present_orientation(t: &mut Recorder) {
         // Qt's FerrokitNSView is flipped and its layer shows the backing store's first row at the top
-        // (qnsview_drawing.mm:67-70; qcocoabackingstore.mm:392). Render the content layer the way
+        // . Render the content layer the way
         // Core Animation composites it and check which half of the frame comes out on top.
         let mut win = window(
             "orientation",
@@ -1233,9 +1231,9 @@ mod checks {
     fn window_present(t: &mut Recorder) {
         let (win, layer) = presented_window(1.0);
         let content: Id = send(win.ns_window(), "contentView");
-        // Qt: FerrokitNSView is layer-backed (qnsview_drawing.mm:57) and the backing store sets the
-        // content layer's contents (QCocoaWindow::contentLayer, qcocoawindow.mm:2235-2241;
-        // qcocoabackingstore.mm:392).
+        // Qt: FerrokitNSView is layer-backed and the backing store sets the
+        // content layer's contents (QCocoaWindow::contentLayer,;
+        // ).
         t.expect(yes(content, "wantsLayer"), "[contentView wantsLayer]");
         t.expect(!layer.is_nil(), "the content view has a layer");
         let contents: Id = send(layer, "contents");
@@ -1262,8 +1260,8 @@ mod checks {
 
     fn window_present_pixels(t: &mut Recorder) {
         // The pixmap is premultiplied RGBA8 in memory (tiny-skia). Qt describes that layout
-        // (QImage::Format_RGBA8888_Premultiplied, qimage.cpp:6235) to CoreGraphics as
-        // kCGImageAlphaPremultipliedLast | kCGImageByteOrder32Big (qcoregraphics.mm:46-64), so
+        // (QImage::Format_RGBA8888_Premultiplied) to CoreGraphics as
+        // kCGImageAlphaPremultipliedLast | kCGImageByteOrder32Big, so
         // CoreGraphics must read back the colour that was painted, premultiplication included.
         let cases: [([u8; 4], [u8; 4]); 4] = [
             ([255, 0, 0, 255], [255, 0, 0, 255]),
@@ -1347,7 +1345,7 @@ mod checks {
     fn window_present_frame_immutable(t: &mut Recorder) {
         // Qt never writes into a buffer Core Animation still holds: a flushed IOSurface stays
         // untouched while in use and the next frame goes to another one
-        // (qcocoabackingstore.mm:141,163,347,392-402). A frame given to the layer must keep its
+        // (163,347,392-402). A frame given to the layer must keep its
         // bytes after the next present. Bytes are compared, not colours (the channel order is a known open item).
         let (mut win, layer) = presented_window(1.0);
         let first: Id = send(layer, "contents");
@@ -1385,7 +1383,7 @@ mod checks {
 
     fn window_present_opacity(t: &mut Recorder) {
         // Qt has one opacity knob: QCocoaWindow::setOpacity sets [NSWindow alphaValue]
-        // (qcocoawindow.mm:1206-1213) and never touches the layer. The usual call sequence is
+        // and never touches the layer. The usual call sequence is
         // set_opacity(v) then present(_, v) (PlatformWindow::present_region), so the frame
         // must be composited at v exactly once: alphaValue = v and [layer opacity] = 1.
         for v in [0.0f32, 0.5, 0.85, 0.88, 1.0] {
@@ -1426,7 +1424,7 @@ mod checks {
         );
         // Qt: an NSVisualEffectView added to the content view, configured with the requested
         // material, blending mode and state, layer-backed and stacked below the content
-        // (QCocoaWindow::manageVisualEffectArea, qcocoawindow.mm:2265-2281). Material, blending
+        // (QCocoaWindow::manageVisualEffectArea). Material, blending
         // mode and state are the values ferrokit maps Acrylic to (backdrop.rs).
         let views = effect_views(win.ns_window());
         t.eq(
@@ -1475,7 +1473,7 @@ mod checks {
             win.set_backdrop(BackdropType::None, false),
             "set_backdrop(None) returns true",
         );
-        // Qt: an empty area removes the effect view from its superview (qcocoawindow.mm:2258-2263).
+        // Qt: an empty area removes the effect view from its superview.
         t.eq(
             "NSVisualEffectView subviews after set_backdrop(None)",
             effect_views(win.ns_window()).len(),
@@ -1488,7 +1486,7 @@ mod checks {
             );
             send::<()>(view, "release");
         }
-        // Qt removes only the effect view; the content view stays (qcocoawindow.mm:2261).
+        // Qt removes only the effect view; the content view stays.
         t.eq(
             "[window contentView] is ns_view() after set_backdrop(None)",
             send::<Id>(win.ns_window(), "contentView"),
@@ -1499,7 +1497,7 @@ mod checks {
     fn backdrop_off_without_backdrop(t: &mut Recorder) {
         // Applications call set_backdrop(None) on a new window that has no backdrop.
         // Qt: no effect view for the identifier and an empty
-        // area -> nothing is created or removed (qcocoawindow.mm:2258-2276).
+        // area -> nothing is created or removed.
         let mut win = window(
             "CocoaHUD",
             Rect::new(50, 50, 600, 400),
@@ -1550,7 +1548,7 @@ mod checks {
     }
 
     fn backdrop_on_twice(t: &mut Recorder) {
-        // Qt keeps one effect view per area and updates it in place (qcocoawindow.mm:2258-2259,
+        // Qt keeps one effect view per area and updates it in place (
         // 2278-2281).
         let mut win = window(
             "CocoaHUD",
@@ -1582,7 +1580,7 @@ mod checks {
             is_kind_of(native, "NSStatusItem"),
             "the native item is an NSStatusItem",
         );
-        // Qt: statusItemWithLength:NSSquareStatusItemLength (qcocoasystemtrayicon.mm:37).
+        // Qt: statusItemWithLength:NSSquareStatusItemLength.
         t.eq("[statusItem length]", send::<f64>(native, "length"), -2.0);
 
         let button: Id = send(native, "button");
@@ -1594,7 +1592,7 @@ mod checks {
             .is_ok(),
             "set_icon returns Ok",
         );
-        // Qt: button.image (qcocoasystemtrayicon.mm:162).
+        // Qt: button.image.
         t.expect(
             !send::<Id>(button, "image").is_nil(),
             "[[statusItem button] image] is set",
@@ -1624,7 +1622,7 @@ mod checks {
             item.set_tooltip("Claude HUD macOS").is_ok(),
             "set_tooltip returns Ok",
         );
-        // Qt: button.toolTip (qcocoasystemtrayicon.mm:195-200).
+        // Qt: button.toolTip.
         t.eq(
             "[[statusItem button] toolTip]",
             string(send(button, "toolTip")),
@@ -1648,7 +1646,7 @@ mod checks {
             "ferrokit is_visible() and [statusItem isVisible] are false after hide",
         );
 
-        // Qt: the destructor removes the item from the status bar (qcocoasystemtrayicon.mm:54).
+        // Qt: the destructor removes the item from the status bar.
         // No AppKit state found so far reports the removal reliably: `statusBar` stays set after
         // removeStatusItem: and `isVisible` differs between runs, on an item ferrokit never touched
         // too. Report both for the record; drop's removal is not asserted.
@@ -1712,7 +1710,7 @@ mod checks {
         let mut item = CocoaStatusItem::new(101);
         t.expect(item.supports_messages(), "supports_messages()");
         t.eq("last_message() before", item.last_message(), None);
-        // Qt uses the same (deprecated) NSUserNotificationCenter (qcocoasystemtrayicon.mm:219-234).
+        // Qt uses the same (deprecated) NSUserNotificationCenter.
         let center: Id = send(
             class("NSUserNotificationCenter"),
             "defaultUserNotificationCenter",
@@ -1810,7 +1808,7 @@ mod checks {
     }
 
     fn screen_metrics(t: &mut Recorder) {
-        // Qt's primary screen is the main display, the first NSScreen (qcocoascreen.mm:132, 227).
+        // Qt's primary screen is the main display, the first NSScreen (227).
         let ns_screens = array(send(class("NSScreen"), "screens"));
         let first = ns_screens[0];
         let frame = rect(first, "frame");
@@ -1869,7 +1867,6 @@ mod checks {
     fn theme_color_scheme(t: &mut Recorder) {
         use std::sync::atomic::{AtomicUsize, Ordering};
         // Qt: the effective appearance's best match among Aqua and DarkAqua
-        // (qcocoatheme.mm:507-509).
         let app: Id = send(class("NSApplication"), "sharedApplication");
         let appearance: Id = send(app, "effectiveAppearance");
         let names = [
@@ -2175,7 +2172,7 @@ mod checks {
             !yes(tip.ns_window(), "canBecomeKeyWindow"),
             "[window canBecomeKeyWindow] of a tooltip",
         );
-        // Qt: entered/exited, moved and cursor updates, always active (qnsview_mouse.mm:253),
+        // Qt: entered/exited, moved and cursor updates, always active,
         // over the visible rect (NSTrackingMouseEnteredAndExited | MouseMoved | CursorUpdate |
         // ActiveAlways | InVisibleRect = 0x287).
         let areas: Vec<Id> = array(send(view, "trackingAreas"))

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Text and clip under the painter's current transform, against Qt 6 (`qpainter.cpp`):
+//! Text and clip under the painter's current transform, against Qt 6:
 //! - `drawText` draws transformed glyphs (`QPainter::drawText` under rotate/scale);
 //! - `setClipRect(QRectF)` maps the rect through the current matrix and replaces the clip
-//!   (`qpainter.cpp:2798-2816`, `qpainter.h:187`).
 #![cfg(windows)]
 
 use ferrokit_gui::geometry::primitives::{PointF, RectF};

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! `deleteLater` destroys the object and everything below it when the `DeferredDelete` is
-//! delivered (Qt `QObject::event` -> `qDeleteInEventHandler`, qobject.cpp).
+//! delivered (Qt `QObject::event` -> `qDeleteInEventHandler`).
 //!
 //! An object a parent owns is dropped through its owner: it leaves the parent's child list, the
 //! parent gets `ChildRemoved`, and the memory goes. An object owned elsewhere is unregistered

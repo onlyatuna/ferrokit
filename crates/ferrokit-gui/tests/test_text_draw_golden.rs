@@ -9,7 +9,7 @@
 //! The strings mix Latin, Hebrew and Arabic, digits and neutrals, put tabs between and inside
 //! runs of both directions, and use the explicit embedding, override and isolate characters, so
 //! the itemization, the bidi reordering, the tab stops and the visual order of
-//! `QPainter::drawText` (`qpainter.cpp`: `itemize`, `shapeLine`, `bidiReorder`) are all in play.
+//! `QPainter::drawText` (`itemize`, `shapeLine`, `bidiReorder`) are all in play.
 //!
 //! Two kinds of font:
 //! * `syn`: the synthetic `oracle_text.ttf`, 16 and 32 px, whose advances are exact in 26.6, so

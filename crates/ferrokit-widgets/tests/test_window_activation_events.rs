@@ -3,9 +3,9 @@
 //! `QApplication::activeWindow()`, receives `WindowActivate` / `WindowDeactivate`, and every
 //! widget in it answers `isActiveWindow()` accordingly.
 //!
-//! Qt: `QApplicationPrivate::setActiveWindow` (qapplication.cpp:1816-1880) sets the active window
-//! and sends the events; `QWidget::event` (qwidget.cpp:9317-9327) passes them to visible
-//! non-window children; `QWidget::isActiveWindow` (qwidget.cpp:6967).
+//! Qt: `QApplicationPrivate::setActiveWindow` sets the active window
+//! and sends the events; `QWidget::event` passes them to visible
+//! non-window children; `QWidget::isActiveWindow`.
 #![cfg(windows)]
 
 use std::cell::RefCell;

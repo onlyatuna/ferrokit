@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! A window's dark frame attribute follows the colour scheme the way Qt's does
-//! (`QWindowsWindow::setDarkBorder`, qwindowswindow.cpp:3857-3874: at creation under a dark
-//! scheme, and for every window when the effective scheme changes, qwindowstheme.cpp:690-697).
+//! (`QWindowsWindow::setDarkBorder`,: at creation under a dark
+//! scheme, and for every window when the effective scheme changes).
 //!
 //! The scheme is driven by an application override (`requestColorScheme`), which only lives in
 //! this process; the system's own theme is never touched. Windows stay hidden.

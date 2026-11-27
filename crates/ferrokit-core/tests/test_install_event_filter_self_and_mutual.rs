@@ -2,7 +2,7 @@
 //! install_event_filter allows self and mutual cycles (Qt parity).
 //!
 //! Qt reference:
-//! - `corelib/kernel/qobject.cpp:2407-2423`:
+//! -:
 //!   `QObject::installEventFilter` does not reject self (`obj == this`) or direct cycles.
 //!   It only validates thread affinity, removes existing entry, and prepends to the filter list.
 

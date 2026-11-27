@@ -323,7 +323,7 @@ fn test_object_hierarchy_search_find_child() {
 
 #[test]
 fn test_find_child_searches_direct_children_before_descendants() {
-    // corelib/kernel/qobject.cpp:2242-2256 qt_qFindChild_helper
+    // qt_qFindChild_helper
     // Qt scans direct children first, and only searches deeper descendants if no direct child matches.
     let mut root = MockContainer::new("root");
     // SAFETY: `root` is a local that stays on this thread, unmoved, until it drops at the end of
@@ -375,7 +375,6 @@ fn test_find_child_searches_direct_children_before_descendants() {
 
 #[test]
 fn test_object_name_changed_signal() {
-    // corelib/kernel/qobject.cpp:1363-1373
     // QObject::setObjectName emits objectNameChanged when name changes (observed with PySide6).
     let mut obj = MockButton::new("", "");
     let emissions = Arc::new(std::sync::Mutex::new(Vec::new()));

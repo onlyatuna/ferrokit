@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Parity test for `QGuiApplication::lastWindowClosed` and `focusWindowChanged` (`qguiapplication.cpp:3939 / 2417`).
+//! Parity test for `QGuiApplication::lastWindowClosed` and `focusWindowChanged` ( / 2417`).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

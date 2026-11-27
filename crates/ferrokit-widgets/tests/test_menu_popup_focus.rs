@@ -108,7 +108,7 @@ fn test_popup_exits_on_kill_focus() {
 }
 
 /// `QCoreApplication::exit` ends every running `QEventLoop` of the thread, the one `QMenu::exec`
-/// runs included (qcoreapplication.cpp:1564-1568). An exit raised while the popup's loop runs
+/// runs included. An exit raised while the popup's loop runs
 /// (here from a timer, which that loop dispatches) must end it without any input.
 #[test]
 fn test_popup_exits_when_the_application_exits() {

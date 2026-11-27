@@ -403,7 +403,7 @@ fn timer_event_reaches_event_override() {
 
 /// Qt posts `QZeroTimerEvent` to the dispatcher, not to the timer object, so object filters never
 /// see it. Each delivered `QTimerEvent` is sent through filters, and the zero timer is reposted
-/// after the send regardless of the filter result (qeventdispatcher_win.cpp:886-899). A filter that
+/// after the send regardless of the filter result. A filter that
 /// consumes every tick therefore must not stop the zero-interval timer.
 #[test]
 fn zero_timer_keeps_repeating_when_filter_consumes_ticks() {

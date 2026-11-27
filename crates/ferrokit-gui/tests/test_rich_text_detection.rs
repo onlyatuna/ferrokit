@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! `Qt::mightBeRichText` (qtextdocument.cpp:72-130), the detection `QLabel` uses for `AutoText`
-//! and `QTipLabel` uses to decide word wrap (qtooltip.cpp:152).
+//! `Qt::mightBeRichText`, the detection `QLabel` uses for `AutoText`
+//! and `QTipLabel` uses to decide word wrap.
 
 use ferrokit_gui::text::might_be_rich_text;
 

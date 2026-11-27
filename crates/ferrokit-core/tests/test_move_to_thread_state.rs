@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Object state that must follow `QObject::moveToThread`.
 //!
-//! - Timers are disarmed on the source and re-armed on the target (qobject.cpp:1484-1505).
-//! - `ThreadChange` is sent to the whole subtree before the affinity changes (qobject.cpp:1749,
+//! - Timers are disarmed on the source and re-armed on the target.
+//! - `ThreadChange` is sent to the whole subtree before the affinity changes (
 //!   1785-1786).
 //! - Queued events of the subtree move to the target thread's queue, in order, even when that
-//!   thread has no loop yet (qobject.cpp:1805-1815).
+//!   thread has no loop yet.
 //! - A queued `Auto` connection is decided at emit time from the receiver's live thread.
 //! - A foreign-thread `send_event` is rejected in every build. Qt checks this only in debug builds
-//!   (qcoreapplication.cpp:1223-1225); the rejection here is a deliberate ferrokit choice.
+//!   the rejection here is a deliberate ferrokit choice.
 
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};

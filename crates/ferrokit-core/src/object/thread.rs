@@ -207,7 +207,7 @@ impl ThreadContext {
     }
 
     /// Records the thread that constructed the application as the main thread, matching
-    /// application internals (531-537). Overwrites on
+    /// application internals. Overwrites on
     /// each call and is not cleared on drop.
     pub(crate) fn set_main_thread_id(id: ThreadId) {
         *crate::poison::write_unpoisoned(&GLOBAL_MAIN_THREAD_ID) = Some(id);

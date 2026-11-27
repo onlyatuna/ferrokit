@@ -1053,7 +1053,7 @@ fn backing_properties_notification_falls_back_to_primary_screen_dpr() {
 }
 
 // ---------------------------------------------------------------------------
-// Drag and drop (`NSDraggingDestination`, qnsview_dragging.mm)
+// Drag and drop (`NSDraggingDestination`)
 // ---------------------------------------------------------------------------
 
 struct DragAcceptHandler<F> {

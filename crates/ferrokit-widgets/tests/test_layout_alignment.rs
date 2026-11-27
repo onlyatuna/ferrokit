@@ -4,7 +4,7 @@
 //! An aligned item is not stretched to fill its cell: on an aligned axis it shrinks to its size
 //! hint and is placed by the flag, its maximum size on that axis is unbounded and it no longer
 //! expands there (`QWidgetItem::setGeometry`, `maximumSize`, `expandingDirections`,
-//! qlayoutitem.cpp:408-474, 580-612; `qSmartMaxSize`, qlayoutengine.cpp:354-375).
+//! 580-612; `qSmartMaxSize`).
 //!
 //! Reference rectangles were measured with PySide6 (`QGridLayout`, `QHBoxLayout`, `QVBoxLayout`,
 //! `QStackedLayout`, all `Preferred` or `Expanding` items with a fixed size hint and a zero
@@ -267,7 +267,7 @@ fn set_alignment_applies_to_an_existing_item_and_reports_unknown_widgets() {
 
 #[test]
 fn stacked_layout_ignores_item_alignment_like_qt() {
-    // `QStackedLayout::setGeometry` gives the page the whole rectangle (qstackedlayout.cpp:453).
+    // `QStackedLayout::setGeometry` gives the page the whole rectangle.
     let page = probe(60, 20, Policy::Preferred);
     let mut stack = StackedLayout::new();
     stack.add_widget(page.clone());

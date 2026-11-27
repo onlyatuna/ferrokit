@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! `QWindow::devicePixelRatio` is a per-window value taken from the screen the window is on
-//! (`qwindow.cpp:1425-1459`), not the primary screen's. These tests run against a fake platform
+//! not the primary screen's. These tests run against a fake platform
 //! whose primary screen is 1.0 and whose windows sit on a 2.0 screen, so a window that still
 //! consults the primary screen is observable without a second monitor.
 

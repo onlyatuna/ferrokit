@@ -175,8 +175,8 @@ fn test_shuttle_negative_mutant_skip_revalidation_fails() {
     }, 100);
 }
 
-// ---- Thread-owned slot protocol (`src/local_slots.rs`) ----
-// Shuttle model tests of the thread-owned slot protocol (see `src/local_slots.rs` for the scope
+// ---- Thread-owned slot protocol ----
+// Shuttle model tests of the thread-owned slot protocol (see for the scope
 // of the model): randomized, reproducible schedules of the same scenarios Loom explores.
 //
 

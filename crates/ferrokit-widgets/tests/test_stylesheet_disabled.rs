@@ -2,7 +2,7 @@
 //! A disabled widget matches QSS `:disabled` rules.
 //!
 //! `pseudoClass(QStyle::State)` maps a missing `State_Enabled` to `PseudoClass_Disabled`
-//! (qstylesheetstyle.cpp:1756-1765; `"disabled"` is parsed at qcssparser.cpp:301).
+//! (`"disabled"` is parsed at).
 //! Reference colours: PySide6 6.11.2 — `QLabel:disabled`, `QFrame#F:disabled`,
 //! `QPushButton:disabled` and `QProgressBar:disabled` all apply once the widget is disabled.
 

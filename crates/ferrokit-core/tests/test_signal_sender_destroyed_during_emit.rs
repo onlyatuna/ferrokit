@@ -2,8 +2,8 @@
 //! A slot destroys the object whose signal is being emitted.
 //!
 //! Qt stops such an emission: `~QObject` disconnects every receiver and zeroes the connection
-//! counter before it deletes the children (qobject.cpp:1086-1178), and `doActivate` leaves its
-//! loop once the counter is 0 (qobject.cpp:4431). The slots after the one that destroyed the
+//! counter before it deletes the children, and `doActivate` leaves its
+//! loop once the counter is 0. The slots after the one that destroyed the
 //! sender are not called, whichever way they were connected. PySide6 behaves the same.
 //!
 //! A bound signal here carries the liveness token of its owner and checks it before it calls each
@@ -335,7 +335,7 @@ fn a_signal_handle_does_not_keep_its_owner_alive() {
 #[test]
 fn a_signal_emitted_while_its_owner_is_being_destroyed_reaches_no_slot() {
     // `~QObject` has cut every connection before it deletes the children, so a child that
-    // emits its parent's signal from its own destructor reaches nothing (qobject.cpp:1086-1178).
+    // emits its parent's signal from its own destructor reaches nothing.
     let calls = calls();
     let parent = Node::registered();
     let parent_id = OwnedObject::object_id(&parent);

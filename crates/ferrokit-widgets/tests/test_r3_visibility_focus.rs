@@ -174,7 +174,7 @@ fn add(s: &WidgetRef, page: &WidgetRef) {
     adopt_tree(s);
 }
 
-/// Qt `QStackedLayout::setGeometry` never shows or hides a page (qstackedlayout.cpp:453-468).
+/// Qt `QStackedLayout::setGeometry` never shows or hides a page.
 /// A page added behind the current one is hidden when it is added, so a later resize has nothing
 /// to change, and the layout's borrow is not held while the pages run: a `Hide` handler can read
 /// the stack.
@@ -283,7 +283,7 @@ fn stacked_widget_insert_and_remove_follow_the_layout() {
 }
 
 /// `QWidgetPrivate::hide_helper` moves the focus on when the focus widget, or an ancestor of it,
-/// is hidden (qwidget.cpp:8276-8283).
+/// is hidden.
 fn focus_tree() -> (
     WidgetRef,
     WidgetRef,
@@ -410,9 +410,9 @@ fn focus_log(log: &Log) -> Vec<String> {
         .collect()
 }
 
-/// `QStackedLayout::setCurrentIndex` (qstackedlayout.cpp:291-336): `prev->clearFocus()` does not
+/// `QStackedLayout::setCurrentIndex`: `prev->clearFocus` does not
 /// touch a focus widget below the page, so hiding the page runs `hide_helper`'s
-/// `focusNextChild()` first (qwidget.cpp:8226-8238), which lands outside the stack here; then the
+/// `focusNextChild` first, which lands outside the stack here; then the
 /// focus moves to the new page's first Tab child.
 #[test]
 fn a_page_switch_moves_focus_below_the_old_page_out_then_into_the_new_page() {
@@ -438,7 +438,7 @@ fn a_page_switch_with_no_widget_outside_the_stack_still_focuses_the_new_page() {
 }
 
 /// The page itself holding the focus: `isAncestorOf` counts the widget itself
-/// (qwidget.cpp `QWidget::isAncestorOf`: `child == this` returns true), so `clearFocus()` runs and
+/// ( `QWidget::isAncestorOf`: `child == this` returns true), so `clearFocus` runs and
 /// the focus then moves into the new page.
 #[test]
 fn focus_on_the_page_itself_moves_into_the_new_page() {
@@ -462,7 +462,7 @@ fn switching_back_restores_the_pages_focus_widget() {
     assert_eq!(focused(&d, &ws), Some("a1"));
 }
 
-/// A page with no Tab child gets the focus itself (third best, qstackedlayout.cpp:331-332).
+/// A page with no Tab child gets the focus itself (third best).
 #[test]
 fn a_page_without_a_tab_child_gets_the_focus_itself() {
     let (_root, s, ws, d, _log) = stack_window("a0");
@@ -480,7 +480,7 @@ fn a_page_switch_leaves_focus_outside_the_stack() {
     assert!(focus_log(&log).is_empty());
 }
 
-/// `setCurrentIndex(currentIndex())` returns at once (qstackedlayout.cpp:295-297): an explicitly
+/// `setCurrentIndex(currentIndex)` returns at once: an explicitly
 /// hidden current page stays hidden and no signal is emitted.
 #[test]
 fn setting_the_current_index_again_is_a_no_op() {
@@ -508,7 +508,7 @@ fn setting_the_current_index_again_is_a_no_op() {
     assert!(fired.lock().unwrap().is_empty());
 }
 
-/// `QStackedLayout::takeAt` (qstackedlayout.cpp:240-262): removing the current page shows the
+/// `QStackedLayout::takeAt`: removing the current page shows the
 /// neighbour and announces it before the removed page is hidden; removing the last page
 /// announces -1.
 #[test]
@@ -544,7 +544,7 @@ fn removing_pages_announces_the_new_current_then_hides() {
     assert_eq!(*log.borrow(), ["b:Hide", "seen:[0, -1]"]);
 }
 
-/// `hide_helper` stops at `isWindow()` (qwidget.cpp:8184): hiding the window keeps its focus
+/// `hide_helper` stops at `isWindow`: hiding the window keeps its focus
 /// widget.
 #[test]
 fn hiding_a_window_keeps_its_focus_widget() {

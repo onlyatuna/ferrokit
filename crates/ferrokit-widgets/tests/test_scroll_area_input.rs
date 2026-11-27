@@ -2,7 +2,7 @@
 //! `QScrollArea` input: a bar that is no longer needed puts the content back at the origin, a
 //! wheel that moves nothing is left to the parent, horizontal wheels use their own axis, and
 //! the scroll bars take mouse presses (`QAbstractScrollArea` scroll bar widgets are children of
-//! the area, `qabstractscrollarea.cpp:254-266`).
+//! the area).
 
 use ferrokit_core::event::{Event, EventKind, MouseButtons};
 use ferrokit_gui::geometry::primitives::{Point, Rect};

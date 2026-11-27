@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Native size limits of a real Win32 window: what `WM_GETMINMAXINFO` reports for the logical
 //! limits a `NativeWindow` carries, and what Windows does with them (`QWindowsGeometryHint`,
-//! qwindowswindow.cpp:1216-1262).
+//! ).
 //!
 //! These tests use real `HWND`s and the real window procedure (`SendMessageW`, `SetWindowPos`).
 //! The scale factor is the monitor's: a window created under a per-monitor-v2 thread context gets
@@ -281,7 +281,7 @@ fn a_changed_minimum_is_seen_by_the_next_query() {
 /// The limits are in window-rectangle units and carry no frame margins, which holds because the
 /// window's client area is its whole rectangle once the window has been sized (`WM_NCCALCSIZE`
 /// keeps the proposed rectangle). If this ever fails, `WM_GETMINMAXINFO` has to add the frame like
-/// `QWindowsGeometryHint::frameSizeConstraints` (qwindowswindow.cpp:1225-1235).
+/// `QWindowsGeometryHint::frameSizeConstraints`.
 #[test]
 fn a_sized_window_has_no_non_client_area() {
     for context in [AWARE, UNAWARE] {
@@ -605,7 +605,7 @@ fn a_fixed_size_offers_no_resize_at_all() {
 
 #[test]
 fn an_empty_minimum_is_never_a_fixed_size() {
-    // `minimumSize.isEmpty()` returns before any axis is compared (qwindowswindow.cpp:3501-3502),
+    // `minimumSize.isEmpty` returns before any axis is compared,
     // even where minimum and maximum are equal on the other axis.
     let mut w = TestWindow::with_frameless_config();
     w.set_minimum_size(400, 0);

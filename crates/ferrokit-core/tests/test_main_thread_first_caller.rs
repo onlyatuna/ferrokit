@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! The thread that constructs the application is the main thread; a pool worker is not, even
-//! though the worker runs after the application exists (qcoreapplication.cpp:475, 531-537).
+//! though the worker runs after the application exists (531-537).
 
 use ferrokit_core::application::CoreApplication;
 use ferrokit_core::object::ThreadContext;

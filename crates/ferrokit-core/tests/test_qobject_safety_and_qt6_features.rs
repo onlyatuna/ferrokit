@@ -325,7 +325,7 @@ fn test_delete_later_inside_handler_scope_survives_nested_pump() {
 
     ThreadContext::set_current_loop_level(1);
     let scope = ScopeLevelGuard::enter();
-    // Stamped (1, 1). qcoreapplication.cpp:1882: E.L+E.S (2) > cur.L+cur.S (2) is false, so the
+    // Stamped (1, 1).: E.L+E.S (2) > cur.L+cur.S (2) is false, so the
     // DeferredDelete is not delivered by a nested pump.
     widget.with(|w| w.delete_later()).unwrap();
     event_loop.process_events(false);
@@ -421,7 +421,7 @@ fn test_event_filter_cross_thread_and_cycle_prevention() {
     // callback.
     let mut obj_b = unsafe { register_owned_qobject(TestWidget::new("obj_b")) };
 
-    // 1. Qt allows installing self as event filter (qobject.cpp:2407-2423)
+    // 1. Qt allows installing self as event filter
     let a_id = OwnedObject::object_id(&obj_a);
     let b_id = OwnedObject::object_id(&obj_b);
     let self_filter = obj_a
@@ -442,7 +442,7 @@ fn test_event_filter_cross_thread_and_cycle_prevention() {
             .unwrap()
     );
 
-    // 3. Qt allows mutual event filters (qobject.cpp:2407-2423)
+    // 3. Qt allows mutual event filters
     let cycle = obj_b
         .with_mut(|b| ferrokit_core::object::install_event_filter(&mut b.data, a_id))
         .unwrap();

@@ -7,7 +7,7 @@
 //! 16 777 216 `#rrggbb` colours as per-red digests plus 1 200 spot rows, the other colour
 //! specifications, the `lighter` / `darker` of HSL colours, and colour-name parsing.
 //! `reference` below is a second, independent transcription of `QColor::toHsl()` and the HSL branch
-//! of `QColor::toRgb()` from `qcolor.cpp` (v6.11.2, lines 2293-2339 and 2422-2470).
+//! of `QColor::toRgb` from (v6.11.2, lines 2293-2339 and 2422-2470).
 
 use ferrokit_gui::color::{Color, ColorSpec, GlobalColor, NameFormat, QColor, darker, lighter};
 
@@ -41,7 +41,7 @@ fn gauge_round_trip(rgb: u32) -> ([f32; 3], u32) {
     ([h, s, l], out.rgb() & 0xff_ffff)
 }
 
-/// An independent transcription of `QColor::toHsl` / `QColor::toRgb` (HSL), `qcolor.cpp` v6.11.2.
+/// An independent transcription of `QColor::toHsl` / `QColor::toRgb` (HSL), v6.11.2.
 mod reference {
     fn q_round(x: f32) -> u16 {
         (x + 0.5) as i32 as u16

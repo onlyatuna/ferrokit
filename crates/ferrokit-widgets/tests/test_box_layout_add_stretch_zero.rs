@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! `QBoxLayout::addStretch(0)` keeps stretch 0 (qboxlayout.cpp:872-879, 981-983).
+//! `QBoxLayout::addStretch(0)` keeps stretch 0 (981-983).
 //!
-//! `setupGeom` passes the spacer's stretch through unchanged (qboxlayout.cpp:316; a spacer has no
+//! `setupGeom` passes the spacer's stretch through unchanged (a spacer has no
 //! widget to fall back to), and `qGeomCalc` gives a stretch-0 item nothing while a sibling has
 //! stretch > 0, but shares the space with the other expanding items when none has
-//! (qlayoutengine.cpp:229-235). Reference rectangles: PySide6 6.11.2, a 300x20 `QHBoxLayout` with
+//! . Reference rectangles: PySide6 6.11.2, a 300x20 `QHBoxLayout` with
 //! margins 0 and spacing 6, items whose `sizeHint` is 50x20 and `minimumSizeHint` 0x0.
 
 use ferrokit_core::event::Event;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! `QMenu::hideEvent` clears the current action, which also closes the open sub-menu
-//! (`qmenu.cpp` `hideEvent` -> `setCurrentAction(nullptr)`): hiding through `setVisible(false)`
+//! ( `hideEvent` -> `setCurrentAction(nullptr)`): hiding through `setVisible(false)`
 //! leaves neither a highlighted item nor a visible sub-menu behind.
 
 use ferrokit_core::event::{Event, EventKind};

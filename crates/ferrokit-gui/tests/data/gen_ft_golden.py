@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-3.0-only
 """Regenerates ft_golden.txt and qt_golden.txt, the FreeType and Qt measurements that
-tests/test_ft_golden.rs compares the Linux glyph backend (`SkrifaFace`, `ftgrays`) against.
+tests/test_ft_golden.rs compares the Linux glyph backend (`SkrifaFace`) against.
 
     python gen_ft_golden_fonts.py                            # the fixture fonts, once
     PYTHONPATH=<fontTools>:<freetype-py on FreeType 2.14.2> python gen_ft_golden.py ft  > ft_golden.txt
     QT_QPA_PLATFORM=offscreen python gen_ft_golden.py qt  > qt_golden.txt
-    PYTHONPATH=<freetype-py> python gen_ft_golden.py outline        # ftgrays unit-test values (stdout)
+    PYTHONPATH=<freetype-py> python gen_ft_golden.py outline        # outline unit-test values (stdout)
 
 `ft` needs freetype-py bound to the system FreeType 2.14.2 (the release Qt 6.12 links in the Linux
 reference setup; the script refuses to run against another version) and loads every glyph with Qt's
@@ -216,7 +216,7 @@ def qt_records():
 
 
 def outline_values():
-    """Bitmaps of hand-made outlines from FT_Outline_Get_Bitmap, for the ftgrays unit tests."""
+    """Bitmaps of hand-made outlines from FT_Outline_Get_Bitmap, for the outline unit tests."""
     import freetype
     from freetype import raw
 

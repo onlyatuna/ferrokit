@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Connection changes made while a signal is being emitted.
 //!
-//! Qt's `doActivate` (qobject.cpp:4269) walks the sender's connection list and re-checks each
+//! Qt's `doActivate` walks the sender's connection list and re-checks each
 //! connection's `receiver` immediately before calling it, so a connection that is severed by an
 //! earlier slot of the same emission is never called. A connection made during an emission does
 //! not take part in that emission.

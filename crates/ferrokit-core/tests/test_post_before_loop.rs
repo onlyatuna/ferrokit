@@ -2,7 +2,7 @@
 //! Events posted to a thread whose event loop does not exist yet.
 //!
 //! Qt queues them on the receiver thread's `postEventList` regardless of whether a dispatcher
-//! exists (`QCoreApplication::postEvent`, qcoreapplication.cpp:1694) and delivers them once the
+//! exists (`QCoreApplication::postEvent`) and delivers them once the
 //! thread runs events. Each test uses a fresh thread (std `ThreadId`s are never reused), so the
 //! "target thread has no loop yet" state is exact.
 

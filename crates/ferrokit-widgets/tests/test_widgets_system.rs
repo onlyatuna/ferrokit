@@ -341,7 +341,7 @@ fn test_hover_enter_leave_events_transition() {
 
     parent.borrow_mut().add_child(Rc::clone(&btn));
     ferrokit_widgets::widget::adopt_tree(&parent);
-    // Buttonless moves reach a widget only when it has mouse tracking (qapplication.cpp:2746-2750).
+    // Buttonless moves reach a widget only when it has mouse tracking.
     btn.borrow().widget_base().set_mouse_tracking(true);
 
     let mut dispatcher = EventTreeDispatcher::new();

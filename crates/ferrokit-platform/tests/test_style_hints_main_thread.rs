@@ -4,7 +4,7 @@
 //! On Windows the change arrives in the window procedure of the window that got
 //! `WM_SETTINGCHANGE`; on Linux on the D-Bus listener thread. Qt delivers the theme change
 //! through the window-system event queue to the main thread (`QGuiApplicationPrivate::
-//! processThemeChanged`, qguiapplication.cpp:2838-2851). This is the only test of the binary, as
+//! processThemeChanged`). This is the only test of the binary, as
 //! it needs the process's one application object to name the main thread.
 
 use std::sync::{Arc, Mutex};

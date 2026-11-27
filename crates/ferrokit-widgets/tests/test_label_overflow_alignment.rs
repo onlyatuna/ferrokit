@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! `QLabel` text wider than its rect, against Qt 6 (`qpainter.cpp:7415-7470`): the aligned
+//! `QLabel` text wider than its rect, against Qt 6: the aligned
 //! offset is not clamped, so centred/right text overflows symmetrically (`xoff` at 7426-7429),
 //! and the overflow is clipped to the label rect (`setClipRect` at 7442-7446).
 #![cfg(windows)]

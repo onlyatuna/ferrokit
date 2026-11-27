@@ -2,9 +2,8 @@
 //! Label focus policy: `QLabel` keeps `QWidget`'s `NoFocus` default, stores whatever
 //! `setFocusPolicy` is given, and joins the Tab chain once the policy has `TabFocus`.
 //!
-//! `QWidget::setFocusPolicy` stores the policy (qwidget.cpp:7918-7920; default 0 = NoFocus at
-//! qwidget.cpp:974); Tab navigation takes a candidate only if `focusPolicy() & Qt::TabFocus`
-//! (qwidget.cpp:12365).
+//! `QWidget::setFocusPolicy` stores the policy (default 0 = NoFocus at
+//! ); Tab navigation takes a candidate only if `focusPolicy & Qt::TabFocus`
 //! Reference: PySide6 6.11.2, a `QPushButton` then a `QLabel`: `focusPolicy()` is 0; from the
 //! focused button, `focusNextChild()` stays on the button; after `setFocusPolicy(StrongFocus)`,
 //! `focusPolicy()` is 11 and `focusNextChild()` lands on the label.

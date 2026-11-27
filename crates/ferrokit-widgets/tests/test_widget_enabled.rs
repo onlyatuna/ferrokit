@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! `QWidget::setEnabled` passes the effective state down the tree
-//! (qwidget.cpp:3405-3476): a child under a disabled parent is disabled and cannot be enabled on
+//! : a child under a disabled parent is disabled and cannot be enabled on
 //! its own, and a child disabled explicitly stays disabled when the parent comes back. Every
-//! widget whose state changes repaints (`changeEvent(EnabledChange)`, qwidget.cpp:9491-9492).
+//! widget whose state changes repaints (`changeEvent(EnabledChange)`).
 //! Reference states: PySide6 6.11.2, a `QWidget` with two `QLabel`s in a `QVBoxLayout`.
 
 use ferrokit_gui::geometry::primitives::Rect;

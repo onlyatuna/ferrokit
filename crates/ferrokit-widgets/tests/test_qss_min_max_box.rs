@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! QSS `min/max-width/height` name the content box: Qt adds padding and border when it sets
-//! `minimumSize`/`maximumSize` (`QStyleSheetStyle::setGeometry`, `qstylesheetstyle.cpp:2595-2612`),
-//! and `QLabel::sizeHint` is expanded to `minimumSize` (`qlabel.cpp:620`) but never taken from
+//! `minimumSize`/`maximumSize` (`QStyleSheetStyle::setGeometry`),
+//! and `QLabel::sizeHint` is expanded to `minimumSize` but never taken from
 //! `max-height`. Expected numbers are PySide6 measurements.
 use ferrokit_widgets::frame::Frame;
 use ferrokit_widgets::progress_bar::ProgressBar;

@@ -67,9 +67,9 @@ thread_local! {
 
 /// Shared handle to the application's `aboutToQuit` signal; clones share subscribers.
 static ABOUT_TO_QUIT: RwLock<Option<Signal<()>>> = RwLock::new(None);
-/// the `in_exec` flag (1484-1486).
+/// the `in_exec` flag.
 static IN_EXEC: AtomicBool = AtomicBool::new(false);
-/// the `about_to_quit_emitted` flag (1532-1534).
+/// the `about_to_quit_emitted` flag.
 static ABOUT_TO_QUIT_EMITTED: AtomicBool = AtomicBool::new(false);
 /// Thread that owns the application.
 static APP_THREAD: RwLock<Option<ThreadId>> = RwLock::new(None);
@@ -245,7 +245,6 @@ impl CoreApplication {
         IN_EXEC.store(true, Ordering::SeqCst);
         let code = current_event_loop().map_or(0, |el| el.exec());
         // execCleanup: sendPostedEvents(nullptr, DeferredDelete) once the loop has returned
-        // (1484-1489).
         if let Some(el) = current_event_loop() {
             el.flush_deferred_deletes();
         }

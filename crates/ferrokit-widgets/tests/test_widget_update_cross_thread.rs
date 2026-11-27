@@ -2,7 +2,7 @@
 //! A repaint request reaches the widget's own thread.
 //!
 //! Qt reference:
-//! - `widgets/kernel/qwidget.cpp:11367-11420`: `QWidget::update` posts `UpdateRequest` via
+//! -: `QWidget::update` posts `UpdateRequest` via
 //!   `QCoreApplication::postEvent`, which posts to the receiver's thread (`d->threadData`).
 //! - A `QWidget` is not reentrant: another thread does not call `update()` on it but posts the
 //!   request (`QCoreApplication::postEvent`). In ferrokit a widget is `!Sync`, so another thread

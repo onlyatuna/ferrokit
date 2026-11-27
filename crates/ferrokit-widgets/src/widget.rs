@@ -376,7 +376,7 @@ pub fn style_changed_below(children: Vec<WidgetRef>) {
     }
 }
 
-/// Strongly typed `Qt::WidgetAttribute` matching Qt `qnamespace.h:300-439`.
+/// Strongly typed `Qt::WidgetAttribute` matching Qt `qnamespace.h`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum WidgetAttribute {
@@ -633,7 +633,7 @@ pub trait Widget: QObject + 'static {
     /// Virtual paint event handler (the widget equivalent).
     ///
     /// Called when the widget needs to repaint its content.
-    /// The painter is pre-translated to the widget's local coordinates `(0, 0)`.
+    /// The painter is pre-translated to the widget's local coordinates `(0)`.
     fn paint_event(&mut self, _painter: &mut Painter) {}
 
     /// The part of this widget (its own coordinates) inside which its children are drawn; `None`
@@ -645,7 +645,7 @@ pub trait Widget: QObject + 'static {
     }
 
     /// Paints after the children, on top of them. A scroll area draws its scroll bars here: they
-    /// are siblings of the viewport created after it (258, 266), so
+    /// are siblings of the viewport created after it (258), so
     /// they stack above it.
     fn paint_over_children(&mut self, _painter: &mut Painter) {}
 
@@ -1589,7 +1589,7 @@ impl WidgetBase {
     /// Repaints the vacated footprint `old` (parent coordinates) of a visible widget that moved or
     /// resized: the parent's dirty region gets it. widget internals
     /// calls `moveRect` (7380) or `invalidateBackingStore_resizeHelper`
-    /// (:7382) on the old position; `moveRect` subtracts the new rect from the parent's region
+    /// on the old position; `moveRect` subtracts the new rect from the parent's region
     /// . Only the parent is invalidated. A parent that is
     /// mutably borrowed on the current stack is skipped; its own layout or update pass repaints it.
     pub fn invalidate_vacated_rect(&self, old: Rect) {
@@ -2409,7 +2409,7 @@ impl Widget for EmptyWidget {
             }
             // A layout-owning child re-lays out its children when its size changes, as Qt's
             // QLayout::widgetEvent does on Resize, when the layout is already activated.
-            // A parentless widget is a window root, which Window lays out itself (window.rs:859-860);
+            // A parentless widget is a window root, which Window lays out itself (window.rs);
             // fitting it here as well ran that pass twice (test_layout_metric_caching aligned container).
             if let Some(mut layout) = self.layout_ref_mut()
                 && has_parent

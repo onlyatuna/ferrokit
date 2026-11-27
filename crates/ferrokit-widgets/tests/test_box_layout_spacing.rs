@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! `QBoxLayout::addSpacing`, `insertSpacing`, `addSpacerItem`, `insertSpacerItem`,
-//! `insertStretch`, `setStretchFactor`, `setStretch` and `stretch` (qboxlayout.cpp:844-1138).
+//! `insertStretch`, `setStretchFactor`, `setStretch` and `stretch`.
 //!
 //! Spacers report `QSpacerItem` sizes: the hint is the given size, the minimum is 0 where the
-//! policy may shrink, the maximum unbounded where it may grow (qlayoutitem.cpp:607-653). They are
-//! empty, so the layout spacing falls between the widgets only (qboxlayout.cpp:261-294).
+//! policy may shrink, the maximum unbounded where it may grow. They are
+//! empty, so the layout spacing falls between the widgets only.
 //! Reference values: PySide6 6.11.2, margins 0, spacing 6, items whose `sizeHint` is 50x20 and
 //! `minimumSizeHint` 0x0.
 

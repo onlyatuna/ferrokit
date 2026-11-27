@@ -3,7 +3,7 @@
 """Regenerates qcolor_oracle.txt, the Qt measurements tests/test_qcolor.rs compares against.
 
 Every value is read from the real QColor of PySide6 (the file header records the version), so the
-Rust implementation is checked against Qt itself and not against its own reading of qcolor.cpp.
+Rust implementation is checked against Qt runtime output and not against external source.
 
     python gen_qcolor_oracle.py > qcolor_oracle.txt
 

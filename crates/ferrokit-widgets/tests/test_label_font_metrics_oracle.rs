@@ -150,7 +150,7 @@ fn labels_of_an_in_memory_font_are_sized_as_qt_sizes_them() {
 }
 
 /// `sizeForWidth` starts with `if (minimumWidth() > 0) w = qMax(w, minimumWidth())`
-/// (qlabel.cpp:536-537), so a wrapping label with a minimum width has no width of its own choice:
+/// so a wrapping label with a minimum width has no width of its own choice:
 /// its hints wrap at that width. Measured (oracle font, 16 px, `"word " * 40`, `setMinimumWidth`):
 /// 0: 310x80 (minimum 31x16), 50: 50x640 (50x16), 200: 200x128 (200x16), 400: 400x64 (400x16);
 /// a label that does not wrap is 1395x16 whatever the minimum.

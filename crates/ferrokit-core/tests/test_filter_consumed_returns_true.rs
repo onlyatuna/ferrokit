@@ -2,7 +2,7 @@
 //! When an event filter filters/consumes an event, send_event returns true.
 //!
 //! Qt reference:
-//! - `corelib/kernel/qcoreapplication.cpp:1285-1295`:
+//! -:
 //!   If an application or object event filter consumes an event, `filtered = true`
 //!   and `notify_helper` returns `filtered` (`true`).
 

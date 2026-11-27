@@ -2,10 +2,10 @@
 //! A top-level window's logical rect goes to native coordinates through the screen it lands on:
 //! `QWindowPrivate::create` and `QWindow::setGeometry` pick that screen with `screenForGeometry`
 //! (the screen under the rect's centre, else the last one it intersects, else the current one;
-//! `qwindow.cpp:566-568, 1867-1870, 1894-1910`) and map with `toNativePixels` /
+//! 1867-1870, 1894-1910`) and map with `toNativePixels` /
 //! `toNativeGlobalPosition`, which scale relative to the screen's native top-left
-//! (`qwindowsintegration.cpp:299-300`, `qhighdpiscaling_p.h:150-158, 219-252`,
-//! `qhighdpiscaling.cpp:713-721`).
+//! (219-252`,
+//! ).
 //!
 //! The fake platform reports Qt's logical screen geometry (native top-left, size divided by the
 //! ratio) and gives each window the ratio of the screen under its native centre, as Windows
@@ -384,7 +384,7 @@ impl Drop for PolicyGuard {
 
 #[test]
 fn each_rounding_policy_rounds_a_screen_scale_factor_as_qt_does_and_keeps_it_at_least_one() {
-    // qhighdpiscaling.cpp:322-361: the policy picks the rounding, then `qMax(rounded, 1)`.
+    // : the policy picks the rounding, then `qMax(rounded, 1)`.
     let _guard = PolicyGuard;
     let set = HighDpiScaleFactorRoundingPolicy::Round;
     GuiApplication::set_high_dpi_scale_factor_rounding_policy(set);

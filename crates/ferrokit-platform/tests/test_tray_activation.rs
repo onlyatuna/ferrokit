@@ -130,7 +130,7 @@ fn process_events_without_a_bus_or_handler_is_harmless() {
 
 #[test]
 fn activation_reasons_carry_qts_values() {
-    // qsystemtrayicon.h: Unknown, Context, DoubleClick, Trigger, MiddleClick.
+    // : Unknown, Context, DoubleClick, Trigger, MiddleClick.
     assert_eq!(TrayActivation::Unknown as i32, 0);
     assert_eq!(TrayActivation::Context as i32, 1);
     assert_eq!(TrayActivation::DoubleClick as i32, 2);

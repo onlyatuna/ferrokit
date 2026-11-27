@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! `setWindowOpacity` must take effect whichever presenter a window ends up with
-//! (Qt: `qwindowswindow.cpp:494-530` for standard windows, `qwindowsbackingstore.cpp:66` for layered ones).
+//! (Qt: for standard windows, for layered ones).
 #![cfg(windows)]
 
 use ferrokit_gui::geometry::Region;
@@ -91,7 +91,7 @@ fn a_standard_window_becomes_translucent_through_the_trait() {
 }
 
 /// `WindowTransparentForInput` keeps a window layered whatever its opacity (`setWindowLayered`,
-/// `qwindowswindow.cpp:498`), so an opacity round trip must not end click-through, and the
+/// ), so an opacity round trip must not end click-through, and the
 /// layered window is given an opaque alpha rather than left without layered attributes.
 #[test]
 fn an_opacity_round_trip_keeps_a_click_through_window_layered() {

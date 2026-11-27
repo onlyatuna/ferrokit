@@ -40,7 +40,7 @@ pub fn clear_application_event_filters() {
 
 /// Qt walks the filter list by index and skips entries that have become null
 /// (application event filter dispatch,
-/// object event filter dispatch:1255-1265). `slot_at` is called once per step, so the chain is
+/// object event filter dispatch). `slot_at` is called once per step, so the chain is
 /// read live: a filter tombstoned by an earlier callback is skipped, and one installed during dispatch
 /// shifts the walk exactly as in Qt. No chain borrow is held while a filter runs.
 /// Returns true if a filter consumed the event.
@@ -106,7 +106,7 @@ pub fn filters_consume(receiver: &ObjectData, event: &mut Event) -> bool {
 
 /// Delivers `event` to a receiver the caller already holds mutably: filters (see
 /// `filters_consume`) then `receiver.event(event)`, the order of event notification
-/// ( scope counter,:1237-1268 filters). Returns true when a filter
+/// ( scope counter filters). Returns true when a filter
 /// consumed the event, otherwise the result of `event()`.
 pub fn notify_borrowed<T: QObject + ?Sized>(receiver: &mut T, event: &mut Event) -> bool {
     let _scope = ScopeLevelGuard::enter();
@@ -293,7 +293,6 @@ pub fn notify_helper(receiver: ObjectId, event: &mut Event) -> bool {
     }
 
     // The application object's Quit runs after the filters, then the window veto and exit
-    // (2052-2058).
     if matches!(&event.kind, EventKind::Quit { .. })
         && crate::application::is_application_object(receiver)
     {
@@ -370,7 +369,7 @@ struct RunningLoops {
     ///
     /// Deviation from Qt: Qt sets `quit_now` even when no loop runs, and clears it only at the
     /// start of the thread event loop and around the application event loop
-    /// (1470, 1486), so after an exit every later an event loop run
+    /// (1470), so after an exit every later an event loop run
     /// on the thread returns -1 until one of those runs. Here the flag is set only while a loop
     /// runs and is cleared when the last running loop returns, so an exit with no loop running is
     /// a no-op and a later `exec` on the thread runs normally.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! `QCoreApplication::exec` flushes DeferredDelete events when the loop returns
-//! (qcoreapplication.cpp:1472-1473 and 1484-1489, `execCleanup`).
+//! ( and 1484-1489, `execCleanup`).
 
 use ferrokit_core::application::CoreApplication;
 use ferrokit_core::event::{Event, EventKind};

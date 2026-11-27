@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Qt default layout margins and spacing.
-//! qtbase/src/widgets/kernel/qlayout.cpp:117-129 `QLayoutPrivate::getMargin`: explicit
+//! reference `QLayoutPrivate::getMargin`: explicit
 //! margin if set; else 0 for a nested layout; else the owner style's `PM_Layout*Margin`.
-//! qtbase/src/widgets/styles/qcommonstyle.cpp:4732-4750 `PM_LayoutLeft/Top/Right/BottomMargin`
+//! reference `PM_LayoutLeft/Top/Right/BottomMargin`
 //! 11 for a window, 9 for a child widget; `PM_LayoutHorizontalSpacing` 6.
-//! qtbase/src/widgets/kernel/qlayoutengine.cpp:390-401 `qSmartSpacing`: parentless -1,
+//! reference `qSmartSpacing`: parentless -1,
 //! widget parent -> style spacing, parent layout -> `parent->spacing()`.
 //! PySide6 6.11.2 (`QT_QPA_PLATFORM=windows`, screen DPR 1.25, logicalDotsPerInch 96):
 //! - `pixelMetric(PM_LayoutLeftMargin)` window 11, child 9; `PM_LayoutHorizontalSpacing` 6.
@@ -86,7 +86,7 @@ fn child_owner_default_margin_is_9() {
 
 #[test]
 fn nested_layout_default_margin_is_0() {
-    // Qt: a nested layout's margin is 0 (qlayout.cpp:117-129); the holder sits at the outer's 11.
+    // Qt: a nested layout's margin is 0; the holder sits at the outer's 11.
     let top = owner(200, 100);
     let it = item();
     let mut inner = BoxLayout::horizontal();
@@ -113,7 +113,7 @@ fn nested_layout_default_margin_is_0() {
 
 #[test]
 fn explicit_margins_win_over_owner_default() {
-    // Qt: a user margin >= 0 is used as is (qlayout.cpp:117-129).
+    // Qt: a user margin >= 0 is used as is.
     let top = owner(200, 100);
     let it = item();
     let mut l = BoxLayout::horizontal();
@@ -127,7 +127,7 @@ fn explicit_margins_win_over_owner_default() {
 
 #[test]
 fn owned_box_spacing_is_style_6() {
-    // Qt: owned layout spacing = PM_LayoutHorizontalSpacing 6 (qcommonstyle.cpp:4732-4750).
+    // Qt: owned layout spacing = PM_LayoutHorizontalSpacing 6.
     // Size hint of an owned box of two 50x20 items: 11 + 50 + 6 + 50 + 11 = 128.
     let top = owner(200, 100);
     let mut l = BoxLayout::horizontal();
@@ -144,7 +144,7 @@ fn owned_box_spacing_is_style_6() {
 
 #[test]
 fn owned_grid_spacing_is_style_6() {
-    // Qt: an owned `QGridLayout` asks the style for both spacings (qgridlayout.cpp:1093-1129), 6.
+    // Qt: an owned `QGridLayout` asks the style for both spacings, 6.
     // PySide6: two 50x20 items in a top-level owner give hint
     // (128, 42) side by side (11 + 50 + 6 + 50 + 11) and (72, 68) stacked (11 + 20 + 6 + 20 + 11).
     for (horizontal, expected) in [(true, Size::new(128, 42)), (false, Size::new(72, 68))] {
@@ -165,14 +165,14 @@ fn owned_grid_spacing_is_style_6() {
 
 #[test]
 fn parentless_box_spacing_is_minus_one() {
-    // Qt: `QLayout::spacing()` with no owner or parent layout is -1 (qlayoutengine.cpp:390-401).
+    // Qt: `QLayout::spacing` with no owner or parent layout is -1.
     let l = BoxLayout::horizontal();
     assert_eq!(Layout::spacing(&l), -1);
 }
 
 #[test]
 fn sublayout_inherits_parent_spacing() {
-    // Qt: unset nested spacing = parent's effective spacing (qlayoutengine.cpp:390-401).
+    // Qt: unset nested spacing = parent's effective spacing.
     let mut outer = BoxLayout::vertical();
     outer.set_margins(Margins::new(0, 0, 0, 0));
     outer.set_spacing(1);

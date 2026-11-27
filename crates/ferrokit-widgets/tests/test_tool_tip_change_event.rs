@@ -160,7 +160,7 @@ fn register_filter(log: &Log, consume: bool) -> (ObjectId, OwnedObject<ChangeFil
     (OwnedObject::object_id(&owner), owner)
 }
 
-/// `QWidget::setToolTip` (qwidget.cpp:11793-11800) stores the text and then always sends
+/// `QWidget::setToolTip` stores the text and then always sends
 /// `ToolTipChange`, so an unregistered widget gets it too, once per call even for the same text.
 #[test]
 fn set_tool_tip_on_an_unregistered_widget_sends_tool_tip_change() {

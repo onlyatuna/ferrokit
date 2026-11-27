@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! A popup menu is kept inside the work area of the screen under the point it opens at, not the
 //! primary screen's: `QMenuPrivate::popup` clamps to `popupGeometry(QGuiApplication::screenAt(p))`
-//! (qmenu.cpp:2382, 292-308, 2489-2502). A fake platform with two side-by-side screens shows a
+//! (292-308, 2489-2502). A fake platform with two side-by-side screens shows a
 //! menu that consults the primary screen without a second monitor.
 #![cfg(windows)]
 
@@ -210,6 +210,6 @@ fn a_menu_is_kept_inside_the_screen_it_opens_on() {
     let secondary = Rect::new(1920, 0, 1920, 1080);
     let (rect, (w, h)) = popup_rect(secondary, Point::new(3835, 400));
     // Too close to the secondary screen's right edge: pulled left to 8 px inside it
-    // (qmenu.cpp:2489-2490, `desktopFrame`), not to the primary screen's edge.
+    // (`desktopFrame`), not to the primary screen's edge.
     assert_eq!(rect, Rect::new(1920 + 1920 - 8 - w, 400, w, h));
 }

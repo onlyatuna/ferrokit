@@ -196,7 +196,7 @@ fn test_qcss_8_digit_hex_color_is_argb() {
 }
 
 /// `rgba(r, g, b, <0..1>)` truncates the alpha: it is multiplied by 255 and cut to an int
-/// (qcssparser.cpp:826-828). PySide6 6.11.2 painted these over a transparent pixmap:
+/// . PySide6 6.11.2 painted these over a transparent pixmap:
 /// 0.12 -> 0x1e, 0.5 -> 0x7f, 0.97 -> 0xf7, 0.07 -> 0x11, 0.1 -> 0x19, 0.35 -> 0x59.
 #[test]
 fn test_qcss_rgba_fractional_alpha_truncates_like_qt() {

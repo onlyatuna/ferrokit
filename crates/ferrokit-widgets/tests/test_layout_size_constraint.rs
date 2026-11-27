@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! `QLayout::activate` applies the top-level layout's `SizeConstraint` to its owner
-//! (qlayout.cpp:980-1133). With `SetDefaultConstraint` a window's minimum becomes the layout's total
+//! . With `SetDefaultConstraint` a window's minimum becomes the layout's total
 //! minimum size unless that axis has an explicit minimum, a child widget's becomes 0 (or the
 //! explicit minimum); `setMinimumSize` / `setMaximumSize` then grow / shrink the owner
-//! (qwidget.cpp:4005-4087), and the explicit flags are restored afterwards (qlayout.cpp:1126-1129).
+//! and the explicit flags are restored afterwards.
 //!
 //! Expected values: measured with PySide6 6.11.2, offscreen.
 //! Every case is a horizontal box (margins 5, spacing 4) over A (hint 60x30, minimum 50x20) and B
@@ -366,7 +366,7 @@ fn stacked_line(name: &str, constraint: Option<SizeConstraint>, size: (i32, i32)
 }
 
 /// `QStackedLayout::minimumSize` and `sizeHint` leave out the contents margins
-/// (qstackedlayout.cpp:417-448): a window grows to the page's minimum only, and `SetFixedSize`
+/// : a window grows to the page's minimum only, and `SetFixedSize`
 /// fixes it to the page's hint.
 #[test]
 fn stacked_window_bounds_leave_out_the_margins() {

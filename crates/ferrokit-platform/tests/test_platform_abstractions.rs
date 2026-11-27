@@ -1492,7 +1492,7 @@ fn test_cross_platform_input_event_bridge_queuing_and_polling() {
     );
 }
 
-// Mock-runtime test: Qt's FerrokitNSView returns YES from -isFlipped (qnsview_drawing.mm:67-70). On macOS
+// Mock-runtime test: Qt's FerrokitNSView returns YES from -isFlipped. On macOS
 // the real view is checked on the main thread: examples/appkit_main_thread.rs (`window_flipped`).
 #[cfg(not(target_os = "macos"))]
 #[test]
@@ -1546,7 +1546,7 @@ fn test_wayland_wheel_delta_scale() {
     };
     use std::sync::{Arc, Mutex};
 
-    // Verify Wayland wheel delta conversion (aligned with Qt qwaylandinputdevice.cpp: WheelDelta::vertical(-value * 12))
+    // Verify Wayland wheel delta conversion (aligned with Qt: WheelDelta::vertical(-value * 12))
     let mut wayland_win = WaylandNativeWindow::new_offscreen(
         "Wayland Wheel Test",
         Rect::new(0, 0, 800, 600),

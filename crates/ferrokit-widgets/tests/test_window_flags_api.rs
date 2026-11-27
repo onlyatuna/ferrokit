@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Parity test for `QWidget::setWindowFlags` and `QWidget::setWindowFlag` (`qwidget.cpp:10623-10648`).
+//! Parity test for `QWidget::setWindowFlags` and `QWidget::setWindowFlag`.
 
 use ferrokit_gui::geometry::primitives::Rect;
 use ferrokit_platform::WindowFlags;

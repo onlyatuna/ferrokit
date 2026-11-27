@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Unparenting an owned child must never destroy it.
 //!
-//! Qt's `setParent_helper` (qobject.cpp:2287-2345) only unlinks the child and sends
+//! Qt's `setParent_helper` only unlinks the child and sends
 //! `ChildRemoved`; object lifetime stays with the caller.
 
 use std::sync::atomic::Ordering;
@@ -424,7 +424,7 @@ fn reparent_owned_fails_visibly_when_a_party_is_borrowed_and_changes_nothing() {
 }
 
 // Attaching an owned child must notify the parent with `ChildAdded`
-// (Qt `setParent_helper`, qobject.cpp:2346-2352).
+// (Qt `setParent_helper`).
 #[test]
 fn add_owned_child_sends_child_added() {
     let parent = Node::registered();

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Qt layout metric caching:
-//! widgets/kernel/qboxlayout.cpp:219-361, 590-625, 735-775
-//! widgets/kernel/qgridlayout.cpp:719-745, 880-928, 1181-1205, 1320-1328
-//! widgets/kernel/qlayoutitem.cpp:408-474, 580-612
-//! widgets/kernel/qlayoutengine.cpp:354-375
+//! 590-625, 735-775
+//! 880-928, 1181-1205, 1320-1328
+//! 580-612
 //!
 //! 1. When a layout is not dirty:
 //!    - `size_hint()`, `minimum_size()`, and `maximum_size()` return cached layout metrics
@@ -143,7 +142,7 @@ impl Widget for MetricCountingProbe {
     }
 }
 
-/// A container that, like `QWidget::setGeometry` (qwidget.cpp:7328), asks for no repaint when
+/// A container that, like `QWidget::setGeometry`, asks for no repaint when
 /// its geometry did not change, and counts the repaint requests it gets.
 struct UpdateCountingContainer {
     base: WidgetBase,
@@ -756,7 +755,7 @@ fn test_a_changed_size_hint_reaches_the_cached_layout_through_update_geometry() 
 }
 
 /// An aligned item on an `Ignored` axis is cut to the widget's own size hint, not to the item's
-/// (which `Ignored` makes 0) qlayoutitem.cpp:432-447, 670-673, and keeps that after a
+/// (which `Ignored` makes 0), 670-673, and keeps that after a
 /// resize that reuses the cached limits.
 #[test]
 fn test_an_aligned_item_on_an_ignored_axis_takes_the_widget_size_hint() {
@@ -826,7 +825,7 @@ fn test_a_changed_size_hint_reaches_an_aligned_item() {
 /// root (VBox) -> [mid container (VBox) -> leaf, sibling]. A resize lays out `mid` again, which
 /// must not invalidate the root layout's metrics: `QLayout` handles a resize of an activated
 /// layout with `doResize` only, and `mw->updateGeometry()` runs only at the end of `activate()`
-/// after an invalidation qlayout.cpp:528-533, 983-995, 1131. The sibling's queries
+/// after an invalidation, 983-995, 1131. The sibling's queries
 /// show whether the root layout rebuilt its metrics.
 #[test]
 fn test_a_resize_keeps_the_ancestor_metric_caches_of_a_nested_layout() {
@@ -879,7 +878,7 @@ fn test_a_resize_keeps_the_ancestor_metric_caches_of_a_nested_layout() {
 }
 
 /// An aligned item is cut to its size hint, which `QWidgetItemV2` caches with the other metrics
-/// qlayoutitem.cpp:432-447, 778-789: laying it out again at a new size asks the widget
+/// 778-789: laying it out again at a new size asks the widget
 /// nothing.
 #[test]
 fn test_a_resize_does_not_requery_an_aligned_item() {
@@ -918,7 +917,7 @@ fn test_a_resize_does_not_requery_an_aligned_item() {
 /// size hint; its height follows the cell. Qt sends a resize, and so lays the container's layout
 /// out again and repaints it, only when the widget's own size changed: `setGeometry_sys`
 /// compares the clamped widget size, not the rectangle the parent layout offered
-/// qwidget.cpp:7297-7329; qlayout.cpp:528-530.
+/// ;.
 #[test]
 fn test_an_aligned_container_is_laid_out_again_only_when_its_own_size_changes() {
     let (leaf, _, _, _, leaf_set_geom) = MetricCountingProbe::new(50, 30);

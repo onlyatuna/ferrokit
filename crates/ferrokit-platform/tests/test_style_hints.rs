@@ -2,7 +2,7 @@
 //! `GuiApplication::style_hints().color_scheme()` / `set_color_scheme` / `color_scheme_changed`
 //! driven by a mock platform theme (`GenericTheme`): which scheme is effective, when the signal
 //! fires, and what an override does. Qt: `QStyleHints::colorScheme`, `setColorScheme`,
-//! `colorSchemeChanged` (qstylehints.cpp:158-178, 722-741).
+//! `colorSchemeChanged` (722-741).
 //!
 //! Every test makes its own application object (the thread it runs on is the main thread) and
 //! delivers the queued theme notifications with `process_events`. It is a `CoreApplication`: a

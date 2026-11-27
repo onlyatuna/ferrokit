@@ -7,7 +7,7 @@ use ferrokit_core::event_loop::EventLoop;
 use ferrokit_core::object::ThreadId;
 use ferrokit_core::thread::Promise;
 
-/// Qt: QFutureWatcher delivers `finished()` from its own event loop (qfuturewatcher.cpp:485-495).
+/// Qt: QFutureWatcher delivers `finished` from its own event loop.
 #[test]
 fn future_watcher_finished_runs_on_watcher_thread() {
     let el = EventLoop::new();
@@ -39,7 +39,7 @@ fn future_watcher_finished_runs_on_watcher_thread() {
     );
 }
 
-/// Qt: resultReadyAt is queued to the watcher's loop (qfuturewatcher.cpp:521-537).
+/// Qt: resultReadyAt is queued to the watcher's loop.
 #[test]
 fn future_watcher_result_ready_carries_value_on_watcher_thread() {
     let el = EventLoop::new();
@@ -76,7 +76,6 @@ fn future_watcher_result_ready_carries_value_on_watcher_thread() {
 type RangeLog = Arc<Mutex<Vec<(ThreadId, (i32, i32))>>>;
 
 /// Qt: progressValueChanged and progressRangeChanged are queued to the watcher's loop
-/// (qfuturewatcher.cpp:540-550).
 #[test]
 fn future_watcher_progress_runs_on_watcher_thread() {
     let el = EventLoop::new();
@@ -117,7 +116,7 @@ fn future_watcher_progress_runs_on_watcher_thread() {
 }
 
 /// Qt: `finished()` is emitted once, from `reportFinished`, which is guarded by `!isFinished()`
-/// (qfutureinterface.cpp:458-466). Results precede it in the same queue (qfutureinterface.cpp:536-560).
+/// . Results precede it in the same queue.
 #[test]
 fn future_watcher_finished_emitted_once_after_results() {
     let el = EventLoop::new();
@@ -147,7 +146,7 @@ fn future_watcher_finished_emitted_once_after_results() {
     );
 }
 
-/// Qt: cancel sends `canceled()` to the watcher's loop (qfuturewatcher.cpp:496-499).
+/// Qt: cancel sends `canceled` to the watcher's loop.
 #[test]
 fn future_watcher_canceled_runs_on_watcher_thread() {
     let el = EventLoop::new();
@@ -170,7 +169,7 @@ fn future_watcher_canceled_runs_on_watcher_thread() {
 }
 
 /// Qt: a destroyed QFutureWatcher receives no further callouts (removePostedEvents,
-/// qfuturewatcher.cpp:480-483).
+/// ).
 #[test]
 fn dropped_future_watcher_receives_nothing() {
     let el = EventLoop::new();
@@ -201,7 +200,7 @@ fn dropped_future_watcher_receives_nothing() {
 }
 
 /// Qt: a watcher's callouts go to the thread that owns it (QObject thread affinity,
-/// qobject.cpp:991-993), not to the thread that produced the result.
+/// ), not to the thread that produced the result.
 #[test]
 fn future_watcher_delivers_to_thread_that_created_it() {
     let main_thread = ThreadId::current();

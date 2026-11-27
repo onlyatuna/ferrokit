@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! `QWindowsContext::handleExitSizeMove` (`qwindowscontext.cpp:1261-1290`): a window dragged by the
+//! `QWindowsContext::handleExitSizeMove`: a window dragged by the
 //! native move loop never receives `WM_LBUTTONUP` (the loop swallows it), so Qt compares the
 //! application's idea of the pressed buttons with the physical state when `WM_EXITSIZEMOVE`
 //! arrives and synthesizes the missing release. Inside the client area it is a normal

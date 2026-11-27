@@ -8,8 +8,8 @@
 //! regenerates it. The font is the synthetic `tests/data/oracle_text.ttf`: its glyphs are boxes,
 //! so one pixel in the wrong place or one sub-pixel offset too many shows.
 //!
-//! What this pins (Qt: `qpaintengine_raster.cpp` `drawCachedGlyphs`,
-//! `qwindowsfontenginedirectwrite.cpp`, `qtextureglyphcache.cpp`):
+//! What this pins (Qt: `drawCachedGlyphs`,
+//! ):
 //! * glyphs are blitted at `qFloor` of the pen position, at every ratio, not at its rounded value;
 //! * at a ratio other than 1 the engine supports horizontal sub-pixel positions, so each glyph is
 //!   rendered at the sub-pixel offset of its pen (`DWRITE_MATRIX.dx`, one of the buckets the first

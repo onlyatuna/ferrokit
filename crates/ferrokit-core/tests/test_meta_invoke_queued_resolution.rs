@@ -138,7 +138,7 @@ fn pump_until(el: &EventLoop, what: &str, mut done: impl FnMut() -> bool) {
 #[test]
 fn queued_name_only_invoke_runs_first_compatible_overload() {
     // Qt: invokeMethodImpl resolves the member before posting and takes the first declared
-    // overload whose parameter types match (qmetaobject.cpp:1693-1708).
+    // overload whose parameter types match.
     let el = EventLoop::new();
     let id = ObjectId::next();
     let mut w = new_tag_widget(id);
@@ -165,7 +165,7 @@ fn queued_name_only_invoke_runs_first_compatible_overload() {
 
 #[test]
 fn queued_signature_invoke_rejects_wrong_argument_type_without_posting() {
-    // Qt: invokeImpl checks argument types before queueing (qmetaobject.cpp:2774-2809).
+    // Qt: invokeImpl checks argument types before queueing.
     let el = EventLoop::new();
     let id = ObjectId::next();
     let mut w = new_tag_widget(id);
@@ -195,7 +195,6 @@ fn queued_signature_invoke_rejects_wrong_argument_type_without_posting() {
 #[test]
 fn queued_name_only_with_no_compatible_overload_is_method_not_found_without_posting() {
     // Qt: no candidate passes invokeImpl, so invokeMethodImpl reports not-found and posts nothing
-    // (qmetaobject.cpp:1693-1712).
     let el = EventLoop::new();
     let id = ObjectId::next();
     let mut w = new_tag_widget(id);
@@ -258,7 +257,6 @@ fn queued_signal_invoke_emits_on_owner_loop() {
 #[test]
 fn cross_thread_queued_signature_rejects_wrong_argument_type_without_posting() {
     // Qt: invokeImpl checks argument types before queueing, so a cross-thread refusal posts nothing
-    // (qmetaobject.cpp:2774-2809).
     let el = EventLoop::new();
     let id = ObjectId::next();
     let mut w = new_tag_widget(id);

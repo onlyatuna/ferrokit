@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Qt's Windows plugin registers its window class with `CS_DBLCLKS`
-//! (`qwindowswindowclassdescription.cpp:67`), so the OS reports double clicks, and the generic
-//! layer delivers `Press, Release, DblClick, Release` (`qguiapplication.cpp:2495-2540`): the second
+//! so the OS reports double clicks, and the generic
+//! layer delivers `Press, Release, DblClick, Release`: the second
 //! press of a double click is *not* delivered as a press. A native window that maps
 //! `WM_LBUTTONDBLCLK` to a plain `MousePress` makes a double click indistinguishable from two
 //! clicks.

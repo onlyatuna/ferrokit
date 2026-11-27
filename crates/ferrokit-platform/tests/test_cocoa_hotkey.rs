@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Delivery of a global hotkey press by `CocoaHotkeyManager`: the OS callback (here the mock
 //! backend's `press`) only queues the press, and the handler runs from the owner thread's event
-//! loop. Registration bookkeeping and the key tables are unit-tested in `src/hotkey.rs`.
+//! loop. Registration bookkeeping and the key tables are unit-tested in.
 
 use ferrokit_core::application::CoreApplication;
 use ferrokit_platform::hotkey::cocoa_hotkey::{CARBON_OPTION_KEY, MockHotkeyBackend};

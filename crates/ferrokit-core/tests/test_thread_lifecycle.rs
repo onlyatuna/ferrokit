@@ -276,7 +276,7 @@ fn exit_ends_nested_event_loops_too() {
 /// The race behind a flake of `exit_ends_nested_event_loops_too`: `exit` lands after an event
 /// has decided to run a nested loop but before that loop is running, so only the outer loop is
 /// told. The nested loop must not run on (and hold the outer one forever): like `QEventLoop::exec`
-/// while `quitNow` is set (qeventloop.cpp:140-143), it returns -1 at once.
+/// while `quitNow` is set, it returns -1 at once.
 #[test]
 fn a_nested_loop_entered_after_exit_returns_at_once() {
     use ferrokit_core::event_loop::EventLoop;
@@ -410,7 +410,7 @@ mod swallowed_exit {
     }
 }
 
-/// `QThread::exit` ends the loops directly (qthread.cpp:775-788); it does not depend on an event
+/// `QThread::exit` ends the loops directly; it does not depend on an event
 /// that the thread's filters could consume.
 #[test]
 fn exit_is_not_swallowed_by_an_application_event_filter() {

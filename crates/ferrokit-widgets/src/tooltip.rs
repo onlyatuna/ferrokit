@@ -4,7 +4,7 @@
 //! Qt shows a tool tip in two steps, and ferrokit keeps them apart as Qt does.
 //!
 //! 1. the widget application: a spontaneous mouse move with no button
-//!    down remembers the widget under the cursor and starts the *wake-up* timer, 700 ms
+//!    down remembers the widget under the cursor and starts the *wake-up* timer ms
 //!    (`SH_ToolTip_WakeUpDelay`), or 20 ms while the *fall-asleep* timer
 //!    (2000 ms, `SH_ToolTip_FallAsleepDelay`) is still running, so moving to the next widget after
 //!    a tip was shown does not wait again. User input, window activation and `Leave` stop the
@@ -45,7 +45,7 @@ pub const FALL_ASLEEP_DELAY_MS: u64 = 2000;
 pub const QUICK_WAKE_UP_DELAY_MS: u64 = 20;
 /// `QTipLabel::hideTip` waits this long before hiding.
 pub const HIDE_DELAY_MS: u64 = 300;
-/// `QPlatformCursor::size` default, 16x16. The tip itself uses
+/// `QPlatformCursor::size` defaultx16. The tip itself uses
 /// [`cursor_size`]; this is the Qt value the hand-derived `place_tip` tests are written against.
 pub const CURSOR_SIZE: Size = Size {
     width: 16,
@@ -751,7 +751,7 @@ impl ToolTip {
         })
     }
 
-    /// Shows or moves the tip: `reuseTip` + `placeTip` (296-370) for a tip
+    /// Shows or moves the tip: `reuseTip` + `placeTip` for a tip
     /// that is up, `QTipLabel`'s constructor and `showNormal` for a new one.
     fn place(
         pos: Point,

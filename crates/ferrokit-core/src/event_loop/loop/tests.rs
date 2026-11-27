@@ -1050,7 +1050,7 @@ fn test_insertion_offset_priority_ordering() {
 /// the core application snapshots `insertionOffset` at the start
 /// of a pass, so events posted from a handler wait for the next
 /// pass, and events posted between passes are ordered by priority among the remaining entries.
-/// `CleanUp` shifts `insertionOffset` down by the number of erased entries (1844-1849).
+/// `CleanUp` shifts `insertionOffset` down by the number of erased entries.
 #[test]
 fn test_posted_during_pump_waits_for_next_pass_and_orders_by_priority() {
     let execution_order = Arc::new(Mutex::new(Vec::new()));
@@ -1254,8 +1254,8 @@ fn test_modal_pump_inside_a_modal_pump_delivers_events_before_it_returns() {
 
 /// The nested pump takes every event queued when it starts (Qt resets `insertionOffset` to
 /// the list size) and delivers each once; the outer pump resumes
-/// from the shared `start_offset` (1815-1816), so it neither repeats them nor runs events
-/// posted during the nested pump, which wait for the next turn (1856-1858).
+/// from the shared `start_offset`, so it neither repeats them nor runs events
+/// posted during the nested pump, which wait for the next turn.
 #[test]
 fn test_a_nested_pump_delivers_each_event_once_and_leaves_its_own_posts_for_the_next_turn() {
     let el = EventLoop::new();
@@ -1509,8 +1509,8 @@ fn test_a_deferred_delete_from_the_outer_loop_waits_out_a_nested_pump() {
 
 /// A handler that calls `delete_later` and then runs a nested non-modal pump keeps the target
 /// alive for that pump. `notify_helper` holds scope level 1 for the whole handler
-/// so the DeferredDelete stamped (1, 1) is not deliverable at
-/// (1, 0). The outer loop delivers it once the handler returns.
+/// so the DeferredDelete stamped (1) is not deliverable at
+/// (1). The outer loop delivers it once the handler returns.
 #[test]
 fn test_nested_pump_inside_a_handler_keeps_its_delete_later_target_alive() {
     struct Victim {

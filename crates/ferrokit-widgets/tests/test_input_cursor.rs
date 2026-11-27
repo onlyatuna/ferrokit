@@ -515,7 +515,7 @@ fn cursor_set_pos_moves_the_platform_pointer_once() {
     NATIVE_POS.with(|p| p.set(Some(Point::new(0, 0))));
     Cursor::set_pos(Point::new(70, 80));
     assert_eq!(take(), ["set_pos 70,80"]);
-    // Already there: not set again (qcursor.cpp:223).
+    // Already there: not set again.
     Cursor::set_pos(Point::new(70, 80));
     assert!(take().is_empty());
 }

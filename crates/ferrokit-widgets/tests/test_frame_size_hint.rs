@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Frame size_hint and minimum_size_hint match Qt.
 //!
-//! Qt reference: `QFrame::sizeHint()` (`qframe.cpp:465-479`):
+//! Qt reference: `QFrame::sizeHint`:
 //! - `HLine`: `QSize(-1, 3)`
 //! - `VLine`: `QSize(3, -1)`
-//! - other: `QWidget::sizeHint()` (`qwidget.cpp:8884`), returning layout totalSizeHint or `QSize(-1, -1)`.
-//!   `minimumSizeHint()` (`qwidget.cpp:8911`): returns layout totalMinimumSize or `QSize(-1, -1)`.
+//! - other: `QWidget::sizeHint`, returning layout totalSizeHint or `QSize(-1, -1)`.
+//!   `minimumSizeHint`: returns layout totalMinimumSize or `QSize(-1, -1)`.
 
 use ferrokit_gui::geometry::primitives::Size;
 use ferrokit_widgets::frame::{Frame, FrameShape};

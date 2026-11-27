@@ -4,8 +4,8 @@
 //! the frame drawn with the submenu closed. `Menu::present_popup` moves the parent by
 //! `native_root - native_win` in device px (`translate_device`); a logical `translate` would scale
 //! the same offset by dpr and shift the parent by a fractional device amount.
-//! qtbase/src/widgets/widgets/qmenu.cpp:3677-3688 places the submenu at a logical point and
-//! qtbase/src/gui/kernel/qhighdpiscaling_p.h:150-153 converts each native window origin to
+//! reference places the submenu at a logical point and
+//! reference converts each native window origin to
 //! whole device px, so the parent never moves by a fractional device amount.
 #![cfg(windows)]
 

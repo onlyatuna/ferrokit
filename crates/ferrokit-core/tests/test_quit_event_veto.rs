@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! A `Quit` addressed to the application object is an event: application event filters see it,
-//! and a consumed Quit must not end exec (qcoreapplication.cpp:1285-1290, 2054-2056).
+//! and a consumed Quit must not end exec (2054-2056).
 use parking_lot::Mutex;
 
 use std::ptr::NonNull;
@@ -78,7 +78,7 @@ fn quit_consumed_by_application_filter_does_not_end_exec() {
     // unregistered below, registered by `&raw mut`, and not accessed while `exec` runs its callbacks.
     unsafe { register_qobject_ptr(NonNull::new_unchecked(&raw mut filter)) };
     install_application_event_filter(filter_id);
-    // QCoreApplication::quit on the application thread is sendEvent (qcoreapplication.cpp:2153-2155).
+    // QCoreApplication::quit on the application thread is sendEvent.
     Timer::single_shot(10, CoreApplication::quit);
     Timer::single_shot(500, || CoreApplication::exit(7)); // watchdog
     let code = app.exec();

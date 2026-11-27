@@ -91,7 +91,7 @@ fn slot_without_return_value_is_invalid_variant() {
 
 #[test]
 fn slot_signature_rejects_argument_of_wrong_type_without_running() {
-    // Qt: invokeImpl checks argument types before calling the slot (qmetaobject.cpp:2774-2809).
+    // Qt: invokeImpl checks argument types before calling the slot.
     let mut probe = new_probe();
     let r =
         probe
@@ -110,7 +110,7 @@ fn slot_signature_rejects_argument_of_wrong_type_without_running() {
 
 #[test]
 fn slot_name_only_with_no_compatible_overload_is_method_not_found() {
-    // Qt: invokeMethod returns false when no overload matches the argument types (qmetaobject.cpp:651-687).
+    // Qt: invokeMethod returns false when no overload matches the argument types.
     let mut probe = new_probe();
     let r = probe
         .meta_object()

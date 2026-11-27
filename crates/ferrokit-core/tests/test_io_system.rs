@@ -384,7 +384,7 @@ fn test_url_and_url_query_manipulation() {
     assert!(url.as_str().contains("status=active"));
 
     // 3. Local file URL conversion. Drive letters and `\` are Windows path syntax: Qt converts
-    // them only on Windows (qurl.cpp:3293-3295, 1545-1547), so each platform round-trips a
+    // them only on Windows (1545-1547), so each platform round-trips a
     // native absolute path.
     #[cfg(windows)]
     let local_path = PathBuf::from(r"C:\Users\test\document.txt");
@@ -1078,7 +1078,7 @@ fn settings_sync_reclaims_a_stale_lock_file_and_releases_its_own() {
     use ferrokit_core::settings::Settings;
     let dir = TemporaryDir::new().unwrap();
     let path = dir.path().join("locked.ini");
-    // QSettings serializes syncs through `<file>.lock` (qsettings.cpp:1349): a lock left by a
+    // QSettings serializes syncs through `<file>.lock`: a lock left by a
     // process that is gone must not stop this one.
     let mut lock_path = path.as_os_str().to_owned();
     lock_path.push(".lock");

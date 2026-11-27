@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! `QCocoaEventDispatcher`: the GUI event loop's dispatcher on macOS.
+//! the Cocoa event dispatcher: the GUI event loop's dispatcher on macOS.
 //!
 //! ferrokit's `EventLoop` sends posted events and timer events itself, around each `process_events`
 //! call (loop.rs), so every call takes Qt's path for a `processEvents` that is not `exec`
 //! : make sure `NSApp` has launched, send every queued `NSEvent`
 //! through the native event filters and `[NSApp sendEvent:]`, and if nothing was sent and the
 //! caller may wait, wait in `[NSApp nextEventMatchingMask:untilDate:…]` (which runs the main run
-//! loop) until an event arrives or the next ferrokit timer is due (:273-285, :479-487). `wake_up`, from
+//! loop) until an event arrives or the next ferrokit timer is due. `wake_up`, from
 //! any thread, signals a run loop source whose callback posts an application-defined `NSEvent`
-//! that ends the wait (:525-531, :877-916).
+//! that ends the wait.
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -313,10 +313,10 @@ static INITIALIZING_NSAPP: AtomicBool = AtomicBool::new(false);
 /// A wake-up source fired while `NSApp` was launching and must fire again afterwards.
 static WAKE_DEFERRED: AtomicBool = AtomicBool::new(false);
 /// The main thread is inside a `process_events` call that may wait (Qt's `processEventsFlags`
-/// with `WaitForMoreEvents` and without `EventLoopExec`, :908-916).
+/// with `WaitForMoreEvents` and without `EventLoopExec`).
 static WAIT_FOR_MORE_EVENTS: AtomicBool = AtomicBool::new(false);
 
-/// The posted-events source's callback, on the main thread (:877-896). Posted and timer events
+/// The posted-events source's callback, on the main thread. Posted and timer events
 /// are sent by the ferrokit event loop, so the callback only ends a wait.
 extern "C" fn wake_source_perform(_info: *mut c_void) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -330,7 +330,7 @@ extern "C" fn wake_source_perform(_info: *mut c_void) {
     }));
 }
 
-/// Runs once `[NSApp run]` has launched the application (:568-572).
+/// Runs once `[NSApp run]` has launched the application.
 extern "C" fn stop_nsapp_after_launch(_timer: CFTypeRef, _info: *mut c_void) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let app = ns_app();
@@ -344,7 +344,7 @@ extern "C" fn stop_nsapp_after_launch(_timer: CFTypeRef, _info: *mut c_void) {
 }
 
 /// The version-0 run loop source on the main run loop's common modes that `wake_up` signals
-/// (Qt's `postedEventsSource`, :786-801).
+/// (Qt's `postedEventsSource`).
 struct WakeSource(CFTypeRef);
 
 // SAFETY: the wrapped run loop source is only passed to CFRunLoopSourceSignal, CFRunLoopWakeUp
@@ -380,7 +380,7 @@ impl WakeSource {
         }
     }
 
-    /// `QCocoaEventDispatcher::wakeUp` (:525-531).
+    /// the Cocoa event dispatcher.
     fn signal(&self) {
         // SAFETY: `self.0` is the source created in `new` and stays alive while `&self` does
         // (released only in `Drop`); per the Core Foundation documentation
@@ -491,7 +491,7 @@ impl CocoaEventDispatcher {
         }
     }
 
-    /// `ensureNSAppInitialized` (:537-575): launch `NSApp` with `[NSApp run]` and stop it as soon
+    /// `ensureNSAppInitialized`: launch `NSApp` with `[NSApp run]` and stop it as soon
     /// as it runs, so AppKit does its launch work (`finishLaunching`) before events are processed.
     fn ensure_nsapp_initialized(&self, app: Id) {
         let rt = &*RUNTIME;
@@ -531,7 +531,7 @@ impl CocoaEventDispatcher {
     }
 
     /// Sends every queued `NSEvent` the native event filters do not consume to
-    /// `[NSApp sendEvent:]` (:426-451). Returns whether any was sent.
+    /// `[NSApp sendEvent:]`. Returns whether any was sent.
     fn send_queued_events(&self, app: Id) -> bool {
         let rt = &*RUNTIME;
         let mut sent = false;
@@ -557,7 +557,7 @@ impl CocoaEventDispatcher {
         }
     }
 
-    /// `qt_mac_waitForMoreEvents` (:273-285), bounded by `timeout`: waits for an event, then puts
+    /// the macOS wait-for-events helper, bounded by `timeout`: waits for an event, then puts
     /// it back at the front of the queue. Returns whether one arrived.
     fn wait_for_more_events(app: Id, timeout: Option<Duration>) -> bool {
         let rt = &*RUNTIME;
@@ -568,7 +568,7 @@ impl CocoaEventDispatcher {
         // match the methods; `until` is passed straight to `next_event`. `app` is `NSApp` from
         // `process_events`, the only caller, which asserts it runs on the main thread; the
         // event it returns is non-null (checked) and re-posted with `postEvent:atStart:`
-        // (`Id`, `BOOL`) as in Qt's `qt_mac_waitForMoreEvents`.
+        // (`Id`, `BOOL`) as in Qt's the macOS wait-for-events helper.
         unsafe {
             let until: Id = match timeout {
                 Some(timeout) => send1(rt.ns_date, rt.date_from_now, timeout.as_secs_f64()),
@@ -606,7 +606,7 @@ impl EventDispatcher for CocoaEventDispatcher {
         self.native_filters.filter_native(event_type, msg, result)
     }
 
-    /// `QCocoaEventDispatcher::processEvents` without `EventLoopExec` (:287-510): `Normal` if an
+    /// the Cocoa event dispatcher without `EventLoopExec`: `Normal` if an
     /// event was sent (Qt's `true`), otherwise `Timeout`.
     fn process_events(
         &self,
@@ -628,7 +628,7 @@ impl EventDispatcher for CocoaEventDispatcher {
             if !wait || !Self::wait_for_more_events(app, next_timer_timeout) {
                 break false;
             }
-            // Send the event that ended the wait, without waiting again (:483-487).
+            // Send the event that ended the wait, without waiting again.
             WAIT_FOR_MORE_EVENTS.store(false, Ordering::SeqCst);
             wait = false;
         };

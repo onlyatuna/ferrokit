@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Parity test for `QGuiApplication::screenAt` (`qguiapplication.cpp:1147-1164`).
+//! Parity test for `QGuiApplication::screenAt`.
 //! Qt's `screenAt` queries screens in logical coordinates (`sibling->geometry().contains(point)`),
 //! not raw native pixel coordinates through OS APIs like `MonitorFromPoint`.
 

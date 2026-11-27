@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! `QStackedLayout::setGeometry` (qstackedlayout.cpp:453-468), StackOne mode: only the current
+//! `QStackedLayout::setGeometry`, StackOne mode: only the current
 //! widget is placed, with `widget->setGeometry(rect)` on the whole layout rectangle. Contents
 //! margins are not applied, other pages keep their geometry, and the widget's own minimum and
 //! maximum size clamp the result (`QWidget::setGeometry`). Expected values are from the PySide6
@@ -60,7 +60,7 @@ fn the_current_page_is_clamped_to_its_maximum_size() {
 
 #[test]
 fn switching_pages_places_the_new_current_page() {
-    // `QStackedLayout::setCurrentIndex` (qstackedlayout.cpp:275-310) shows the next page; the
+    // `QStackedLayout::setCurrentIndex` shows the next page; the
     // layout then gives it the whole rectangle.
     let first = page(0, 0, 60, 20);
     let second = page(0, 0, 100, 30);

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LGPL-3.0-only
 """Builds the synthetic fixture fonts of the FreeType goldens (`ft_golden.ttf`, `ft_golden.otf`).
 
-The fonts hold a few glyphs that exercise what `SkrifaFace` and `ftgrays` have to reproduce from
+The fonts hold a few glyphs that exercise what `SkrifaFace` has to reproduce from
 FreeType: quadratic contours with implied on-curve points (odd and even coordinate sums, contours
 made of off-curve points only, contours that start or end off the curve, an explicit point on the
 midpoint of its neighbours, a repeated last point, zero-length segments), overlapping contours with
