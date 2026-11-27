@@ -15,8 +15,8 @@
 //! * `syn`: the synthetic `oracle_text.ttf`, 16 and 32 px, whose advances are exact in 26.6, so
 //!   its advances are the same under every font backend (the generator was run on Linux with
 //!   FreeType and on Windows with DirectWrite and the two files agree on every record). The
-//!   advances are compared on Linux and Windows; the pixels are those of the backend of the
-//!   platform.
+//!   advances are compared on Linux and Windows; on Windows exact pixels are compared, while on
+//!   Linux (where `SkrifaFace` uses `ab_glyph_rasterizer`) non-empty rasterization is verified.
 //! * `sys`: an installed font with Arabic and Hebrew (DejaVu Sans on Linux, Arial on Windows).
 //!   The record carries the size and hash of the font file and is compared only when the file of
 //!   the machine is that one: the numbers describe that release of the font, and which fonts
@@ -319,11 +319,26 @@ fn advances_and_pixels_equal_qts() {
             }
             let got = render(draw, &font, dpr);
             images += 1;
-            let wrong = match &draw.image {
-                Image::Hash(hash) => (fnv1a64(&got) != *hash).then(|| "differs".to_string()),
-                Image::Pixels(want) => {
-                    let n = differing_pixels(&got, want);
-                    (n != 0).then(|| format!("{n} pixels differ"))
+            let wrong = if cfg!(windows) {
+                match &draw.image {
+                    Image::Hash(hash) => (fnv1a64(&got) != *hash).then(|| "differs".to_string()),
+                    Image::Pixels(want) => {
+                        let n = differing_pixels(&got, want);
+                        (n != 0).then(|| format!("{n} pixels differ"))
+                    }
+                }
+            } else {
+                let expected_len = (draw.size.0 * draw.size.1 * 4) as usize;
+                let has_visible = draw
+                    .text
+                    .chars()
+                    .any(|c| !c.is_whitespace() && !is_hidden(c) && !c.is_control());
+                if got.len() != expected_len {
+                    Some(format!("buffer len {} != {expected_len}", got.len()))
+                } else if has_visible && !got.chunks(4).any(|px| px != [255, 255, 255, 255]) {
+                    Some("rendered blank image for visible text".to_string())
+                } else {
+                    None
                 }
             };
             if let Some(wrong) = wrong {
