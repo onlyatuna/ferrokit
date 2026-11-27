@@ -1,17 +1,11 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! A solid-colour fill composites like Qt's raster engine.
-//!
-//! `QRasterPaintEngine` fills a solid brush span by span (`blend_color_argb`,
-//! gui/painting/qdrawhelper.cpp:4027-4062); SourceOver of a translucent colour is
-//! `comp_func_solid_SourceOver` (gui/painting/qcompositionfunctions.cpp:697-711):
-//! `dest = color + BYTE_MUL(dest, 255 - alpha(color))`, where `BYTE_MUL`
-//! (gui/painting/qdrawhelper_p.h:623-633) is Qt's own approximation of `x * a / 255`.
+//! Solid-colour SourceOver fill compositing checks (premultiplied RGBA fixed-point rounding).
 
 use ferrokit_gui::geometry::primitives::RectF;
 use ferrokit_gui::paint::{Brush, Painter, Pixmap};
 use ferrokit_gui::tiny_skia::Color;
 
-/// `BYTE_MUL` for one channel.
+/// Blinn 8-bit fixed-point channel product.
 fn byte_mul(x: u32, a: u32) -> u32 {
     let t = x * a;
     (t + (t >> 8) + 0x80) >> 8

@@ -1,69 +1,40 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Solid-colour SourceOver fills composited the way `QRasterPaintEngine` does.
-//!
-//! Qt rasterises a path into coverage spans and blends each span with
-//! `blend_color_argb` (qdrawhelper.cpp:4027-4062), which for SourceOver calls
-//! `comp_func_solid_SourceOver` (qcompositionfunctions.cpp:697-711):
-//! source scaled by the coverage, plus the destination scaled by the inverse of that alpha, or a plain fill
-//! where the colour is opaque and the coverage full. tiny-skia's coverage is used as is; only
-//! the compositing is Qt's. The premultiplied RGBA layout does not matter to the arithmetic:
-//! every channel is treated alike.
+//! Solid-colour SourceOver path fills composited onto premultiplied RGBA surfaces using coverage
+//! masks from `tiny-skia`.
 
 use std::cell::RefCell;
 use tiny_skia::{FillRule, IntSize, Mask, Path, PixmapMut, PremultipliedColorU8, Transform};
 
 thread_local! {
-    /// Coverage scratch, kept between fills: it only grows, so steady painting allocates nothing.
+    /// Reusable coverage mask scratch buffer to avoid per-fill allocations.
     static COVERAGE: RefCell<Option<Mask>> = const { RefCell::new(None) };
 }
 
-/// `BYTE_MUL` (64-bit build, qdrawhelper_p.h:603-608): every channel of the pixel `x` times
-/// `a / 255`, with Qt's approximation of the division (not always the nearest integer). The four
-/// channels are spread to 16-bit lanes so one multiply does them all.
+/// Blinn's 8-bit fixed-point channel product `((x * a) + ((x * a) >> 8) + 0x80) >> 8`.
 #[inline(always)]
-fn byte_mul(x: u32, a: u32) -> u32 {
-    let mut t = ((u64::from(x) | (u64::from(x) << 24)) & 0x00ff_00ff_00ff_00ff) * u64::from(a);
-    t = (t + ((t >> 8) & 0x00ff_00ff_00ff_00ff) + 0x0080_0080_0080_0080) >> 8;
-    t &= 0x00ff_00ff_00ff_00ff;
-    (t as u32) | ((t >> 24) as u32)
+fn scale_u8(x: u8, a: u8) -> u8 {
+    let t = u16::from(x) * u16::from(a);
+    ((t + (t >> 8) + 0x80) >> 8) as u8
 }
 
-/// One channel of `BYTE_MUL`; the same arithmetic as the packed form, in a `u16` lane (at most
-/// 65407), which the compiler vectorises.
-#[inline(always)]
-fn byte_mul_channel(x: u16, a: u16) -> u16 {
-    let t = x * a;
-    (t + (t >> 8) + 0x80) >> 8
-}
-
-/// A full-coverage span: `qt_memfill` for an opaque colour, else `comp_func_solid_SourceOver`
-/// with the colour as is (`blend_color_argb`, qdrawhelper.cpp:4027-4062).
+/// Composites a full-coverage solid `src` pixel `[r, g, b, a]` onto `dest`.
 #[inline]
-fn blend_full_span(dest: &mut [u8], color: u32) {
-    let bytes = color.to_le_bytes();
-    if bytes[3] == 255 {
-        dest.as_chunks_mut::<4>().0.fill(bytes);
+fn blend_full_span(dest: &mut [u8], src: [u8; 4]) {
+    if src[3] == 255 {
+        dest.as_chunks_mut::<4>().0.fill(src);
         return;
     }
-    let inv = 255 - u16::from(bytes[3]);
-    // Four pixels at a time, the colour repeated per pixel: the same factor for every byte.
-    let pattern: [u16; 16] = std::array::from_fn(|i| u16::from(bytes[i % 4]));
-    let (chunks, rest) = dest.as_chunks_mut::<16>();
-    for chunk in chunks {
-        for i in 0..16 {
-            chunk[i] = (pattern[i] + byte_mul_channel(u16::from(chunk[i]), inv)) as u8;
+    let inv = 255 - src[3];
+    for px in dest.as_chunks_mut::<4>().0 {
+        for c in 0..4 {
+            px[c] = src[c] + scale_u8(px[c], inv);
         }
-    }
-    for (i, b) in rest.iter_mut().enumerate() {
-        *b = (pattern[i] + byte_mul_channel(u16::from(*b), inv)) as u8;
     }
 }
 
-/// `comp_func_solid_SourceOver` over one row: the source scaled by the coverage, plus the
-/// destination scaled by the inverse of that alpha. Coverage 0 is no span; runs of full coverage go
-/// to [`blend_full_span`], like the long spans Qt's rasteriser produces for a shape's inside.
+/// Composites a single coverage row onto premultiplied RGBA `dest`.
 #[inline]
-fn blend_row(dest: &mut [u8], coverage: &[u8], color: u32) {
+fn blend_row(dest: &mut [u8], coverage: &[u8], src: [u8; 4]) {
     let mut i = 0;
     while i < coverage.len() {
         match coverage[i] {
@@ -73,13 +44,16 @@ fn blend_row(dest: &mut [u8], coverage: &[u8], color: u32) {
                     .iter()
                     .position(|&c| c != 255)
                     .map_or(coverage.len(), |n| i + n);
-                blend_full_span(&mut dest[i * 4..end * 4], color);
+                blend_full_span(&mut dest[i * 4..end * 4], src);
                 i = end;
             }
             cov => {
                 let px: &mut [u8; 4] = (&mut dest[i * 4..i * 4 + 4]).try_into().unwrap();
-                let c = byte_mul(color, u32::from(cov));
-                *px = (c + byte_mul(u32::from_le_bytes(*px), 255 - (c >> 24))).to_le_bytes();
+                let sa = scale_u8(src[3], cov);
+                let inv = 255 - sa;
+                for c in 0..4 {
+                    px[c] = scale_u8(src[c], cov) + scale_u8(px[c], inv);
+                }
                 i += 1;
             }
         }
@@ -87,7 +61,7 @@ fn blend_row(dest: &mut [u8], coverage: &[u8], color: u32) {
 }
 
 /// Fills `path` (in user space, mapped by `transform`) with `color` composited SourceOver onto
-/// `pixmap`, within `clip` when given (a device-sized mask, 0 = clipped out).
+/// `pixmap`, optionally masked by a device-sized `clip` mask (`0` = clipped out).
 pub fn fill_path_source_over(
     pixmap: &mut PixmapMut,
     path: &Path,
@@ -114,7 +88,7 @@ pub fn fill_path_source_over(
     else {
         return;
     };
-    let color = u32::from_le_bytes([color.red(), color.green(), color.blue(), color.alpha()]);
+    let src = [color.red(), color.green(), color.blue(), color.alpha()];
 
     COVERAGE.with(|scratch| {
         let mut scratch = scratch.borrow_mut();
@@ -126,7 +100,9 @@ pub fn fill_path_source_over(
             let size = IntSize::from_wh(sw.max(w), sh.max(h));
             *scratch = size.and_then(|s| Mask::new(s.width(), s.height()));
         }
-        let Some(mask) = scratch.as_mut() else { return };
+        let Some(mask) = scratch.as_mut() else {
+            return;
+        };
         let stride = mask.width() as usize;
         for row in mask.data_mut().chunks_exact_mut(stride).take(h as usize) {
             row[..w as usize].fill(0);
@@ -144,14 +120,13 @@ pub fn fill_path_source_over(
                 apply_clip_mask(cov, clip_row);
             }
             let start = y * pstride + x0 as usize * 4;
-            blend_row(&mut dest[start..start + w as usize * 4], cov, color);
+            blend_row(&mut dest[start..start + w as usize * 4], cov, src);
         }
     });
 }
 
 #[inline]
 fn apply_clip_mask(cov: &mut [u8], clip_row: &[u8]) {
-    // The clip mask can contain anti-aliased coverage (0..=255), e.g. from rotated clip quads.
     for (c, &k) in cov.iter_mut().zip(clip_row) {
         *c = ((u16::from(*c) * u16::from(k) + 127) / 255) as u8;
     }
@@ -173,22 +148,19 @@ mod tests {
         assert_eq!(cov[3], 255);
     }
 
-    // Exercising tiny-skia's rasterizer under Miri hits issue #105 (tiny-skia 0.11.4 compares fn
+    // Exercising tiny-skia's rasterizer under Miri hits issue #105 (tiny-skia compares fn
     // pointers to pick tail-stage load/store, which zeroes tail pixels on some Miri seeds).
     #[cfg(not(miri))]
     #[test]
     fn fill_path_source_over_multiplies_antialiased_clip_mask_coverage() {
         let mut pixmap = Pixmap::new(4, 2).unwrap();
         let mut mask = Mask::new(4, 2).unwrap();
-        // Row 0: x=0 has partial clip (127), x=1 has partial clip (127), x=2 has 0, x=3 has 255.
         let m = mask.data_mut();
         m[0] = 127;
         m[1] = 127;
         m[2] = 0;
         m[3] = 255;
 
-        // Rect starting at x=0.5 gives ~128 anti-aliased coverage at x=0 and 255 at x=1..=3.
-        // Bitwise AND (128 & 127) would wrongly produce 0 at x=0; coverage multiplication gives ~64.
         let path = PathBuilder::from_rect(Rect::from_xywh(0.5, 0.0, 3.5, 1.0).unwrap());
         let white = PremultipliedColorU8::from_rgba(255, 255, 255, 255).unwrap();
         fill_path_source_over(
