@@ -39,8 +39,8 @@ pub fn clear_application_event_filters() {
 }
 
 /// Qt walks the filter list by index and skips entries that have become null
-/// (`sendThroughApplicationEventFilters` qcoreapplication.cpp:1237-1247,
-/// `sendThroughObjectEventFilters` :1255-1265). `slot_at` is called once per step, so the chain is
+/// (application event filter dispatch,
+/// object event filter dispatch:1255-1265). `slot_at` is called once per step, so the chain is
 /// read live: a filter tombstoned by an earlier callback is skipped, and one installed during dispatch
 /// shifts the walk exactly as in Qt. No chain borrow is held while a filter runs.
 /// Returns true if a filter consumed the event.
@@ -63,14 +63,14 @@ fn consumed_by_filter_chain(
     false
 }
 
-/// Application event filters (`sendThroughApplicationEventFilters`, qcoreapplication.cpp:1237-1247).
+/// Application event filters (application event filter dispatch).
 fn app_filters_consumed(receiver: ObjectId, event: &mut Event) -> bool {
     let app_slot =
         |index: usize| APPLICATION_EVENT_FILTERS.with(|filters| filters.borrow().slot_at(index));
     consumed_by_filter_chain(app_slot, receiver, event)
 }
 
-/// The receiver's object event filters (`sendThroughObjectEventFilters`, qcoreapplication.cpp:1252-1268).
+/// The receiver's object event filters (object event filter dispatch).
 fn object_filters_consumed(receiver: ObjectId, event: &mut Event) -> bool {
     let object_slot = |index: usize| {
         crate::object::with_object(receiver, |obj| {
@@ -81,18 +81,18 @@ fn object_filters_consumed(receiver: ObjectId, event: &mut Event) -> bool {
     consumed_by_filter_chain(object_slot, receiver, event)
 }
 
-/// `QCoreApplicationPrivate::sendThroughApplicationEventFilters` alone (qcoreapplication.cpp:1237-1247):
+/// application event filter dispatch alone:
 /// the application's event filters see `event` for `receiver`, in installation order, until one
-/// consumes it. No object filter and no `event()` follows. `QApplication::notify` uses it for a
+/// consumes it. No object filter and no `event` follows. the application uses it for a
 /// buttonless mouse move over a widget without mouse tracking, which it otherwise throws away
-/// (qapplication.cpp:2751-2756). Returns true if a filter consumed the event.
+/// . Returns true if a filter consumed the event.
 pub fn send_through_application_event_filters(receiver: ObjectId, event: &mut Event) -> bool {
     app_filters_consumed(receiver, event)
 }
 
 /// Filter-only delivery for a receiver the caller already holds (`&ObjectData`): application
-/// filters, then the receiver's object filters (`sendThroughApplicationEventFilters` and
-/// `sendThroughObjectEventFilters`, qcoreapplication.cpp:1237-1268). Works for objects that are
+/// filters, then the receiver's object filters (application event filter dispatch and
+/// object event filter dispatch). Works for objects that are
 /// not in the QObject registry (widgets), and for callers that cannot take `&mut` on the receiver.
 /// Returns true if a filter consumed the event.
 pub fn filters_consume(receiver: &ObjectData, event: &mut Event) -> bool {
@@ -105,8 +105,8 @@ pub fn filters_consume(receiver: &ObjectData, event: &mut Event) -> bool {
 }
 
 /// Delivers `event` to a receiver the caller already holds mutably: filters (see
-/// `filters_consume`) then `receiver.event(event)`, the order of `QCoreApplication::notify`
-/// (qcoreapplication.cpp:1118 scope counter, :1237-1268 filters). Returns true when a filter
+/// `filters_consume`) then `receiver.event(event)`, the order of event notification
+/// ( scope counter,:1237-1268 filters). Returns true when a filter
 /// consumed the event, otherwise the result of `event()`.
 pub fn notify_borrowed<T: QObject + ?Sized>(receiver: &mut T, event: &mut Event) -> bool {
     let _scope = ScopeLevelGuard::enter();
@@ -118,7 +118,7 @@ pub fn notify_borrowed<T: QObject + ?Sized>(receiver: &mut T, event: &mut Event)
 
 /// `notify_borrowed` that runs `after_app_filters` between the application filters and the
 /// receiver's object filters, where `QApplicationPrivate::notify_helper` does its own work for
-/// widgets (qapplication.cpp:3236-3260: the `WA_UnderMouse` toggle). Not run when an application
+/// widgets (the `WA_UnderMouse` toggle). Not run when an application
 /// filter consumes the event.
 pub fn notify_borrowed_with<T: QObject + ?Sized>(
     receiver: &mut T,
@@ -149,7 +149,7 @@ pub enum TimerDelivery {
 }
 
 /// Delivers a `QTimerEvent` for `timer_id` to `receiver` through application filters → object
-/// filters → `event()` (qcoreapplication.cpp:1275-1300; qeventdispatcher_win.cpp:414-415).
+/// filters → `event`.
 pub fn deliver_timer_event(receiver: ObjectId, timer_id: u64) -> TimerDelivery {
     let mut event = Event::new(EventKind::Timer { timer_id });
     if app_filters_consumed(receiver, &mut event) || object_filters_consumed(receiver, &mut event) {
@@ -172,7 +172,7 @@ pub(crate) fn borrowed_send_rejections() -> usize {
 
 /// Whether a queued call may run for `receiver`. A non-zero receiver that is not registered on this
 /// thread was destroyed or moved away; Qt never delivers posted events to a destroyed object
-/// (qobject.cpp:206-207). `ObjectId(0)` names no object and is always allowed.
+/// . `ObjectId(0)` names no object and is always allowed.
 fn queued_call_receiver_alive(receiver: ObjectId) -> bool {
     if receiver == ObjectId(0) || crate::object::qobject::registered_on_current_thread(receiver) {
         return true;
@@ -226,7 +226,7 @@ fn note_deferred_delete_filtered(receiver: ObjectId, event: &Event) {
 
 /// Sends a posted `DeferredDelete` and destroys the receiver unless an event filter consumed the
 /// event: Qt deletes the object in `QObject::event`, which a consuming filter never reaches
-/// (qcoreapplication.cpp:1118-1131 notify; qobject.cpp `QObject::event` DeferredDelete).
+/// ( notify; `QObject::event` DeferredDelete).
 fn deliver_deferred_delete(receiver: ObjectId, event: &mut Event) {
     DEFERRED_DELETE_FILTERED.with(|list| list.borrow_mut().retain(|id| *id != receiver));
     let _ = catch_unwind(AssertUnwindSafe(|| send_event(receiver, event)));
@@ -242,10 +242,10 @@ fn deliver_deferred_delete(receiver: ObjectId, event: &mut Event) {
 }
 
 pub fn notify_helper(receiver: ObjectId, event: &mut Event) -> bool {
-    // QScopedScopeLevelCounter in QCoreApplication::notify (qcoreapplication.cpp:1118).
+    // QScopedScopeLevelCounter in the core application.
     let _scope = ScopeLevelGuard::enter();
-    // Qt checks the receiver's thread in `sendEvent` (qcoreapplication.cpp:539-548, the check itself
-    // debug-only at qcoreapplication.cpp:1223-1225). A foreign thread never runs the owner's
+    // Qt checks the receiver's thread in `sendEvent` (the check itself
+    // debug-only at). A foreign thread never runs the owner's
     // callback here: the call is rejected in every build.
     if let Some(owner) = crate::object::qobject::registration_thread_of(receiver) {
         let current = ThreadId::current();
@@ -263,7 +263,7 @@ pub fn notify_helper(receiver: ObjectId, event: &mut Event) -> bool {
 
     // Qt posts QZeroTimerEvent to the dispatcher, not to the timer object, so object filters never
     // see it. The dispatcher sends a QTimerEvent through sendEvent, then reposts the zero timer
-    // whatever the filter result (qeventdispatcher_win.cpp:879-899). Top-level delivery
+    // whatever the filter result. Top-level delivery
     // (loop.rs process_events) holds no object borrow here.
     if let EventKind::ZeroTimer { timer_id } = &event.kind {
         let timer_id = *timer_id;
@@ -275,7 +275,7 @@ pub fn notify_helper(receiver: ObjectId, event: &mut Event) -> bool {
         return true;
     }
 
-    // Qt has no borrow check in `sendEvent` (qcoreapplication.cpp:1563-1572): it calls the receiver
+    // Qt has no borrow check in `sendEvent`: it calls the receiver
     // directly, re-entrantly. Here the receiver's `&mut` is already held by a running callback, so
     // the event cannot be delivered now. It is rejected visibly and the caller gets `false`. Posted
     // events are deferred instead (`next_deliverable_index`).
@@ -293,7 +293,7 @@ pub fn notify_helper(receiver: ObjectId, event: &mut Event) -> bool {
     }
 
     // The application object's Quit runs after the filters, then the window veto and exit
-    // (qcoreapplication.cpp:1285-1290, 2052-2058).
+    // (2052-2058).
     if matches!(&event.kind, EventKind::Quit { .. })
         && crate::application::is_application_object(receiver)
     {
@@ -323,9 +323,9 @@ use super::dispatcher::{
 };
 
 /// One thread's loop state, shared by every `EventLoop` on that thread. Qt keeps one event
-/// dispatcher, one posted-event queue and one timer registry per thread (`QThreadData`). A nested
-/// `QEventLoop` only pushes itself onto the thread's stack of running loops, so an inner loop
-/// ending never tears down state the outer loop still uses (qeventloop.cpp:157-192).
+/// dispatcher, one posted-event queue and one timer registry per thread (the per-thread event state). A nested
+/// an event loop only pushes itself onto the thread's stack of running loops, so an inner loop
+/// ending never tears down state the outer loop still uses.
 struct ThreadLoopState {
     thread_id: ThreadId,
     dispatcher: DefaultEventDispatcher,
@@ -336,8 +336,7 @@ struct ThreadLoopState {
 }
 
 /// Exit flags of one running loop. `EventLoop::exit` affects only its own loop
-/// (qeventloop.cpp:260-273), while `EventLoopHandle::exit` ends every loop on the thread
-/// (qthread.cpp:754-767).
+/// while `EventLoopHandle::exit` ends every loop on the thread
 #[derive(Clone)]
 struct LoopExit {
     exit_requested: Arc<AtomicBool>,
@@ -358,20 +357,20 @@ impl LoopExit {
     }
 }
 
-/// The loops running `exec` on one thread (`QThreadData::eventLoops`) and `QThreadData::quitNow`.
+/// The loops running `exec` on one thread (the thread's active event loop stack) and the thread's `quit_now` flag.
 #[derive(Default)]
 struct RunningLoops {
     /// Exit flags of every running loop, innermost last.
     loops: Vec<LoopExit>,
     /// Set by [`EventLoopHandle::exit`] and by a consumed `WM_QUIT` while loops run: a loop that
     /// starts before they have all returned (a nested loop entered by an event the exiting loop
-    /// is still delivering) returns -1 at once instead of running on, as `QEventLoop::exec` does
-    /// while `quitNow` is set (qtbase v6.11.2 qeventloop.cpp:142; set by `QThread::exit`,
-    /// qthread.cpp:760, and `QCoreApplication::exit`, qcoreapplication.cpp:1537).
+    /// is still delivering) returns -1 at once instead of running on, as an event loop run does
+    /// while `quit_now` is set (reference behavior v6.11.2; set by thread event loop exit,
+    /// and application exit).
     ///
-    /// Deviation from Qt: Qt sets `quitNow` even when no loop runs, and clears it only at the
-    /// start of `QThread::exec` (qthread.cpp:664) and around `QCoreApplication::exec`
-    /// (qcoreapplication.cpp:1465, 1470, 1486), so after an exit every later `QEventLoop::exec`
+    /// Deviation from Qt: Qt sets `quit_now` even when no loop runs, and clears it only at the
+    /// start of the thread event loop and around the application event loop
+    /// (1470, 1486), so after an exit every later an event loop run
     /// on the thread returns -1 until one of those runs. Here the flag is set only while a loop
     /// runs and is cleared when the last running loop returns, so an exit with no loop running is
     /// a no-op and a later `exec` on the thread runs normally.
@@ -447,7 +446,7 @@ impl Drop for ThreadLoopState {
         // The loop is gone, so nothing turns this queue any more, yet a handle on it can outlive
         // the loop (an `EventSender` clone, such as the one an `EventLoopThreadHandle` keeps), and
         // what is still queued would stay queued as long as that handle lives. Qt deletes the
-        // undelivered posted events of a thread together with its `QThreadData`, and the
+        // undelivered posted events of a thread together with its the per-thread event state, and the
         // destructor of a posted `QMetaCallEvent` releases a blocked
         // `BlockingQueuedConnection` caller. Here the caller waits on a channel whose sender is
         // inside the call, so the call must be dropped, not kept. The queue is closed, so a post
@@ -524,7 +523,7 @@ impl EventLoop {
         &self.state.timer_registry
     }
 
-    /// Loop recursion depth of the current thread (`QThreadData::loopLevel`).
+    /// Loop recursion depth of the current thread (the thread's loop nesting depth).
     pub fn loop_level(&self) -> usize {
         ThreadContext::current_loop_level()
     }
@@ -593,7 +592,7 @@ impl EventLoop {
     }
 
     /// Delivers the queued `DeferredDelete` events that the loop-exit flush allows, matching
-    /// `sendPostedEvents(nullptr, QEvent::DeferredDelete)` (qcoreapplication.cpp:1484-1489). Other
+    /// flushing deferred-delete events. Other
     /// posted events stay queued, and so does a `DeferredDelete` whose receiver a running callback
     /// has borrowed. A handler or destructor that panics is contained and the flush goes on, as in
     /// a loop turn; the flush also runs when the last loop of a thread is dropped, where a panic
@@ -660,10 +659,10 @@ impl EventLoop {
             .dispatcher
             .send_timer_events(&self.state.timer_registry);
         if let DispatchResult::Quit(code) = res {
-            // A `WM_QUIT` is `QCoreApplication::quit`: it ends every loop running on the thread,
+            // A `WM_QUIT` is application quit: it ends every loop running on the thread,
             // not only the innermost one, since the message is consumed here and the outer
-            // loops never see it (`QEventDispatcherWin32::processEvents`). As `quit` leads to
-            // `QCoreApplication::exit`, it also sets `quit_now`, so a loop entered before the
+            // loops never see it (Win32 event dispatching). As `quit` leads to
+            // application exit, it also sets `quit_now`, so a loop entered before the
             // running ones return does not run on.
             {
                 let mut running = self.state.running.lock();
@@ -688,16 +687,16 @@ impl EventLoop {
         self.exec_after(|| None)
     }
 
-    /// `exec`, for a thread whose own exit request (`QThread::exit`) may arrive before this loop
+    /// `exec`, for a thread whose own exit request (thread event loop exit) may arrive before this loop
     /// runs. `pending_exit` is asked once the loop is registered as running, so an exit issued
     /// at any earlier point is seen here and one issued later reaches the loop through
     /// [`EventLoopHandle::exit`]. When it returns `Some(code)` the loop returns `code` at once,
-    /// without delivering events, as `QThread::exec` returns the code of an `exit` that came
-    /// before it (qthread.cpp:685-689).
+    /// without delivering events, as the thread event loop returns the code of an `exit` that came
+    /// before it.
     ///
     /// A loop entered while the thread's running loops are being ended by
     /// [`EventLoopHandle::exit`] returns at once too: `pending_exit`'s code, else -1
-    /// (qeventloop.cpp:140-143). Checked under the same lock that `EventLoopHandle::exit` holds
+    /// . Checked under the same lock that `EventLoopHandle::exit` holds
     /// while it tells the running loops, so a loop is either told or sees the flag.
     pub(crate) fn exec_after(&self, pending_exit: impl FnOnce() -> Option<i32>) -> i32 {
         {
@@ -706,29 +705,29 @@ impl EventLoop {
                 drop(running);
                 return pending_exit().unwrap_or(-1);
             }
-            // qeventloop.cpp:157-158: entering a loop resets the exit flag, so exit() issued
+            // : entering a loop resets the exit flag, so exit issued
             // before exec() does not end this loop.
             self.exit.exit_requested.store(false, Ordering::SeqCst);
             running.loops.push(self.exit.clone());
         }
         let _running = RunningLoop(Arc::clone(&self.state.running));
-        // qeventloop.cpp:192-195: entering the application's loop drops its stale posted Quit.
+        // : entering the application's loop drops its stale posted Quit.
         if let Some(app_id) = crate::application::app_object_on_current_thread() {
             lock_unpoisoned(&self.state.queue).remove_posted_quits_for(app_id);
         }
         let _level = LoopLevelGuard::enter();
         if let Some(code) = pending_exit() {
-            // No events are delivered: the exit came first (qthread.cpp:686-689).
+            // No events are delivered: the exit came first.
             return code;
         }
         while !self.exit.exit_requested.load(Ordering::SeqCst) {
             self.process_events(true);
         }
-        // qeventloop.cpp:161, 187: the loop itself moves `loopLevel`; `scopeLevel` is per handler.
+        // 187: the loop itself moves `loop_level`; `scope_level` is per handler.
         self.exit.return_code.load(Ordering::SeqCst)
     }
 
-    /// Ends this loop only (`QEventLoop::exit`, qeventloop.cpp:260-273).
+    /// Ends this loop only (exiting this event loop).
     pub fn exit(&self, return_code: i32) {
         self.exit.request(return_code);
         self.state.dispatcher.wake_up();
@@ -825,12 +824,12 @@ pub fn pump_posted_events_modal() -> Option<usize> {
     Some(delivered)
 }
 
-/// Whether an exit (`QCoreApplication::exit` or `quit`, [`EventLoopHandle::exit`], a consumed
+/// Whether an exit (application exit or `quit`, [`EventLoopHandle::exit`], a consumed
 /// `WM_QUIT`) is ending the loops running on the calling thread and they have not all returned
-/// yet: `QThreadData::quitNow` (qcoreapplication.cpp:1564, qeventloop.cpp:142). False when the
+/// yet: the thread's `quit_now` flag. False when the
 /// thread has no loop or none is running.
 ///
-/// A native modal loop that stands in for a `QEventLoop` (the popup menu's, as `QMenu::exec` runs
+/// A native modal loop that stands in for a an event loop (the popup menu's, as the popup menu modal loop runs
 /// one) checks it after each message and returns, as Qt's `exit` ends every loop of the thread.
 pub fn thread_quit_now() -> bool {
     THREAD_LOOP_STATE
@@ -842,7 +841,7 @@ pub fn thread_quit_now() -> bool {
         .unwrap_or(false)
 }
 
-/// Current (loop level, scope level) of this thread, as `QThreadData::loopLevel` and `scopeLevel`.
+/// Current (loop level, scope level) of this thread, as the thread's loop nesting depth and `scope_level`.
 fn current_levels() -> (usize, usize) {
     (
         ThreadContext::current_loop_level(),
@@ -850,7 +849,7 @@ fn current_levels() -> (usize, usize) {
     )
 }
 
-/// Event-level gate for a `DeferredDelete` (qcoreapplication.cpp:1870-1885). `stamp` and `current`
+/// Event-level gate for a `DeferredDelete`. `stamp` and `current`
 /// are (loop level, scope level) pairs, compared by their sums as Qt's `loopLevel + scopeLevel`.
 /// Delivered when the stamp outranks the current levels, when it was posted at level zero and a
 /// level is active now, or, for the loop-exit flush, when the levels are equal.
@@ -880,7 +879,7 @@ fn deliverable_now(event: &Event) -> bool {
 /// Index of the next posted event this pump may deliver, among the first `insertion_offset`.
 ///
 /// An event whose receiver is borrowed by a running callback stays queued in place. Qt has no such
-/// state (`QCoreApplication::sendEvent` has no borrow check, qcoreapplication.cpp:1563-1572), and
+/// state (synchronous event delivery has no borrow check), and
 /// skipping in place keeps per-receiver order and lets `purge` still see the event. A gated
 /// `DeferredDelete` leaves the turn, as `remove_at` plus `insert_posted` did before. When nothing is
 /// deliverable, the turn ends with `insertion_offset = 0` and the events stay queued.
@@ -974,7 +973,7 @@ fn pump_posted_events(queue: &Arc<Mutex<EventQueue>>, modal: bool) -> (usize, Op
 
     // `insertion_offset` counts this turn's undelivered events at the front of the queue. It
     // shrinks as they leave, so a nested pump that drains them also ends the outer turn (Qt
-    // `startOffset`, qcoreapplication.cpp:1815-1858).
+    // `start_offset`).
     loop {
         let posted = {
             let mut q = lock_unpoisoned(queue);
@@ -994,12 +993,12 @@ fn pump_posted_events(queue: &Arc<Mutex<EventQueue>>, modal: bool) -> (usize, Op
 
         if let EventKind::Quit { exit_code } = event.kind {
             // The application object's Quit is an event: it records nothing before delivery and
-            // exits only when accepted (qcoreapplication.cpp:2052-2058).
+            // exits only when accepted.
             if !crate::application::is_application_object(receiver) {
                 quit_code = Some(exit_code);
-                // A posted Quit to another object ends the loop like `QEventLoop::quit` or
-                // `QThread::exit`, which never emit `aboutToQuit`: only `QCoreApplication::exit`
-                // does (qcoreapplication.cpp:1532-1535), and the application's own Quit reaches
+                // A posted Quit to another object ends the loop like quitting this event loop or
+                // thread event loop exit, which never emit `aboutToQuit`: only application exit
+                // does, and the application's own Quit reaches
                 // it through `deliver_application_quit`. A nested loop's quit must not use up
                 // the one emission of the real application quit.
             }

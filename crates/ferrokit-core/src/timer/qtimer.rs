@@ -178,7 +178,7 @@ impl TimerControl {
     }
 }
 
-/// High-level timer object matching `QTimer`.
+/// High-level timer object matching a timer.
 ///
 /// `Timer` is the owner handle. The object the registry calls is a private `TimerCore`, registered
 /// once by [`Timer::new`] at an address that never changes; the handle and the registry share the
@@ -257,18 +257,18 @@ impl Timer {
         self.control.object_id
     }
 
-    /// Starts the timer with its configured interval (`QTimer::start`).
+    /// Starts the timer with its configured interval (the timer).
     pub fn start(&self) -> TimerId {
         self.control.start()
     }
 
-    /// Starts the timer with the specified interval (`QTimer::start(msec)`).
+    /// Starts the timer with the specified interval (the timer).
     pub fn start_with_interval(&self, ms: u64) -> TimerId {
         self.control.interval_ms.set(ms);
         self.control.start()
     }
 
-    /// Stops the timer (`QTimer::stop`).
+    /// Stops the timer (the timer).
     pub fn stop(&self) {
         self.control.stop();
     }
@@ -277,7 +277,7 @@ impl Timer {
         self.control.is_active()
     }
 
-    /// Sets the interval (`QTimer::setInterval`); an active timer is restarted with it.
+    /// Sets the interval (the timer); an active timer is restarted with it.
     pub fn set_interval(&self, ms: u64) {
         self.control.set_interval(ms);
     }
@@ -309,7 +309,7 @@ impl Timer {
         self.control.current_id()
     }
 
-    /// Returns remaining time in milliseconds (`QTimer::remainingTime`).
+    /// Returns remaining time in milliseconds (the timer).
     pub fn remaining_time(&self) -> i64 {
         if !self.is_active() {
             return -1;
@@ -369,7 +369,7 @@ impl Timer {
             self.timeout.emit(&());
         }
     }
-    /// `QTimer::singleShot(msec, context, functor)` (qsingleshottimer.cpp:46-59): `callback` runs
+    /// the timer: `callback` runs
     /// once on `context`'s thread, queued there when called from another thread, and is dropped
     /// unrun if `context` is destroyed first. An unregistered `context` drops it at once.
     pub fn single_shot_with_context(
@@ -416,7 +416,7 @@ impl Timer {
         }
     }
 
-    /// Fires a single-shot timer callback (`QTimer::singleShot`).
+    /// Fires a single-shot timer callback (the timer).
     pub fn single_shot(interval_ms: u64, callback: impl FnOnce() + Send + 'static) {
         let thread_id = crate::object::ThreadId::current();
         if interval_ms == 0 {
@@ -441,7 +441,7 @@ impl Timer {
         }
     }
 
-    /// `QTimer::singleShot(msec, functor)` for a functor that is not `Send`: `callback` may
+    /// the timer for a functor that is not `Send`: `callback` may
     /// capture an `Rc`, a `RefCell` or a widget tree. It runs once, on the calling thread, from
     /// that thread's event loop, after `interval_ms` (0: at the next loop turn, queued).
     ///
@@ -469,7 +469,7 @@ impl Timer {
 /// Marks timer `id` as in delivery and schedules its next deadline, under a short registry lock.
 /// Returns the receiver and the single-shot flag, or `None` when the timer is gone or already in
 /// delivery. The lock is released before the caller sends the event: Qt sends the timer event with
-/// no registry lock held (`QTimerInfoList::activateTimers`, qtimerinfo_unix.cpp:374-427), so a slot
+/// no registry lock held (`QTimerInfoList::activateTimers`), so a slot
 /// may stop, restart or start timers.
 pub(crate) fn begin_timer_delivery(
     registry: &Mutex<TimerRegistry>,
@@ -576,7 +576,7 @@ pub fn repost_zero_timer(receiver: ObjectId, timer_id: u64) {
 
 /// Whether the zero-interval timer `timer_id` of `receiver` is still registered. A queued
 /// `ZeroTimer` of a timer that was killed since is dropped, as Qt sends a zero timer only while
-/// `timerDict` has it (qeventdispatcher_win.cpp:879-899) and removes the pending ones in
+/// `timerDict` has it and removes the pending ones in
 /// `unregisterTimer`.
 pub(crate) fn zero_timer_armed(receiver: ObjectId, timer_id: u64) -> bool {
     let id = TimerId(timer_id as u32);

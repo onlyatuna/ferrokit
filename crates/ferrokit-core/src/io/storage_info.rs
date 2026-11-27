@@ -223,7 +223,7 @@ impl StorageInfo {
         }
     }
 
-    /// `QStorageInfoPrivate::retrieveVolumeInfo` (qstorageinfo_unix.cpp:403-418): one
+    /// `QStorageInfoPrivate::retrieveVolumeInfo`: one
     /// statvfs; valid and ready only when it succeeds; sizes are block counts times the
     /// fragment size.
     #[cfg(not(windows))]

@@ -24,9 +24,9 @@ pub(crate) struct FutureShared<T> {
 }
 
 pub(crate) struct FutureWatcherSignals<T> {
-    /// Thread that owns the watcher (Qt: QObject thread affinity, qobject.cpp:991-993).
+    /// Thread that owns the watcher (Qt: QObject thread affinity).
     thread: ThreadId,
-    /// Cleared by `FutureWatcher::drop`; posted callouts check it (Qt: removePostedEvents, qfuturewatcher.cpp:480-483).
+    /// Cleared by `FutureWatcher::drop`; posted callouts check it (Qt: removePostedEvents).
     alive: AtomicBool,
     pub(crate) finished: Signal<()>,
     pub(crate) result_ready: Signal<T>,
@@ -48,7 +48,7 @@ impl<T: Clone + Send + 'static> FutureWatcherSignals<T> {
         }
     }
 
-    /// Queues `deliver` to the watcher's thread (Qt: postCallOutEvent, qfuturewatcher.cpp:468-478).
+    /// Queues `deliver` to the watcher's thread (Qt: postCallOutEvent).
     fn post(self: &Arc<Self>, deliver: impl FnOnce(&Self) + Send + 'static) {
         let w = Arc::clone(self);
         post_event_to_thread(
@@ -126,7 +126,7 @@ impl<T: Clone + Send + 'static> FutureShared<T> {
     fn finish(&self) {
         let watchers = {
             let mut list = crate::poison::lock_unpoisoned(&self.watchers);
-            // Qt: reportFinished guards on !isFinished() (qfutureinterface.cpp:461).
+            // Qt: reportFinished guards on !isFinished.
             if self.is_finished.swap(true, Ordering::SeqCst) {
                 return;
             }

@@ -55,7 +55,7 @@ pub trait EventDispatcher {
     /// the timer event is sent, so a slot may stop or restart timers.
     fn send_timer_events(&self, registry: &Mutex<TimerRegistry>);
     /// Starts polling the notifier's descriptor so it fires `activated` when the descriptor is
-    /// ready (`QAbstractEventDispatcher::registerSocketNotifier`).
+    /// ready (the event dispatcher).
     ///
     /// Real descriptor polling exists on Linux only (an `epoll` set in the Unix dispatcher). A
     /// dispatcher that cannot poll descriptors, which is every other platform (Windows, macOS and
@@ -74,7 +74,7 @@ pub trait EventDispatcher {
     /// [`register_socket_notifier`](Self::register_socket_notifier) did not register.
     fn unregister_socket_notifier(&self, _notifier: &Arc<crate::event_loop::SocketNotifier>) {}
     /// The concrete dispatcher's type name, like Qt's
-    /// the class name of the thread's `QAbstractEventDispatcher` instance.
+    /// the class name of the thread's the event dispatcher instance.
     fn class_name(&self) -> &'static str {
         std::any::type_name::<Self>()
     }
@@ -184,9 +184,9 @@ impl EventDispatcher for GenericEventDispatcher {
 }
 
 /// Which creation path an event loop comes from, which decides its dispatcher, as in Qt:
-/// `Core` is `QThreadPrivate::createEventDispatcher` (worker threads and `QCoreApplication`,
-/// qthread_unix.cpp:316-325, qcoreapplication.cpp:518-523); `Gui` is the platform plugin's
-/// dispatcher that `QGuiApplication` asks for (qguiapplication.cpp:1629-1643). The thread does
+/// `Core` is `QThreadPrivate::createEventDispatcher` (worker threads and the core application,
+/// ); `Gui` is the platform plugin's
+/// dispatcher that `QGuiApplication` asks for. The thread does
 /// not matter. Only macOS has a separate GUI dispatcher in ferrokit (Cocoa); elsewhere both kinds get
 /// the platform's one dispatcher.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,8 +201,8 @@ pub type DefaultEventDispatcher = super::dispatcher_win::Win32EventDispatcher;
 #[cfg(target_os = "linux")]
 pub type DefaultEventDispatcher = super::dispatcher_unix::UnixEventDispatcher;
 
-/// macOS: `Core` loops use the UNIX dispatcher (Qt's `QEventDispatcherUNIX`), `Gui` loops the
-/// Cocoa one (`QCocoaEventDispatcher`, qcocoaintegration.mm:353-356).
+/// macOS: `Core` loops use the UNIX dispatcher (Qt's the platform event dispatcher), `Gui` loops the
+/// Cocoa one (`QCocoaEventDispatcher`).
 #[cfg(target_os = "macos")]
 pub type DefaultEventDispatcher = DarwinEventDispatcher;
 
@@ -318,10 +318,10 @@ pub fn create_dispatcher(kind: DispatcherKind) -> DefaultEventDispatcher {
 }
 
 /// Qt picks the dispatcher by how the loop is created, not by the calling thread. Darwin
-/// `QThreadPrivate::createEventDispatcher` (qthread_unix.cpp:316-325) returns `QEventDispatcherUNIX`
-/// for every thread with no main-thread check, and `QCoreApplication` uses that path too
-/// (qcoreapplication.cpp:518-523); only `QGuiApplication` asks the platform plugin
-/// (qguiapplication.cpp:1629-1643), which on macOS creates `QCocoaEventDispatcher`.
+/// `QThreadPrivate::createEventDispatcher` returns the platform event dispatcher
+/// for every thread with no main-thread check, and the core application uses that path too
+/// only `QGuiApplication` asks the platform plugin
+/// which on macOS creates `QCocoaEventDispatcher`.
 #[cfg(all(test, target_os = "macos"))]
 mod darwin_tests {
     use super::{DarwinEventDispatcher, DispatcherKind};

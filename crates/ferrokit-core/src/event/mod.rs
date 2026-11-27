@@ -47,7 +47,7 @@ pub enum EventKind {
     },
 
     /// Deferred deletion event (`QDeferredDeleteEvent`). The levels are the requesting thread's
-    /// loop and handler-scope levels at request time (qobject.cpp:2539-2559).
+    /// loop and handler-scope levels at request time.
     DeferredDelete {
         loop_level: usize,
         scope_level: usize,
@@ -279,7 +279,7 @@ pub enum EventKind {
 
     /// `QHelpEvent(QEvent::ToolTip)`: the position under the cursor in the receiving widget's
     /// coordinates and in global coordinates. It carries no text; the widget supplies its own
-    /// `toolTip` (`QWidget::event`, qwidget.cpp:9381-9386).
+    /// `toolTip` (`QWidget::event`).
     ToolTip {
         x: i32,
         y: i32,
@@ -362,18 +362,18 @@ pub enum EventKind {
     EnabledChange,
 
     /// Paint request for a widget's dirty rectangle, in widget coordinates (`QEvent::Paint`).
-    /// Sent spontaneously by the window's render pass, before `paint_event` (qwidget.cpp:9186).
+    /// Sent spontaneously by the window's render pass, before `paint_event`.
     Paint {
         x: i32,
         y: i32,
         width: i32,
         height: i32,
     },
-    /// The widget's font changed (`QEvent::FontChange`, qwidget.cpp:4894-4895).
+    /// The widget's font changed (`QEvent::FontChange`).
     FontChange,
-    /// The widget's style or style sheet changed (`QEvent::StyleChange`, qwidget.cpp:2724-2725).
+    /// The widget's style or style sheet changed (`QEvent::StyleChange`).
     StyleChange,
-    /// The widget's tooltip changed (`QEvent::ToolTipChange`, qwidget.cpp:11798-11799).
+    /// The widget's tooltip changed (`QEvent::ToolTipChange`).
     ToolTipChange,
     /// The widget is polished (`QEvent::Polish`, sent once by `QWidget::ensurePolished`).
     Polish,
@@ -383,7 +383,7 @@ pub enum EventKind {
     },
     /// The widget's stacking order changed (`QEvent::ZOrderChange`, `QWidget::raise`/`lower`).
     ZOrderChange,
-    /// The widget's cursor was set or unset (`QEvent::CursorChange`, qwidget.cpp:4996-4997,
+    /// The widget's cursor was set or unset (`QEvent::CursorChange`,
     /// 5016-5017).
     CursorChange,
 }

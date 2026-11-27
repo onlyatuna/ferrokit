@@ -20,7 +20,7 @@ impl MergeKey {
 }
 
 /// Event compression trait: determines whether a new event can be coalesced
-/// with an existing queued event. Modeled after Qt's `QCoreApplication::compressEvent`.
+/// with an existing queued event. Modeled after Qt's the core application.
 pub trait EventCompressor: Send + Sync {
     /// Returns true if incoming event was successfully merged or deduplicated.
     ///
@@ -116,7 +116,7 @@ impl EventCompressor for CoreCompressor {
 }
 
 /// Reverse-traversal search to coalesce events for the same receiver.
-/// Modeled after Qt QCoreApplication::compressEvent.
+/// Modeled after Qt the core application.
 ///
 /// This scans `events`; an [`EventQueue`](crate::event_loop::EventQueue) finds the same events
 /// through its index and does not call it. Both offer `incoming` to the queued events of

@@ -430,7 +430,7 @@ impl Win32EventDispatcher {
                         return DispatchResult::Quit(msg.wParam as i32);
                     }
                     // The internal wake-up is handled before the native event filter, as Qt does
-                    // (qeventdispatcher_win.cpp): a filter must not swallow it and leave
+                    // : a filter must not swallow it and leave
                     // `wakeup_pending` set forever.
                     if msg.hwnd == self.internal_hwnd && msg.message == WM_FERROKIT_WAKEUP {
                         self.wakeup_pending.store(false, Ordering::Release);
@@ -1203,7 +1203,7 @@ mod tests {
 
     #[test]
     fn test_modal_pump_keeping_a_deferred_delete_rearms_the_wake_up() {
-        // Loop level 1 makes the stamp (0, 0) deliverable (qcoreapplication.cpp:1880-1885).
+        // Loop level 1 makes the stamp (0, 0) deliverable.
         crate::object::ThreadContext::set_current_loop_level(1);
         let el = crate::event_loop::EventLoop::new();
         let hwnd = el.dispatcher().internal_hwnd;

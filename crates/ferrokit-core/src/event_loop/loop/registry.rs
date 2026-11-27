@@ -55,8 +55,8 @@ impl EventLoopHandle {
     /// before they have all returned (it returns -1 at once). With no loop running it does
     /// nothing.
     pub fn exit(&self, return_code: i32) {
-        // qthread.cpp:757-765 (v6.11.2): QThread::exit sets `quitNow` and ends every loop running on the
-        // thread, under the lock `QEventLoop::exec` checks `quitNow` with.
+        // (v6.11.2): QThread::exit sets `quit_now` and ends every loop running on the
+        // thread, under the lock an event loop run checks `quit_now` with.
         {
             let mut running = self.running.lock();
             if !running.loops.is_empty() {
@@ -75,8 +75,8 @@ impl EventLoopHandle {
 }
 
 /// Per-thread posted-event routing: the live loop handle (if any) and events posted before one
-/// exists. Qt keeps `postEventList` in `QThreadData`, independent of the event dispatcher
-/// (`QCoreApplication::postEvent`, qcoreapplication.cpp:1694), so an event posted to a thread
+/// exists. Qt keeps `postEventList` in the per-thread event state, independent of the event dispatcher
+/// (posted event queueing), so an event posted to a thread
 /// that has no loop yet is queued and delivered once the thread runs events.
 pub(super) struct ThreadEventRegistry {
     handles: HashMap<ThreadId, EventLoopHandle>,
@@ -179,7 +179,6 @@ pub fn post_event_to_thread_with_priority(
     // One lock covers "who owns the receiver now?", "is there a loop?" and "buffer it". A
     // `move_to_thread` flips registration and moves queued events under the same lock, so a post
     // cannot land on the old owner's queue after the move. Qt posts to the receiver's thread data
-    // (qcoreapplication.cpp:1694).
     // A user compressor can panic while this lock is held (see
     // `EventLoopHandle::post_event_with_priority`). That happens before the registry or the
     // queue is changed beyond the empty entries created by `get_or_insert_with` and
@@ -224,7 +223,7 @@ pub fn get_thread_event_sender(thread_id: ThreadId) -> Option<EventLoopHandle> {
 /// sets their physical registration) in the same critical section. A concurrent
 /// `post_event_to_thread` either queued before this point, so its event moves here, or runs after
 /// and is routed to `to`. The moved events keep their order and priority and are not compressed
-/// (Qt `setThreadData_helper`, qobject.cpp:1805-1815, under the locks of qobject.cpp:1757-1758).
+/// (Qt `setThreadData_helper`, under the locks of).
 pub(crate) fn move_receivers_to_thread(receivers: &[ObjectId], to: ThreadId, flip: impl FnOnce()) {
     let receiver_set: std::collections::HashSet<ObjectId> = receivers.iter().copied().collect();
     let mut woken = None;
@@ -286,7 +285,7 @@ pub(crate) fn move_receivers_to_thread(receivers: &[ObjectId], to: ThreadId, fli
 }
 
 /// Removes every posted event addressed to `receiver` from all threads: live loops and the pending
-/// queues of threads without a loop yet (Qt `~QObject` → `removePostedEvents`, qobject.cpp:206-207).
+/// queues of threads without a loop yet (Qt `~QObject` → `removePostedEvents`).
 /// `ObjectId(0)` is the fire-and-forget sentinel, not an object, so it is never purged. Lock order is
 /// the registry, then each queue. Removed events are dropped only after every lock is released,
 /// because a payload's `Drop` may unregister objects and purge again.

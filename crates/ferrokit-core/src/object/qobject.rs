@@ -109,7 +109,7 @@ impl ObjectBorrowState {
 
     /// Marks the object dead, then emits `destroyed(id)` once, the first time it is called for
     /// this object. Qt `~QObject` emits it first, before it disconnects anything and before
-    /// `deleteChildren` (qobject.cpp:1086-1105). The object is unreachable through the registry
+    /// `deleteChildren`. The object is unreachable through the registry
     /// from the first step (liveness false), so a slot cannot get at it, and the receivers get the
     /// id and nothing else. Callers run it before any descendant is unregistered, so a parent's
     /// `destroyed` always goes out before its descendants'.
@@ -778,12 +778,12 @@ pub(crate) fn registration_thread_of(id: ObjectId) -> Option<ThreadId> {
 }
 
 /// Invokes a method on a registered object through its thread's event loop
-/// (`QMetaObject::invokeMethod` with `Qt::QueuedConnection` or `Qt::BlockingQueuedConnection`).
+/// (meta-object dispatch with `Qt::QueuedConnection` or `Qt::BlockingQueuedConnection`).
 ///
 /// Needs no `&mut` borrow of the object, so any thread may call it with the receiver's id and its
 /// static `MetaObject`. The member is resolved and its arguments type-checked before anything is
-/// posted, as Qt does (`invokeMethodImpl`, qmetaobject.cpp:1693-1708; `invokeImpl` type checks,
-/// qmetaobject.cpp:2774-2809). `Queued` returns `Ok(Variant::Invalid)`
+/// posted, as Qt does (`invokeMethodImpl`,; `invokeImpl` type checks,
+/// ). `Queued` returns `Ok(Variant::Invalid)`
 /// once posted; the return value is not delivered. `BlockingQueued` waits for the result on the
 /// receiver's thread. It returns `Err(TargetBorrowFailed)` if the posted call is dropped without
 /// running (the receiver was destroyed, or its loop or thread ended), and `Err(ExecutionFailed)`
@@ -827,8 +827,8 @@ pub fn invoke_method_on_thread(
     }
 
     if thread == ThreadId::current() {
-        // Qt: "Dead lock detected" (qmetaobject.cpp:1750); QMetaMethod::invoke returns
-        // DeadLockDetected (qmetaobject.cpp:2926-2929). Reported as an error instead of blocking forever.
+        // Qt: "Dead lock detected"; QMetaMethod::invoke returns
+        // DeadLockDetected. Reported as an error instead of blocking forever.
         return Err(crate::meta::InvokeError::ExecutionFailed(
             "BlockingQueued invoke on the receiver's own thread would deadlock".to_string(),
         ));
@@ -1478,14 +1478,14 @@ pub unsafe fn unregister_qobject(id: ObjectId) {
     // does, and what the destruction of an owner does first). The object is dead and out of the
     // registry, its links are cut, and no lock of ours is held. `destroyed` goes out now, before
     // the connections of the object are cut, so its receivers are still connected (Qt emits it
-    // before it disconnects anything, qobject.cpp:1086-1105). An object that was never
+    // before it disconnects anything). An object that was never
     // registered emits it from its drop instead.
     if let Some(state) = state {
         state.emit_destroyed_once(id);
     }
     unregister_object_thread(id);
     // Posted events addressed to a destroyed object are removed, never delivered (Qt
-    // `~QObjectPrivate`, qobject.cpp:206-207).
+    // `~object internals`).
     crate::event_loop::purge_posted_events_for_receiver(id);
     crate::signal::disconnect_all_for_object(id);
     crate::timer::stop_timers_for_object(id);

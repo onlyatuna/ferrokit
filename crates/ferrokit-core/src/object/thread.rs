@@ -92,7 +92,7 @@ impl ThreadId {
     }
 }
 
-/// Thread local context: ThreadContext. Modeled after Qt QThreadData.
+/// Thread local context: ThreadContext. Modeled after Qt per-thread event state.
 pub struct ThreadContext {
     pub id: ThreadId,
     /// Whether this thread is the main UI thread.
@@ -103,20 +103,20 @@ pub struct ThreadContext {
 
 thread_local! {
     static CURRENT_THREAD_CONTEXT: RefCell<Option<ThreadContext>> = const { RefCell::new(None) };
-    /// Loop recursion depth of this thread, matching `QThreadData::loopLevel`.
+    /// Loop recursion depth of this thread, matching the thread's loop nesting depth.
     static LOOP_LEVEL: Cell<usize> = const { Cell::new(0) };
-    /// Handler nesting depth of this thread, matching `QThreadData::scopeLevel` (qthread_p.h:400-409).
+    /// Handler nesting depth of this thread, matching the per-thread event state.
     static SCOPE_LEVEL: Cell<usize> = const { Cell::new(0) };
 }
 
-/// Marks one handler scope on the current thread (`QScopedScopeLevelCounter`, qthread_p.h:400-409).
+/// Marks one handler scope on the current thread (`QScopedScopeLevelCounter`).
 /// The guard is `!Send` because the counter is thread-local.
 pub struct ScopeLevelGuard {
     _not_send: std::marker::PhantomData<*const ()>,
 }
 
 impl ScopeLevelGuard {
-    /// Enters a handler scope, incrementing the thread's `scopeLevel` until the guard drops.
+    /// Enters a handler scope, incrementing the thread's `scope_level` until the guard drops.
     pub fn enter() -> Self {
         SCOPE_LEVEL.with(|level| level.set(level.get() + 1));
         Self {
@@ -182,17 +182,17 @@ impl ThreadContext {
         })
     }
 
-    /// Loop recursion depth of the current thread (`QThreadData::loopLevel`).
+    /// Loop recursion depth of the current thread (the thread's loop nesting depth).
     pub fn current_loop_level() -> usize {
         LOOP_LEVEL.with(|level| level.get())
     }
 
-    /// Sets the loop recursion depth of the current thread (`QThreadData::loopLevel`).
+    /// Sets the loop recursion depth of the current thread (the thread's loop nesting depth).
     pub fn set_current_loop_level(level: usize) {
         LOOP_LEVEL.with(|cell| cell.set(level));
     }
 
-    /// Handler nesting depth of the current thread (`QThreadData::scopeLevel`).
+    /// Handler nesting depth of the current thread (the per-thread event state).
     pub fn current_scope_level() -> usize {
         SCOPE_LEVEL.with(|level| level.get())
     }
@@ -207,7 +207,7 @@ impl ThreadContext {
     }
 
     /// Records the thread that constructed the application as the main thread, matching
-    /// `QCoreApplicationPrivate::mainThread` (qcoreapplication.cpp:475, 531-537). Overwrites on
+    /// application internals (531-537). Overwrites on
     /// each call and is not cleared on drop.
     pub(crate) fn set_main_thread_id(id: ThreadId) {
         *crate::poison::write_unpoisoned(&GLOBAL_MAIN_THREAD_ID) = Some(id);
@@ -341,10 +341,10 @@ fn flip_owned(data: &mut ObjectData, target_thread: ThreadId, visited: &mut Vec<
 }
 
 /// Moves a registered object and all its descendants to `target_thread` by [`ObjectId`], matching
-/// Qt `QObject::moveToThread` semantics (`qobject.cpp:1706-1780`) without holding an outer
+/// Qt `QObject::moveToThread` semantics without holding an outer
 /// `&mut ObjectData` across `ThreadChange` delivery or recursive child updates.
 ///
-/// Cascading actions, in Qt order (`qobject.cpp:1782-1792`):
+/// Cascading actions, in Qt order:
 /// 1. Validates that `id` is registered and alive, has no parent, belongs to
 ///    `current_caller_thread`, has no active callback borrow in its subtree, and that every object
 ///    of the subtree opted in with
@@ -357,9 +357,9 @@ fn flip_owned(data: &mut ObjectData, target_thread: ThreadId, visited: &mut Vec<
 ///    If a handler made the subtree busy or unmovable, the move fails with that error and changes
 ///    nothing (the `ThreadChange` events were sent).
 /// 3. Detaches their timers from the source thread and updates each node's `ObjectData.thread_id`
-///    through a separate short-lived registry borrow (`qobject.cpp:1490-1502`).
+///    through a separate short-lived registry borrow.
 /// 4. Flips the physical registration thread and moves queued posted events to the target queue
-///    (`qobject.cpp:1794-1815`), then re-arms the detached timers on the target thread.
+///    then re-arms the detached timers on the target thread.
 pub fn move_to_thread_by_id(
     id: ObjectId,
     target_thread: ThreadId,
@@ -371,13 +371,13 @@ pub fn move_to_thread_by_id(
         return Ok(());
     };
 
-    // 1. ThreadChange is sent before any change (`qobject.cpp:1749, 1785-1786`).
+    // 1. ThreadChange is sent before any change (1785-1786`).
     for &node_id in &all_ids {
         let mut ev = Event::new(EventKind::ThreadChange);
         crate::object::send_event(node_id, &mut ev);
     }
     // A handler may have attached children, so the subtree is collected again while a node lists
-    // an object that was not in it (Qt walks the children after the event, qobject.cpp:1782-1792),
+    // an object that was not in it (Qt walks the children after the event),
     // and each object found that way gets its own `ThreadChange` (Qt `setThreadData_helper`). If
     // it can't be collected now (a handler made a part of it busy or unmovable), the move fails
     // with that error and changes nothing: moving the objects found before would leave the one
@@ -422,7 +422,7 @@ pub fn move_to_thread_by_id(
         return Err(MoveByIdError::Busy);
     }
 
-    // 2. Detach timers from the source thread (`qobject.cpp:1490-1502`).
+    // 2. Detach timers from the source thread.
     let timers = crate::timer::detach_timers_for_objects(&all_ids);
 
     // 3. Affinity. Each node in the subtree is updated through its own short-lived registry borrow
@@ -445,7 +445,7 @@ pub fn move_to_thread_by_id(
         crate::object::register_object_thread(node_id, target_thread);
     }
 
-    // 5. Re-arm the detached timers on the target thread (`qobject.cpp:1496-1500`).
+    // 5. Re-arm the detached timers on the target thread.
     if !timers.is_empty() {
         crate::event_loop::post_event_to_thread(
             target_thread,
@@ -459,7 +459,6 @@ pub fn move_to_thread_by_id(
 }
 
 /// Moves object and all its children to target thread matching Qt moveToThread semantics
-/// (`qobject.cpp:1706-1780`).
 ///
 /// Deprecated, because holding `object_data: &mut ObjectData` while delivering `ThreadChange`
 /// through the registry (`send_event`) and recursively mutating `owned_children` creates
@@ -488,13 +487,13 @@ pub fn move_to_thread(
     else {
         return Ok(());
     };
-    // 1. ThreadChange is sent before any change (`qobject.cpp:1749, 1785-1786`).
+    // 1. ThreadChange is sent before any change (1785-1786`).
     for &id in &all_ids {
         let mut ev = Event::new(EventKind::ThreadChange);
         crate::object::send_event(id, &mut ev);
     }
 
-    // 2. Detach timers from the source thread (`qobject.cpp:1490-1502`).
+    // 2. Detach timers from the source thread.
     let timers = crate::timer::detach_timers_for_objects(&all_ids);
 
     // 3. Affinity. The root is flipped directly. Descendants are flipped through the registry,
@@ -525,7 +524,7 @@ pub fn move_to_thread(
         crate::object::register_object_thread(id, target_thread);
     }
 
-    // 5. Re-arm the detached timers on the target thread (`qobject.cpp:1496-1500`).
+    // 5. Re-arm the detached timers on the target thread.
     if !timers.is_empty() {
         crate::event_loop::post_event_to_thread(
             target_thread,
