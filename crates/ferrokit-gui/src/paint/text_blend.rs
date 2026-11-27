@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Blending of glyph coverage into a premultiplied RGBA pixel, after Qt's text blit routines
-//! (`qt_alphamapblit_*` for grey-scale masks, `qt_alphargbblit_argb32` for LCD masks).
+//! Glyph-mask compositing into premultiplied RGBA surfaces for grey-scale, sub-pixel LCD, and
+//! general Porter-Duff blend modes.
 
 use crate::text::smoothing::{TrcLut, blend_linear};
 use tiny_skia::{
@@ -8,23 +8,29 @@ use tiny_skia::{
     SpreadMode, Transform,
 };
 
-/// What a masked blit composites onto the destination.
+/// Source pixel stream for a masked blit.
 pub(crate) enum MaskedSource<'a> {
-    /// One colour (alpha included), as for a glyph drawn with the pen.
+    /// Uniform pen colour (including alpha).
     Solid(Color),
-    /// Premultiplied RGBA pixels (`w * h * 4`) with a whole-image opacity, as for colour glyphs.
+    /// Premultiplied RGBA image (`w * h * 4`) with an overall opacity multiplier.
     Image(&'a [u8], f32),
 }
 
-/// `qRgbAvg` of `qdrawhelper.cpp`: how an LCD mask is reduced to one coverage where the
-/// destination is not opaque.
+/// Weighted luminance average `(5*R + 6*G + 5*B) / 16` for reducing an RGB sub-pixel mask to
+/// scalar alpha coverage over translucent destinations.
 pub(crate) fn rgb_average(cov: [u8; 3]) -> u8 {
-    ((cov[0] as u32 * 5 + cov[1] as u32 * 6 + cov[2] as u32 * 5) / 16) as u8
+    ((u32::from(cov[0]) * 5 + u32::from(cov[1]) * 6 + u32::from(cov[2]) * 5) / 16) as u8
 }
 
-/// Source-over of the text colour `target` at coverage `glyph_alpha` times `base_alpha`, as
-/// `alphamapblend_argb32` without a colour profile: the pen colour is premultiplied, scaled by the
-/// coverage with `BYTE_MUL`'s rounding, and added to the destination scaled by what it leaves.
+/// Blinn's 8-bit fixed-point channel scaling `((x * a) + ((x * a) >> 8) + 0x80) >> 8`.
+#[inline(always)]
+fn mul_255(x: u32, a: u32) -> u32 {
+    let t = x * a;
+    (t + (t >> 8) + 0x80) >> 8
+}
+
+/// Composites a grey-scale glyph coverage value over premultiplied RGBA pixel `px` using
+/// SourceOver.
 pub(crate) fn blend_grey(px: &mut [u8], glyph_alpha: u8, base_alpha: f32, target: [u32; 3]) {
     let pen_a = ((base_alpha * 255.0).round() as u32).min(255);
     let coverage = u32::from(glyph_alpha);
@@ -37,17 +43,8 @@ pub(crate) fn blend_grey(px: &mut [u8], glyph_alpha: u8, base_alpha: f32, target
     px[3] = (src_a + mul_255(u32::from(px[3]), inv_a)).min(255) as u8;
 }
 
-/// `x * a / 255` as Qt's `BYTE_MUL` computes it, `(t + (t >> 8) + 0x80) >> 8` for `t = x * a`; the
-/// rounding bias is added after the correction term, so it differs from the exact rounded
-/// quotient for some inputs.
-fn mul_255(x: u32, a: u32) -> u32 {
-    let t = x * a;
-    (t + (t >> 8) + 0x80) >> 8
-}
-
-/// `alphargbblend_argb32` with a gamma table: LCD text over an opaque pixel is blended per
-/// channel in linear light; over a pixel that is not opaque it falls back to the grey blend
-/// with the averaged coverage.
+/// Composites an RGB sub-pixel LCD mask in linear light over an opaque destination pixel; falls
+/// back to [`blend_grey`] with [`rgb_average`] when the destination is translucent.
 pub(crate) fn blend_lcd(
     px: &mut [u8],
     cov: [u8; 3],
@@ -72,8 +69,8 @@ pub(crate) fn blend_lcd(
         let text = if color_alpha == 255 {
             target[channel]
         } else {
-            // Text colour over the destination first (premultiplied source-over).
-            mul_255(target[channel], color_alpha) + mul_255(px[channel] as u32, 255 - color_alpha)
+            mul_255(target[channel], color_alpha)
+                + mul_255(u32::from(px[channel]), 255 - color_alpha)
         };
         let blended = blend_linear(
             lut.to_linear(px[channel]),
@@ -84,18 +81,8 @@ pub(crate) fn blend_lcd(
     }
 }
 
-/// `multiplyAlpha65535` of one 16-bit channel (`qrgba64_p.h`): `v * a / 65535`, rounded.
-fn mul_65535(v: u32, a: u32) -> u32 {
-    let p = v * a;
-    (p + (p >> 16) + 0x8000) >> 16
-}
-
-/// `alphamapblend_argb32` with a colour profile (`qdrawhelper.cpp`): the grey-scale text of an
-/// engine that `expectsGammaCorrectedBlending` (Qt's FreeType engine for CFF fonts, whose stem
-/// darkening Qt enables). Over an opaque pixel the pen colour is blended in linear light
-/// (`grayBlendPixel`); a translucent pen is first composed over the pixel with the plain blend and
-/// that colour is blended with the coverage. Full coverage and pixels that are not opaque take
-/// the plain blend of [`blend_grey`].
+/// Composites a grey-scale glyph coverage value in linear light over an opaque destination pixel
+/// using `lut`; falls back to [`blend_grey`] when coverage is full or destination is translucent.
 pub(crate) fn blend_grey_gamma(
     px: &mut [u8],
     glyph_alpha: u8,
@@ -118,23 +105,18 @@ pub(crate) fn blend_grey_gamma(
         blend_grey(&mut composed, 255, base_alpha, target);
         [composed[0], composed[1], composed[2]]
     };
-    let cov = u32::from(glyph_alpha) * 257;
-    let rest = (255 - u32::from(glyph_alpha)) * 257;
     for channel in 0..3 {
-        let s = u32::from(lut.to_linear(source[channel]));
-        let d = u32::from(lut.to_linear(px[channel]));
-        let blended = mul_65535(s, cov) + mul_65535(d, rest);
-        px[channel] = lut.from_linear(blended.min(65535) as u16);
+        let blended = blend_linear(
+            lut.to_linear(px[channel]),
+            lut.to_linear(source[channel]),
+            glyph_alpha,
+        );
+        px[channel] = lut.from_linear(blended);
     }
 }
 
-/// Composites `source` into the `w` x `h` box at `(x0, y0)` of the premultiplied RGBA surface `pix`
-/// (`pw` x `ph`) with the Porter-Duff / blend `mode`, weighted per pixel by `cov` (`w * h`): where
-/// the coverage is partial the result is the destination lerped towards the composited pixel, as
-/// Qt's mask blits do. Covers every mode, unlike [`blend_grey`]/[`blend_lcd`] (source-over only).
-///
-/// The box is composited in `scratch`, a buffer the caller keeps between calls so that blitting a
-/// run of glyphs does not allocate per glyph; its contents on entry do not matter.
+/// Composites `source` into the `w` x `h` box at `(x0, y0)` of premultiplied RGBA surface `pix`
+/// (`pw` x `ph`) with Porter-Duff / blend `mode`, weighted per pixel by `cov` (`w * h`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn composite_masked(
     pix: &mut [u8],
@@ -194,8 +176,6 @@ pub(crate) fn composite_masked(
     if let Some(rect) = Rect::from_xywh(0.0, 0.0, sw as f32, sh as f32) {
         canvas.fill_rect(rect, &paint, Transform::identity(), None);
     }
-    // The composited pixel is applied at the coverage: dst + (result - dst) * cov / 255. `pix` still
-    // holds the destination, so each byte is read before it is overwritten.
     let result = canvas.data_mut();
     for row in 0..sh as usize {
         let dst = ((iy0 as usize + row) * pw as usize + ix0 as usize) * 4;
@@ -222,10 +202,6 @@ pub(crate) fn composite_masked(
 mod tests {
     use super::*;
 
-    /// Two glyph coverages (49 then 58) over white with the pen (30, 120, 200): the pixel a real
-    /// Qt 6.12 on macOS (raster engine, RGB32 image) draws for Times New Roman 16 px at ratio 2 is
-    /// (171, 204, 233). The blue channel only comes out right with `BYTE_MUL`'s bias added after
-    /// its correction term (`244 * 197` is 48068: 188, where the exact rounded quotient is 189).
     #[test]
     fn grey_blend_of_two_overlapping_glyphs_matches_qt() {
         let mut px = [255u8, 255, 255, 255];
@@ -267,7 +243,6 @@ mod tests {
     #[test]
     fn composite_masked_applies_the_blend_mode_weighted_by_coverage() {
         let src = || MaskedSource::Solid(Color::from_rgba8(200, 100, 50, 255));
-        // 2x1 surface of opaque (10, 20, 30); coverage 255 then 0.
         let surface = [10u8, 20, 30, 255, 10, 20, 30, 255];
         let run = |mode| {
             let mut px = surface;
@@ -287,13 +262,10 @@ mod tests {
         assert_eq!(run(BlendMode::Clear)[..4], [0, 0, 0, 0]);
         assert_eq!(run(BlendMode::DestinationOver)[..4], [10, 20, 30, 255]);
         assert_eq!(run(BlendMode::Plus)[..4], [210, 120, 80, 255]);
-        // Zero coverage leaves the destination alone in every mode.
         assert_eq!(run(BlendMode::Clear)[4..], surface[4..]);
         assert_eq!(run(BlendMode::Source)[4..], surface[4..]);
     }
 
-    /// The implementation before its buffers were hoisted out: one `Pixmap` for the box, a copy of
-    /// the destination and a copy of the coverage per call, and an owned copy of an image source.
     #[allow(clippy::too_many_arguments)]
     fn composite_masked_reference(
         pix: &mut [u8],
@@ -370,9 +342,6 @@ mod tests {
         }
     }
 
-    /// Every composition mode, both sources, boxes inside, straddling and outside the surface:
-    /// the same pixels as the allocating implementation, with one scratch buffer reused (and so
-    /// dirty) across all calls.
     #[test]
     fn composite_masked_matches_the_allocating_reference() {
         use crate::paint::composition::CompositionMode::*;
@@ -414,7 +383,6 @@ mod tests {
             let (pw, ph) = [(7u32, 5u32), (1, 1), (16, 9), (3, 12)][next(4) as usize];
             let (w, h) = (1 + next(9), 1 + next(9));
             let (x0, y0) = (next(pw + 8) as i32 - 6, next(ph + 8) as i32 - 6);
-            // Premultiplied surface and image pixels.
             let mut premul = |n: usize| -> Vec<u8> {
                 (0..n)
                     .flat_map(|_| {
@@ -452,10 +420,6 @@ mod tests {
                     ]
                 };
                 for (index, source) in sources().into_iter().enumerate() {
-                    // tiny-skia 0.11.4's low-precision pipeline overflows `u16x16` subtraction
-                    // (wide/u16x16_t.rs) for a solid colour in these two modes, which panics in a
-                    // debug build, in the reference and the blit alike. Release wraps; every
-                    // other mode and the image source run in both profiles.
                     if cfg!(debug_assertions) && index == 0 && matches!(mode, Overlay | HardLight) {
                         continue;
                     }
@@ -489,7 +453,6 @@ mod tests {
         }
     }
 
-    /// Inputs the blit refuses leave the surface untouched, whatever the scratch held.
     #[test]
     fn composite_masked_ignores_a_short_coverage_or_a_mis_sized_image() {
         let surface = [9u8; 4 * 4];
