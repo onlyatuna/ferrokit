@@ -34,7 +34,7 @@ pub struct OutlineFace {
     _data: SharedFontData,
 }
 
-/// `QFreetypeFace::unicode_map` and `symbol_map` (qfontengine_ft.cpp:401-420) of a symbol font,
+/// FreeType symbol charmap and `symbol_map` of a symbol font,
 /// as indices of `cmap` subtables.
 #[cfg(all(unix, not(target_os = "macos")))]
 #[derive(Clone, Copy)]
@@ -106,14 +106,14 @@ impl OutlineFace {
     }
 
     /// Whether face `index` of `data` is a symbol font to Qt's FreeType engine
-    /// (`QFontEngine::symbol`: it has a symbol charmap, qfontengine_ft.cpp:995). Such an engine
-    /// draws every script itself, with no fallback fonts (qfontdatabase.cpp:835, 2947-2953).
+    /// (the glyph backend: it has a symbol charmap). Such an engine
+    /// draws every script itself, with no fallback fonts (2947-2953).
     #[cfg(all(unix, not(target_os = "macos")))]
     pub(crate) fn is_symbol_font(data: &[u8], index: u32) -> bool {
         Face::parse(data, index).is_ok_and(|face| SymbolCmaps::of(&face).is_some())
     }
 
-    /// `QFontEngineFT::glyphIndex` (qfontengine_ft.cpp:2399-2429) for a symbol font, which is what
+    /// FreeType glyph backend for a symbol font, which is what
     /// HarfBuzz is given in Qt: the character code through the current charmap (the Unicode or
     /// Apple Roman one, the code taken as it is), the space for a no-break space or tab, else
     /// through the symbol charmap, else, below U+0100, the code plus 0xF000 through the current
@@ -151,7 +151,7 @@ impl OutlineFace {
         self.face.glyph_hor_advance(GlyphId(glyph_id))
     }
 
-    /// The bytes of the sfnt table `tag` (`QFontEngine::getSfntTable`).
+    /// The bytes of the sfnt table `tag` (the glyph backend).
     #[cfg(windows)]
     pub(crate) fn sfnt_table(&self, tag: &[u8; 4]) -> Option<&[u8]> {
         self.face.raw_face().table(Tag::from_bytes(tag))
@@ -169,7 +169,7 @@ impl OutlineFace {
         })
     }
 
-    /// `QFontEngine::initializeHeightMetrics` (qfontengine.cpp:419-448) from the font's own tables,
+    /// the glyph backend from the font's own tables,
     /// which Qt 6 uses on every platform instead of the system's values: the `hhea` ascender,
     /// descender and line gap, replaced by the OS/2 typographic ones when `fsSelection` has
     /// `USE_TYPO_METRICS` (bit 7) and by the OS/2 Windows ascent and descent (with no leading)
@@ -179,12 +179,12 @@ impl OutlineFace {
     ///
     /// **Known deviation (not on Windows):** a font with embedded bitmaps (`EBLC`, `CBLC` or
     /// `bdat`) keeps its platform engine's own values in Qt, neither read from the tables nor
-    /// rounded (qfontengine.cpp:432-445: DirectWrite's `DWRITE_FONT_METRICS`, FreeType's scaled
+    /// rounded (DirectWrite's `DWRITE_FONT_METRICS`, FreeType's scaled
     /// size metrics, CoreText's). Only the DirectWrite backend has them (`DirectWriteFace`,
     /// which asks DirectWrite); here such a font only skips the OS/2 override and is read from
     /// `hhea`, and is rounded like any other. [inferred]
     /// macOS has no override at all: CoreText reports the `hhea` values (`CTFontGetAscent`,
-    /// `CTFontGetDescent`, `CTFontGetLeading`, qfontengine_coretext.mm:401-411) unless the
+    /// `CTFontGetDescent`, `CTFontGetLeading`) unless the
     /// application asks for `QFont::PreferTypoLineMetrics`.
     ///
     /// `None` when neither pair is usable.
@@ -192,7 +192,7 @@ impl OutlineFace {
         let raw = self.face.raw_face();
         let upem = f64::from(self.units_per_em);
         let px = f64::from(px);
-        // `QFixed::fromReal`: truncated toward zero to 1/64.
+        // 26.6 fixed-point conversion: truncated toward zero to 1/64.
         let fixed = |design: f64| ((design * px / upem) * 64.0).trunc() / 64.0;
         // Qt gives up on values that do not fit a `QFixed` (`limitForQFixed`).
         let limit = f64::from(i32::MAX >> 6) / px;
@@ -246,8 +246,8 @@ impl OutlineFace {
 
     /// The advance of the glyph for `x` as DirectWrite reports it (`GetDesignGlyphMetrics`), in
     /// pixels at `px` per em converted as Qt's `DESIGN_TO_LOGICAL` does: a 26.6 value truncated
-    /// toward zero. This is `QFontEngine::averageCharWidth` for Qt's Windows engines
-    /// (`boundingBox('x').xoff`, qfontengine.cpp:246-251; measured with PySide6 6.11.2 as the
+    /// toward zero. This is the glyph backend for Qt's Windows engines
+    /// (`boundingBox('x').xoff`,; measured with PySide6 6.11.2 as the
     /// `QFontMetricsF::averageCharWidth` of every font tried, hinted and unhinted), and the
     /// fallback of the other platforms' engines for a font with no OS/2 average width.
     pub(crate) fn x_advance(&self, px: f32) -> Option<f32> {
@@ -258,8 +258,8 @@ impl OutlineFace {
     }
 
     /// The OS/2 `xAvgCharWidth` at `px` per em as Qt's FreeType and CoreText engines scale it
-    /// (`QFontEngineFT::averageCharWidth`, qfontengine_ft.cpp:2167-2178;
-    /// `QCoreTextFontEngine`, qfontengine_coretext.mm:240-251, 427-430), or the advance of `x`
+    /// (FreeType glyph backend,;
+    /// `CoreText glyph backend`, 427-430), or the advance of `x`
     /// when the font has none. FreeType: `QFixed(xAvgCharWidth * x_ppem) / emSquareSize()`, a
     /// 26.6 quotient rounded half up (`x_ppem` being the pixel size rounded, which FreeType
     /// holds for the strike). CoreText: `abs(xAvgCharWidth) * pixelSize / unitsPerEm`,
@@ -272,14 +272,14 @@ impl OutlineFace {
             .filter(|t| t.len() >= 10);
         if cfg!(target_os = "macos") {
             // CoreText takes the table's width as it is, zero included (`os2Table.size() >= 10`,
-            // qfontengine_coretext.mm:244-248); only a font without the table asks the glyph.
+            // ); only a font without the table asks the glyph.
             let Some(os2) = os2 else {
                 return self.x_advance(px);
             };
             let width = f64::from(be_i16(os2, 2).unsigned_abs());
             return Some(((width * f64::from(px) / upem as f64 * 64.0).trunc() / 64.0) as f32);
         }
-        // FreeType: a zero width falls back to the glyph (`os2->xAvgCharWidth`, ft.cpp:2169).
+        // FreeType: a zero width falls back to the glyph (`os2->xAvgCharWidth`).
         let avg = os2.map_or(0, |t| be_i16(t, 2));
         if avg == 0 {
             return self.x_advance(px);

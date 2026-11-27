@@ -55,7 +55,7 @@ impl Alignment {
     }
 
     /// `QStyle::visualAlignment` / `QGuiApplicationPrivate::visualAlignment`
-    /// (qguiapplication_p.h:176-186): without a horizontal flag `AlignLeft` is assumed; a Left or
+    /// : without a horizontal flag `AlignLeft` is assumed; a Left or
     /// Right flag without `AlignAbsolute` is mirrored under right-to-left and then made absolute.
     pub const fn visual(self, direction: LayoutDirection) -> Self {
         let mut bits = self.0;

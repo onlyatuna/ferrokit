@@ -77,7 +77,7 @@ fn in_memory_font_face_is_built_once_per_font_data() {
 }
 
 /// A family list (`'A', B, monospace`) is the first of its names that is a family, not the
-/// first one a substitute is found for (Qt's `QFontDatabasePrivate::findFont`), and its raw
+/// first one a substitute is found for (Qt's font database matching), and its raw
 /// font data is that family's, so the engine shapes with the face it measures with. Without
 /// the data text is laid out from the face's unrounded advances (92.99 px for Consolas 10 px
 /// where Qt measures 96).

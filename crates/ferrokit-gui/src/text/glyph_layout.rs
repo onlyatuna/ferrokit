@@ -160,7 +160,7 @@ pub fn shaping_face_parse_count() -> usize {
 }
 
 /// The HarfBuzz face and font of an engine at one ppem (`hb_qt_face_get_for_engine` and
-/// `hb_qt_font_get_for_engine`, qharfbuzzng.cpp:668-676, 709): parsing the GSUB/GPOS lookups is
+/// `hb_qt_font_get_for_engine`, 709): parsing the GSUB/GPOS lookups is
 /// most of the cost of shaping a short string, so it is done once and kept on the engine.
 pub struct ShapingFace {
     // Declared before `_data` so it is dropped first, while the bytes it borrows are alive.
@@ -179,14 +179,14 @@ impl ShapingFace {
         let bytes: &'static [u8] =
             unsafe { std::slice::from_raw_parts(bytes.as_ptr(), bytes.len()) };
         // The face is shaped at its default coordinates even for a named instance of a variable
-        // font: Qt's HarfBuzz font has no variations (qharfbuzzng.cpp), so the GPOS kerning and
+        // font: Qt's HarfBuzz font has no variations, so the GPOS kerning and
         // the GSUB feature variations are those of the default instance, while the advances come
         // from the font engine (DirectWrite, at the instance).
         let mut face = rustybuzz::Face::from_slice(bytes, face_index)?;
         face.set_pixels_per_em(Some((ppem, ppem)));
         // No points per em on purpose: rustybuzz then applies no `trak` tracking (what it adds is
         // not what the HarfBuzz 14 bundled with Qt 6.12 adds, see `hb_tracking`); where Qt applies
-        // tracking (macOS) `qt_glyph_metrics` does.
+        // tracking (macOS) the helper does.
         Some(Self {
             face,
             _data: data.clone(),
@@ -637,7 +637,7 @@ pub struct GlyphLayout {
 }
 
 /// The letter spacing Qt adds per glyph: `QFont::setLetterSpacing` stores `QFixed::fromReal(spacing)`
-/// (`qfont.cpp`), which truncates to 26.6 fixed point (`(int)(r * 64) / 64`, `qfixed_p.h`), so
+/// which truncates to 26.6 fixed point (`(int)(r * 64) / 64`), so
 /// `0.4` px becomes 25/64 = 0.390625 px. Summed over a long text that is a pixel.
 fn qt_letter_spacing(spacing: f32) -> f32 {
     ((spacing as f64 * 64.0) as i32) as f32 / 64.0
@@ -659,9 +659,9 @@ fn hb_scale_font_units(units: i64, mult: i64) -> i64 {
     (units * mult + 32768) >> 16
 }
 
-/// Qt's `fontDef.pointSize` for a font of `pixel_size` pixels (`QFontDatabasePrivate::load`:
+/// Qt's `fontDef.pointSize` for a font of `pixel_size` pixels (font database matching:
 /// `pixelSize * 72 / dpi`), which `hb_qt_font_create` hands HarfBuzz as the font's points per em.
-/// `dpi` is `qt_defaultDpi()`, the primary screen's logical DPI: 72 on macOS, the base DPI of
+/// `dpi` is the helper, the primary screen's logical DPI: 72 on macOS, the base DPI of
 /// `QCocoaScreen` (`logicalBaseDpi`), as PySide6 6.12 reports it under the `cocoa` plugin. The
 /// other platforms' screens differ (96 on Windows at 100 %, whatever the display says on Linux),
 /// so there this is not applied, and neither is tracking.
@@ -1108,7 +1108,7 @@ fn ignorable_glyphs(
     ignorable
 }
 
-/// `QFontEngine::isIgnorableChar` (qfontengine_p.h:156): the characters Qt never searches a
+/// the glyph backend: the characters Qt never searches a
 /// fallback font for, whatever the primary font lacks: the controls (category Cc, which holds
 /// the line feed and carriage return), the line and paragraph separators, and the variation
 /// selectors.
@@ -1420,7 +1420,7 @@ impl GlyphLayout {
         // font), what `QFontEngineMulti::stringToCMap`'s `lastFallback` is.
         let mut item_fallback: Option<usize> = None;
         for (index, (offset, ch)) in text.char_indices().enumerate() {
-            // `QFontEngineMulti::stringToCMap` (qfontengine.cpp:2204): a zero width joiner or
+            // `QFontEngineMulti::stringToCMap`: a zero width joiner or
             // non-joiner follows the fallback font of the character before it when that font has
             // a glyph for it, to get the shaping rules of that font.
             let previous_fallback = if item_mode {
@@ -1467,7 +1467,7 @@ impl GlyphLayout {
             // query fallback engines. The characters of no width (joiners, direction marks, the soft
             // hyphen...) are not exempt: a character the primary font lacks is shaped in a fallback
             // font item, whose blank glyph is what is drawn (`isIgnorableChar` is only the controls,
-            // the line and paragraph separators and the variation selectors, qfontengine_p.h:156).
+            // the line and paragraph separators and the variation selectors).
             if gid == 0 && (ch != ' ' || chains.is_some()) && !skips_fallback(ch) {
                 // Windows follows Qt (`QFontEngineMulti::stringToCMap`): the fallbacks of the
                 // script of the character's item, the first one with a glyph wins.

@@ -18,8 +18,8 @@ impl<'a> Painter<'a> {
 
     /// Qt's aliased thin-line endpoint rule: with pen width <= 1 and a non-flat cap, the pixel
     /// containing each endpoint is drawn too. Qt builds these caps in
-    /// `QCosmeticStroker::drawLine` (qcosmeticstroker.cpp:263 `drawCaps`, :342-356 CapBegin|CapEnd)
-    /// and the raster engine takes that path for width <= 1 (qpaintengine_raster.cpp:655-658).
+    /// `QCosmeticStroker::drawLine` ( `drawCaps`,:342-356 CapBegin|CapEnd)
+    /// and the raster engine takes that path for width <= 1.
     /// tiny-skia's Round cap and the Square cap on a diagonal miss the endpoint pixel centre, so
     /// the pixel is filled explicitly in device space. A pixel the stroke already covers is not
     /// filled again, since Qt blends each pixel once and a translucent pen would otherwise double
@@ -186,8 +186,8 @@ impl<'a> Painter<'a> {
     /// `QPainter::drawPolygon(const QPointF *, int, Qt::FillRule)`; see
     /// [`draw_polygon`](Self::draw_polygon).
     ///
-    /// Qt's raster engine (`QRasterPaintEngine::drawPolygon`, qtbase v6.11.2) hands a polygon
-    /// that is an axis-aligned rectangle (`QVectorPath::isRect`: four points, or five with the
+    /// Qt's raster engine (raster paint engine, reference behavior v6.11.2) hands a polygon
+    /// that is an axis-aligned rectangle (rectangle polygon check: four points, or five with the
     /// last repeating the first, running right, down, left from the top-left corner) to
     /// `drawRects`, and so does this. That shortcut is a property of Qt's raster paint engine
     /// (the OpenGL and other engines fill the polygon). Rendering is the one raster of this
@@ -243,7 +243,7 @@ impl<'a> Painter<'a> {
     }
 }
 
-/// `QVectorPath::isRect` for a polygon's points (qtbase v6.11.2, `qvectorpath_p.h`).
+/// rectangle polygon check for a polygon's points (reference behavior v6.11.2).
 pub(super) fn is_rect_polygon(pts: &[PointF]) -> bool {
     let n = pts.len();
     (n == 5 && pts[0] == pts[4] || n == 4)

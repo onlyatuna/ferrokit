@@ -1,33 +1,28 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! macOS glyph backend: CoreText measures and rasterizes glyphs, following Qt's
-//! `QCoreTextFontEngine` (`src/gui/text/coretext/qfontengine_coretext.mm`).
+//! macOS glyph backend: CoreText measures and rasterizes glyphs.
 //!
-//! What is copied from Qt:
-//! * Line metrics: `CTFontGetAscent`, `CTFontGetDescent`, `CTFontGetLeading` truncated to 1/64 px
-//!   (`initializeHeightMetrics`).
+//! * Line metrics: `CTFontGetAscent`, `CTFontGetDescent`, `CTFontGetLeading` truncated to 1/64 px.
 //! * Average char width: `|OS/2 xAvgCharWidth| * px / unitsPerEm`, with a fallback to the advance of
-//!   `'x'` (`boundingBox(glyphIndex('x')).xoff`).
+//!   `'x'`.
 //! * Cap height: `CTFontGetCapHeight` with a fallback to the bounding box height of `'H'`.
-//! * Layout advances: `CTFontGetAdvancesForGlyphs` truncated to 1/64 px (`loadAdvancesForGlyphs`).
+//! * Layout advances: `CTFontGetAdvancesForGlyphs` truncated to 1/64 px.
 //! * Outlines: `CTFontCreatePathForGlyph` transformed with a `(1, -1)` y-flip matrix, converting
-//!   elements into a path (`addGlyphsToPath`).
-//! * Glyph bitmaps (`alphaMapBoundingBox`, `imageForGlyph`, `alphaMapForGlyph`): an sRGB RGB32
-//!   `CGBitmapContext` (`qt_mac_cgImageFormatForImage`), the glyph drawn with `CTFontDrawGlyphs` at the
+//!   elements into a path.
+//! * Glyph bitmaps: an sRGB RGB32 `CGBitmapContext`, the glyph drawn with `CTFontDrawGlyphs` at the
 //!   logical pixel size under a text matrix that carries the device pixel ratio, black on white
 //!   (inverted afterwards) when the font smoothing is grayscale and white on black otherwise, then
-//!   reduced with `qGray`. The memory rows of a `CGBitmapContext` run top to bottom, so the rows are
-//!   used as they are.
-//! * Sub-pixel positions: the glyph is drawn at a fractional x offset, and how many offsets there
-//!   are is what CoreGraphics distinguishes for the first glyph with an outline that is drawn at
-//!   a size (`QTextureGlyphCache::calculateSubPixelPositionCount`, kept per engine and size, so a
-//!   ratio-2 draw before a ratio-1 one decides the count of both). The offset of a bucket is
-//!   [`subpixel_bucket_offset`](crate::text::glyph_face::subpixel_bucket_offset); its quotient
-//!   rounds as `QFixed::operator/=` does (2/3 is 43/64, not 42/64), measured against Qt images.
+//!   reduced to grayscale luminance. The memory rows of a `CGBitmapContext` run top to bottom, so
+//!   the rows are used as they are.
+//! * Sub-pixel positions: the glyph is drawn at a fractional x offset; the bucket count is what
+//!   CoreGraphics distinguishes for the first outlined glyph drawn at a size (kept per engine and
+//!   size). The offset of a bucket is
+//!   [`subpixel_bucket_offset`](crate::text::glyph_face::subpixel_bucket_offset), with 26.6
+//!   fixed-point rounding.
 //! * System UI font: optical sizing and metrics come from
 //!   `CTFontCreateUIFontForLanguage(kCTFontUIFontSystem)` at each size.
 //!
-//! Not modelled, as in the engine this replaces: synthesized bold and italic, colour glyph fonts
-//! (`kCTFontColorGlyphsTrait`, drawn as ARGB by Qt), the legacy sub-pixel font smoothing that a
+//! Not modelled: synthesized bold and italic, colour glyph fonts (`kCTFontColorGlyphsTrait`), and
+//! legacy sub-pixel font smoothing.
 //! `CGFontRenderingFontSmoothingDisabled=NO` override brings back (`FontSmoothing::Subpixel`, which
 //! Qt draws as LCD masks with gamma correction) and the dark appearance, where Qt draws white on
 //! black (`QPlatformTheme::colorScheme`): glyphs are made for the light appearance.
@@ -93,7 +88,7 @@ struct CGPathElement {
     points: *mut CGPoint,
 }
 
-/// `kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Host`: what `qt_mac_cgImageFormatForImage`
+/// `kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Host`: what sRGB RGB32 image format
 /// gives `QImage::Format_RGB32`.
 const RGB32_BITMAP_INFO: u32 = 6 | 0x2000;
 /// `kCFStringEncodingUTF8`.
@@ -217,12 +212,12 @@ unsafe extern "C" {
     fn CFRelease(cf: *const c_void);
 }
 
-/// `QFixed::fromReal` as a real: truncated toward zero to 1/64 (`(int)(r * 64)`, qfixed_p.h).
+/// 26.6 fixed-point conversion as a real: truncated toward zero to 1/64 (`(int)(r * 64)`).
 fn q_fixed(v: f64) -> f64 {
     (v * 64.0).trunc() / 64.0
 }
 
-/// How CoreGraphics smooths text on this system (`QCoreTextFontEngine::FontSmoothing`).
+/// How CoreGraphics smooths text on this system (CoreText glyph backend).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FontSmoothing {
     Disabled,
@@ -259,7 +254,7 @@ unsafe fn rgb32_context(pixels: &mut [u32], width: usize, height: usize) -> *mut
     ctx
 }
 
-/// `QCoreTextFontEngine::fontSmoothing`: draws a Helvetica `X` with and without font smoothing and
+/// CoreText glyph backend: draws a Helvetica `X` with and without font smoothing and
 /// reads the algorithm from the difference.
 fn font_smoothing() -> FontSmoothing {
     static CACHED: LazyLock<FontSmoothing> = LazyLock::new(detect_font_smoothing);
@@ -319,12 +314,12 @@ fn detect_font_smoothing() -> FontSmoothing {
     result
 }
 
-/// `QCoreTextFontEngine::shouldSmoothFont` for a font that is antialiased and has no colour glyphs.
+/// CoreText glyph backend for a font that is antialiased and has no colour glyphs.
 fn should_smooth_font() -> bool {
     font_smoothing() != FontSmoothing::Disabled
 }
 
-/// `QFontEngine::alphaMapBoundingBox` of a glyph (`QCoreTextFontEngine`, `Format_A8`): the glyph's
+/// the glyph backend of a glyph (`CoreText glyph backend`, `Format_A8`): the glyph's
 /// bounding box at the logical size, scaled by the device pixel ratio, with the pixel Qt adds on
 /// the left, right (twice) and above and below to keep antialiased edges from being clipped. All
 /// values are 26.6 numbers held as reals.
@@ -422,7 +417,7 @@ pub struct CoreTextFace {
     os2_avg_char_width: Option<f32>,
     /// `CTFontRef` per pixel size (bits of the `f32`), `null` when CoreText made none.
     ct_cache: Mutex<HashMap<u32, *const c_void>>,
-    /// `QFontEngine::m_subPixelPositionCount` per `(size, scale)` (bits of each `f32`); absent
+    /// the glyph backend per `(size, scale)` (bits of each `f32`); absent
     /// until a glyph with an outline has been positioned.
     subpixel_counts: Mutex<HashMap<(u32, u32), i64>>,
 }
@@ -562,7 +557,7 @@ impl CoreTextFace {
         })
     }
 
-    /// The `CTFontRef` at pixel size `px` (`QCoreTextFontEngine::ctfont`), made once per size;
+    /// The `CTFontRef` at pixel size `px` (CoreText glyph backend), made once per size;
     /// `None` when CoreText cannot make one.
     fn ctfont(&self, px: f32) -> Option<RetainedCtFont> {
         let px = if px > 0.0 { px } else { 0.0 };
@@ -606,7 +601,7 @@ impl CoreTextFace {
         Some(RetainedCtFont(font))
     }
 
-    /// `QCoreTextFontEngine::boundingBox` of a glyph: the bounding rectangle and the advance.
+    /// CoreText glyph backend of a glyph: the bounding rectangle and the advance.
     fn glyph_rect(ctfont: *const c_void, glyph_id: u16) -> (CGRect, CGSize) {
         let mut rect = CGRect::default();
         let mut advance = CGSize::default();
@@ -618,8 +613,8 @@ impl CoreTextFace {
         (rect, advance)
     }
 
-    /// Placement of the bitmap `QCoreTextFontEngine` makes of a glyph: what
-    /// `QTextureGlyphCache::populate` stores as the glyph's coordinates.
+    /// Placement of the bitmap `CoreText glyph backend` makes of a glyph: what
+    /// subpixel position bucketing stores as the glyph's coordinates.
     fn bitmap_metrics(alpha_box: AlphaBox, advance: CGSize) -> GlyphMetrics {
         let width = alpha_box.pixel_width();
         let height = alpha_box.pixel_height();
@@ -633,7 +628,7 @@ impl CoreTextFace {
         }
     }
 
-    /// `QCoreTextFontEngine::imageForGlyph` reduced to an alpha map (`alphaMapForGlyph`): the
+    /// CoreText glyph backend reduced to an alpha map (`alphaMapForGlyph`): the
     /// glyph drawn at the logical `size` under a device pixel ratio of `scale`, shifted right by
     /// the sub-pixel position `subpixel` (a fraction of a pixel). Top row first.
     fn render(
@@ -703,7 +698,7 @@ impl CoreTextFace {
             CGContextRelease(ctx);
         }
 
-        // `qGray` of the (possibly inverted) RGB32 pixel.
+        // grayscale luminance of the (possibly inverted) RGB32 pixel.
         let coverage = pixels
             .iter()
             .map(|&px| {
@@ -732,9 +727,9 @@ impl CoreTextFace {
         }
     }
 
-    /// `QFontEngine::m_subPixelPositionCount` at `size`: the number of different bitmaps CoreGraphics
+    /// the glyph backend at `size`: the number of different bitmaps CoreGraphics
     /// draws for a glyph at twelve offsets of a pixel, decided by the first glyph with an outline
-    /// that is positioned (`QTextureGlyphCache::calculateSubPixelPositionCount`, `populate`).
+    /// that is positioned (subpixel position bucketing, `populate`).
     /// 0 while no such glyph has been seen.
     fn subpixel_count(&self, glyph_id: u16, size: f32, scale: f32) -> i64 {
         let key = (size.to_bits(), scale.to_bits());

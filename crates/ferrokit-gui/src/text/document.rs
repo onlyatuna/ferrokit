@@ -178,7 +178,7 @@ impl TextDocument {
         SizeF::new(max_w, crate::text::line::stacked_height(&lines))
     }
 
-    /// Sizes the text to its ideal width (`QTextDocument::adjustSize`, qtextdocument.cpp:837-857).
+    /// Sizes the text to its ideal width (`QTextDocument::adjustSize`).
     ///
     /// Starts from a width of 80 `x` characters, then narrows the width towards a 5:3 aspect ratio
     /// so a long paragraph is neither one line nor a tall column. Finally the width is set to the
@@ -613,7 +613,7 @@ impl TextDocument {
     }
 }
 
-/// `qt_int_sqrt`: the integer square root, floored.
+/// the helper: the integer square root, floored.
 fn int_sqrt(v: f32) -> f32 {
     (v.max(0.0) as u32 as f32).sqrt().floor()
 }

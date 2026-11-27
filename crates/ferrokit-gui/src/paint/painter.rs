@@ -95,7 +95,7 @@ impl Default for Pen {
     }
 }
 
-/// Render hint (`QPainter::RenderHint`, `qpainter.h`); bit values match Qt.
+/// Render hint (`QPainter::RenderHint`); bit values match Qt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum RenderHint {
@@ -113,7 +113,7 @@ pub enum RenderHint {
 pub struct RenderHints(u8);
 
 impl RenderHints {
-    /// `QPainter::begin` default: `TextAntialiasing` only (`qpainter.cpp:1847`).
+    /// `QPainter::begin` default: `TextAntialiasing` only.
     pub const DEFAULT: Self = Self(RenderHint::TextAntialiasing as u8);
 
     /// `QPainter::testRenderHint`.
@@ -139,9 +139,9 @@ impl Default for RenderHints {
 
 /// A rect clip taken through a rotating or shearing transform: a quadrilateral in root logical
 /// coordinates (device pixels divided by the device-pixel ratio), the way Qt keeps it as a
-/// transformed path clip (`QPainter::setClipRect` -> `QPaintEngine::clip(QVectorPath)`,
-/// `qpainter.cpp:2744-2770`). `anti_alias` is the `Antialiasing` hint when the clip was set;
-/// `QRasterPaintEngine::rasterize` takes it from the state at that time.
+/// transformed path clip (`QPainter::setClipRect` -> `QPaintEngine::clip(polygon path)`,
+/// ). `anti_alias` is the `Antialiasing` hint when the clip was set;
+/// raster paint engine takes it from the state at that time.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClipQuad {
     pub points: [tiny_skia::Point; 4],
@@ -166,7 +166,7 @@ pub struct PainterState {
     pub clip_quads: Vec<ClipQuad>,
     /// `QPainter::layoutDirection`: the base direction `draw_text` gives the text. A painter on an
     /// image or pixmap starts with `LayoutDirectionAuto`, the direction of the first strong
-    /// character of the text (qpainter.cpp:1824).
+    /// character of the text.
     pub layout_direction: LayoutDirection,
 }
 
@@ -239,39 +239,37 @@ fn glyph_pixel(v: f32) -> i32 {
     v.round().clamp(-1.0e9, 1.0e9) as i32
 }
 
-/// Where `QRasterPaintEngine::drawCachedGlyphs` (qpaintengine_raster.cpp) puts a glyph of a face
+/// Where raster paint engine puts a glyph of a face
 /// of Qt's FreeType engine ([`GlyphFace::freetype_engine`]): the glyph's whole device pixel
 /// (`qFloor(x)`, `qRound(y)`, before the bitmap's own left and top are applied) and the pen
 /// position in 26.6, from which the glyph cache's sub-pixel position follows
-/// (`QFontEngine::subPixelPositionFor`).
+/// (the glyph backend).
 ///
 /// [`GlyphFace::freetype_engine`]: crate::text::glyph_face::GlyphFace::freetype_engine
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct QtGlyphPlacement {
+struct GlyphPlacement {
     x: i32,
     y: i32,
     pen_x: i64,
 }
 
-/// `QFixed::fromReal`: truncated toward zero to 26.6, kept within a billion pixels (see
-/// [`glyph_pixel`]).
-fn qt_fixed(v: f64) -> i64 {
+/// Converts a real coordinate to 26.6 fixed-point, clamped within a billion pixels.
+fn to_fixed_26_6(v: f64) -> i64 {
     (v * 64.0).clamp(-6.4e10, 6.4e10) as i64
 }
 
-/// [`QtGlyphPlacement`] of a glyph at the 26.6 device position `(x, y)`, which
-/// `QFontEngine::getGlyphPositions` gives it.
-fn qt_glyph_placement(x: i64, y: i64) -> QtGlyphPlacement {
+/// [`GlyphPlacement`] of a glyph at the 26.6 device position `(x, y)`.
+fn glyph_placement_from_26_6(x: i64, y: i64) -> GlyphPlacement {
     let clamp = |v: i64| v.clamp(-1_000_000_000, 1_000_000_000) as i32;
-    QtGlyphPlacement {
+    GlyphPlacement {
         x: clamp(x >> 6),
         y: clamp(y.saturating_add(32) >> 6),
         pen_x: x,
     }
 }
 
-/// `qRound` (`qnumeric.h`): rounds half away from zero.
-fn qt_round(v: f64) -> i32 {
+/// Rounds half away from zero.
+fn round_half_away_from_zero(v: f64) -> i32 {
     if v >= 0.0 {
         (v + 0.5).floor() as i32
     } else {
@@ -279,21 +277,9 @@ fn qt_round(v: f64) -> i32 {
     }
 }
 
-/// Pattern-space transform that makes `tiny-skia`'s nearest-neighbour `Repeat` pipeline step
-/// through a `tile_w x tile_h` texture at the exact texels `QRasterPaintEngine` (`QSpanData::
-/// setupMatrix` + `adjustSpanMethods` + `qBlendTexture`, `qpaintengine_raster.cpp` /
-/// `qdrawhelper.cpp`) samples under `painter_transform` and `brush_origin`.
-///
-/// Only when BOTH axes have unit scale does Qt classify the matrix as pure translation
-/// (`TxTranslate`) and round the device-space translation with `qRound`. Any other axis-aligned
-/// scale (`TxScale`, such as `devicePixelRatio != 1.0` or `sx == 1.0, sy == 1.25`) sends BOTH axes
-/// through the `TxScale` path, which wraps the inverse translation modulo the tile size (`fmod`)
-/// before truncating to 16.16 fixed point and steps
-/// `fx = (fdx >> 1) + int(fmod(inv_dx, tile_w) * 65536) - 1 + x * fdx`.
-///
-/// Rotation or skew (`kx != 0 || ky != 0`) and non-positive scales (`sx <= 0 || sy <= 0`)
-/// intentionally keep the unadjusted `origin_ts` transform.
-fn qt_nearest_pattern_transform(
+/// Pattern-space transform for `tiny-skia`'s nearest-neighbour `Repeat` pipeline over a
+/// `tile_w x tile_h` texture under `painter_transform` and `brush_origin`.
+fn nearest_pattern_transform(
     painter_transform: Transform,
     brush_origin: PointF,
     base_pattern_transform: Transform,
@@ -317,7 +303,7 @@ fn qt_nearest_pattern_transform(
         let s = f64::from(scale);
         let t = f64::from(trans);
         if is_translate_only {
-            let want_ts_tx = f64::from(-qt_round(t));
+            let want_ts_tx = f64::from(-round_half_away_from_zero(t));
             (1.0, -want_ts_tx as f32)
         } else {
             let inv_s = 1.0 / s;
@@ -356,7 +342,7 @@ pub struct Painter<'a> {
     /// Pixels of `cached_mask` / `spare_mask` that may be non-zero.
     pub(super) mask_dirty: PixelBounds,
     /// Gamma table of LCD (ClearType) text; `None` draws grey-scale text. Fixed when painting
-    /// starts, like `QRasterPaintEngine::begin` fixes the glyph cache format.
+    /// starts, like raster paint engine fixes the glyph cache format.
     pub(super) lcd_lut: Option<Arc<TrcLut>>,
     /// Coverage of the glyph being blitted through `composite_masked`, kept between glyphs so a
     /// run of text does not allocate one per glyph.
@@ -560,10 +546,10 @@ impl<'a> Painter<'a> {
     }
 
     // Replaces the clip with `rect` given in the current user space, like
-    // `QPainter::setClipRect(QRectF)` (qpainter.cpp:2816,2828; qpainter.h:187): the rect is taken
+    // `QPainter::setClipRect(QRectF)` (2828): the rect is taken
     // through the current transform and the clip is replaced, not intersected. Under a rotating
     // or shearing transform the clip is the transformed rectangle, not its bounding box
-    // (`QRasterPaintEngine::clip(QRect)` falls back to a path clip, qpaintengine_raster.cpp:1212).
+    // (raster paint engine falls back to a path clip).
     // An empty or unmappable rect clips everything.
     pub fn set_clip_rect(&mut self, rect: RectF) {
         let (bounds, quad) = self.user_rect_to_root_clip(rect);
@@ -573,7 +559,7 @@ impl<'a> Painter<'a> {
     }
 
     // Intersects the clip with `rect` given in the current user space, like
-    // `QPainter::setClipRect(rect, Qt::IntersectClip)` (qpainter.cpp:2798-2816): the rect is taken
+    // `QPainter::setClipRect(rect, Qt::IntersectClip)`: the rect is taken
     // through the current transform. An empty intersection clips everything.
     pub fn clip_to_rect(&mut self, rect: RectF) {
         let (new, quad) = self.user_rect_to_root_clip(rect);
@@ -832,7 +818,7 @@ impl<'a> Painter<'a> {
                         }
                     }
                     let pattern_ts = if filter == FilterQuality::Nearest {
-                        qt_nearest_pattern_transform(
+                        nearest_pattern_transform(
                             transform,
                             self.state.brush_origin,
                             Transform::identity(),
@@ -893,7 +879,7 @@ impl<'a> Painter<'a> {
             Brush::Texture(pattern) => {
                 let pm = pattern.pixmap.as_tiny_skia();
                 let pattern_ts = if filter == FilterQuality::Nearest {
-                    qt_nearest_pattern_transform(
+                    nearest_pattern_transform(
                         transform,
                         self.state.brush_origin,
                         pattern.transform,

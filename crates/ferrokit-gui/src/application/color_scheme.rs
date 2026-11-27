@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! The colour scheme of `QStyleHints`: `colorScheme`, `setColorScheme` and `colorSchemeChanged`.
 //!
-//! Qt (6.11, `qtbase` tag `v6.11.2`) keeps the effective scheme in `QStyleHintsPrivate::m_colorScheme`.
+//! Qt (6.11, reference behavior tag `v6.11.2`) keeps the effective scheme in `QStyleHintsPrivate::m_colorScheme`.
 //! Only the platform theme decides it: `QStyleHints::setColorScheme` does not store anything, it
-//! asks the platform theme (`QPlatformTheme::requestColorScheme`, qstylehints.cpp:170-178), and the
+//! asks the platform theme (`QPlatformTheme::requestColorScheme`), and the
 //! theme reports back through `QGuiApplicationPrivate::handleThemeChanged`
-//! (qguiapplication.cpp:2854-2856), which calls `QStyleHintsPrivate::update(theme)`
-//! (qstylehints.cpp:736-741) and so `updateColorScheme(theme->colorScheme())`. That function sets
+//! which calls `QStyleHintsPrivate::update(theme)`
+//! and so `updateColorScheme(theme->colorScheme)`. That function sets
 //! the cached scheme and emits `colorSchemeChanged` only when the scheme differs
-//! (qstylehints.cpp:722-729).
 //!
 //! ferrokit mirrors that split. This crate owns the cached scheme, the signal and the
 //! override-request entry point; the platform layer (`ferrokit-platform`, which this crate cannot
@@ -20,10 +19,10 @@
 //! What overriding means is platform-engine dependent, as in Qt: the Windows, GNOME and generic
 //! themes keep the request next to the system value, and the effective scheme is the request
 //! unless it is [`ColorScheme::Unknown`] (`QWindowsTheme::effectiveColorScheme`,
-//! qwindowstheme.cpp:655-667; `QGnomeThemePrivate::colorScheme`, qgnometheme.cpp:56-78); the
+//! `QGnomeThemePrivate::colorScheme`); the
 //! Cocoa theme sets `NSApp.appearance` (`QCocoaTheme::requestColorScheme`,
-//! qcocoatheme.mm:478-496); a theme that cannot override ignores the request, as the base
-//! `QPlatformTheme` does (qplatformtheme.cpp:480-487).
+//! ); a theme that cannot override ignores the request, as the base
+//! `QPlatformTheme` does.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -102,7 +101,7 @@ fn run_on_main_thread(f: impl FnOnce() + Send + 'static) {
     }
 }
 
-/// `QStyleHintsPrivate::updateColorScheme` (qstylehints.cpp:722-729): caches `scheme` and emits
+/// `QStyleHintsPrivate::updateColorScheme`: caches `scheme` and emits
 /// `colorSchemeChanged` when it differs. The signal is emitted with no lock held.
 fn update_color_scheme(scheme: ColorScheme) {
     let signal = {
@@ -116,10 +115,9 @@ fn update_color_scheme(scheme: ColorScheme) {
     signal.emit(&scheme);
 }
 
-/// `QStyleHintsPrivate::update` (qstylehints.cpp:736-741), the colour-scheme half: reads the
+/// `QStyleHintsPrivate::update`, the colour-scheme half: reads the
 /// source's current scheme. Must run on the main thread. `GuiApplication::new` runs it too, as
 /// `QGuiApplication`'s constructor does after the platform plugin is up
-/// (qguiapplication.cpp:1617).
 pub(super) fn update_from_source() {
     let source = state().source.clone();
     if let Some(source) = source {
@@ -129,13 +127,13 @@ pub(super) fn update_from_source() {
 
 /// Installs the platform theme `QStyleHints` reads and overrides through, and takes over its
 /// current scheme (`QGuiApplicationPrivate` does the same after the platform plugin is up,
-/// qguiapplication.cpp:1617). Called by the platform layer; a later call replaces the source.
+/// ). Called by the platform layer; a later call replaces the source.
 pub fn set_color_scheme_source(source: Arc<dyn ColorSchemeSource>) {
     state().source = Some(source);
     run_on_main_thread(update_from_source);
 }
 
-/// `QGuiApplicationPrivate::handleThemeChanged` (qguiapplication.cpp:2854-2856), for the colour
+/// `QGuiApplicationPrivate::handleThemeChanged`, for the colour
 /// scheme: the platform theme tells that something changed. The scheme is read from the source on
 /// the main thread, so `colorSchemeChanged` is emitted there whichever thread detected the change
 /// (a D-Bus listener thread, the window procedure of a window on another thread).
@@ -172,7 +170,7 @@ pub(crate) fn reset_for_test() {
 }
 
 impl super::StyleHints {
-    /// `QStyleHints::colorScheme` (qstylehints.cpp:158-162): the scheme the application uses. It
+    /// `QStyleHints::colorScheme`: the scheme the application uses. It
     /// follows the system scheme until [`set_color_scheme`](Self::set_color_scheme) overrides it.
     /// [`ColorScheme::Unknown`] when the platform does not know (or before the platform layer has
     /// installed its theme: it does so when the first platform object is created, which
@@ -184,12 +182,12 @@ impl super::StyleHints {
         state().scheme
     }
 
-    /// `QStyleHints::setColorScheme` (Qt 6.8+, qstylehints.cpp:170-178): overrides the system
+    /// `QStyleHints::setColorScheme` (Qt 6.8+): overrides the system
     /// colour scheme with `scheme`, or [`ColorScheme::Unknown`] to follow the system again. The
     /// request goes to the platform theme, so whether it takes effect is platform dependent;
     /// [`color_scheme`](Self::color_scheme) afterwards is the effective scheme (the system's own
     /// when the platform ignores the request), and `color_scheme_changed` fires only if that
-    /// differs from before. Like Qt (qstylehints.cpp:172-175) it warns and does nothing when there is
+    /// differs from before. Like Qt it warns and does nothing when there is
     /// no application object; with an application but no platform theme installed yet it does
     /// nothing, as Qt does without a platform theme.
     ///

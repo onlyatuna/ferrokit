@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Qt-compatible CSS/QSS Parser and Abstract Syntax Tree.
 //!
-//! Mirrors `qtbase/src/gui/text/qcssparser.cpp` and `qcssparser_p.h`.
+//! Mirrors `reference and.
 //! Parses CSS 2.1 subset used by Qt Style Sheets (QSS) including:
 //! - Selectors: Type (`QProgressBar`), ID (`#HeaderTitle`), Pseudo-state (`:hover`),
 //!   Sub-control (`::chunk`), Attribute (`[state="muted"]`).
@@ -106,7 +106,7 @@ pub enum QCssValue {
     Length(f32),
     Number(f32),
     String(String),
-    /// `font-family: a, 'b c', d` (`setFontFamilyFromValues`, `qcssparser.cpp:1252`): the families in order.
+    /// `font-family: a, 'b c', d` (`setFontFamilyFromValues`): the families in order.
     FontFamilies(Vec<String>),
     Identifier(String),
     Edges([f32; 4]), // [top, right, bottom, left]
@@ -554,7 +554,7 @@ pub fn parse_color(input: &str) -> Option<Color> {
             let a_str = parts[3].trim();
             let a = if let Ok(f) = a_str.parse::<f32>() {
                 if f <= 1.0 {
-                    // `int alpha = toReal() * 255.` (qcssparser.cpp:826-828): truncated, not rounded.
+                    // `int alpha = toReal * 255.`: truncated, not rounded.
                     (f * 255.0).clamp(0.0, 255.0) as u8
                 } else {
                     f.clamp(0.0, 255.0) as u8

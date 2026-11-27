@@ -391,9 +391,9 @@ fn supports_writing_system(systems: u64, writing_system: usize) -> bool {
 /// `writing-system mapping for Unicode script`: the first writing system of `script`, `Any` (0) for the
 /// scripts none is for.
 pub(crate) fn writing_system_for_script(script: Script) -> usize {
-    SCRIPT_FOR_WRITING_SYSTEM
+    WRITING_SYSTEMS
         .iter()
-        .position(|&candidate| candidate == script)
+        .position(|spec| spec.script == script)
         .unwrap_or(ws::ANY)
 }
 
@@ -402,15 +402,15 @@ pub(crate) fn supports_symbol(systems: u64) -> bool {
     systems & (1 << ws::SYMBOL) != 0
 }
 
+const SLANT_MISMATCH_PENALTY: i32 = 4096;
+
 /// `nearest style matching` for a request of `weight` that is `italic` or not, whatever the stretch.
 fn best_style(family: &CatalogFamily, weight: u16, italic: bool) -> Option<&CatalogStyle> {
     let mut best: Option<(&CatalogStyle, i32)> = None;
     for style in &family.styles {
         let mut distance = ((i32::from(weight) - i32::from(style.weight)) / 10).abs();
         if (style.kind != StyleKind::Normal) != italic {
-            // One is italic and the other upright (the oblique-against-italic case, which adds 1
-            // in Qt, cannot arise: the request is only italic or not).
-            distance += 0x1000;
+            distance += SLANT_MISMATCH_PENALTY;
         }
         if best.is_none_or(|(_, d)| distance < d) {
             best = Some((style, distance));
@@ -478,7 +478,7 @@ fn axis_values(face: &IDWriteFontFace) -> Vec<(u32, f32)> {
 }
 
 /// The string of `names` for `locale` (a NUL-terminated UTF-16 locale name), or empty
-/// (`QWindowsDirectWriteFontDatabase::localeString`).
+/// (DirectWrite font catalog).
 fn locale_string(names: &IDWriteLocalizedStrings, locale: &[u16]) -> String {
     let mut index = 0u32;
     let mut exists = BOOL(0);
@@ -879,81 +879,55 @@ mod ws {
     pub const COUNT: usize = 34;
 }
 
-/// The Unicode subset bit that makes a font support each writing system
-/// (`requiredUnicodeBits`); 126 for the ones the code page bits decide, 127 for no second bit.
-const REQUIRED_UNICODE_BITS: [(u8, u8); ws::COUNT] = [
-    (127, 127), // Any
-    (0, 127),   // Latin
-    (7, 127),   // Greek
-    (9, 127),   // Cyrillic
-    (10, 127),  // Armenian
-    (11, 127),  // Hebrew
-    (13, 127),  // Arabic
-    (71, 127),  // Syriac
-    (72, 127),  // Thaana
-    (15, 127),  // Devanagari
-    (16, 127),  // Bengali
-    (17, 127),  // Gurmukhi
-    (18, 127),  // Gujarati
-    (19, 127),  // Oriya
-    (20, 127),  // Tamil
-    (21, 127),  // Telugu
-    (22, 127),  // Kannada
-    (23, 127),  // Malayalam
-    (73, 127),  // Sinhala
-    (24, 127),  // Thai
-    (25, 127),  // Lao
-    (70, 127),  // Tibetan
-    (74, 127),  // Myanmar
-    (26, 127),  // Georgian
-    (80, 127),  // Khmer
-    (126, 127), // SimplifiedChinese
-    (126, 127), // TraditionalChinese
-    (126, 127), // Japanese
-    (56, 127),  // Korean
-    (0, 127),   // Vietnamese
-    (126, 127), // Symbol
-    (78, 127),  // Ogham
-    (79, 127),  // Runic
-    (14, 127),  // Nko
-];
+struct WritingSystemSpec {
+    unicode_bit: Option<u8>,
+    script: Script,
+}
 
-/// The script each writing system is for (`scriptForWritingSystem`).
-const SCRIPT_FOR_WRITING_SYSTEM: [Script; ws::COUNT] = [
-    Script::Common,
-    Script::Latin,
-    Script::Greek,
-    Script::Cyrillic,
-    Script::Armenian,
-    Script::Hebrew,
-    Script::Arabic,
-    Script::Syriac,
-    Script::Thaana,
-    Script::Devanagari,
-    Script::Bengali,
-    Script::Gurmukhi,
-    Script::Gujarati,
-    Script::Oriya,
-    Script::Tamil,
-    Script::Telugu,
-    Script::Kannada,
-    Script::Malayalam,
-    Script::Sinhala,
-    Script::Thai,
-    Script::Lao,
-    Script::Tibetan,
-    Script::Myanmar,
-    Script::Georgian,
-    Script::Khmer,
-    Script::Han,
-    Script::Han,
-    Script::Han,
-    Script::Hangul,
-    Script::Latin,
-    Script::Common,
-    Script::Ogham,
-    Script::Runic,
-    Script::Nko,
+const fn ws_spec(unicode_bit: Option<u8>, script: Script) -> WritingSystemSpec {
+    WritingSystemSpec {
+        unicode_bit,
+        script,
+    }
+}
+
+/// OpenType `OS/2` Unicode range bit (when determined by Unicode range rather than code page) and
+/// primary Unicode script for each writing system index.
+const WRITING_SYSTEMS: [WritingSystemSpec; ws::COUNT] = [
+    ws_spec(None, Script::Common),         // Any
+    ws_spec(Some(0), Script::Latin),       // Latin
+    ws_spec(Some(7), Script::Greek),       // Greek
+    ws_spec(Some(9), Script::Cyrillic),    // Cyrillic
+    ws_spec(Some(10), Script::Armenian),   // Armenian
+    ws_spec(Some(11), Script::Hebrew),     // Hebrew
+    ws_spec(Some(13), Script::Arabic),     // Arabic
+    ws_spec(Some(71), Script::Syriac),     // Syriac
+    ws_spec(Some(72), Script::Thaana),     // Thaana
+    ws_spec(Some(15), Script::Devanagari), // Devanagari
+    ws_spec(Some(16), Script::Bengali),    // Bengali
+    ws_spec(Some(17), Script::Gurmukhi),   // Gurmukhi
+    ws_spec(Some(18), Script::Gujarati),   // Gujarati
+    ws_spec(Some(19), Script::Oriya),      // Oriya
+    ws_spec(Some(20), Script::Tamil),      // Tamil
+    ws_spec(Some(21), Script::Telugu),     // Telugu
+    ws_spec(Some(22), Script::Kannada),    // Kannada
+    ws_spec(Some(23), Script::Malayalam),  // Malayalam
+    ws_spec(Some(73), Script::Sinhala),    // Sinhala
+    ws_spec(Some(24), Script::Thai),       // Thai
+    ws_spec(Some(25), Script::Lao),        // Lao
+    ws_spec(Some(70), Script::Tibetan),    // Tibetan
+    ws_spec(Some(74), Script::Myanmar),    // Myanmar
+    ws_spec(Some(26), Script::Georgian),   // Georgian
+    ws_spec(Some(80), Script::Khmer),      // Khmer
+    ws_spec(None, Script::Han),            // SimplifiedChinese
+    ws_spec(None, Script::Han),            // TraditionalChinese
+    ws_spec(None, Script::Han),            // Japanese
+    ws_spec(Some(56), Script::Hangul),     // Korean
+    ws_spec(Some(0), Script::Latin),       // Vietnamese
+    ws_spec(None, Script::Common),         // Symbol
+    ws_spec(Some(78), Script::Ogham),      // Ogham
+    ws_spec(Some(79), Script::Runic),      // Runic
+    ws_spec(Some(14), Script::Nko),        // Nko
 ];
 
 /// `OpenType OS/2 Unicode/codepage writing-system bitmask` for the `OS/2` unicode and code page
@@ -961,9 +935,10 @@ const SCRIPT_FOR_WRITING_SYSTEM: [Script; ws::COUNT] = [
 fn writing_systems_from_bits(unicode_range: [u32; 4], code_page_range: [u32; 2]) -> u64 {
     let mut systems = 0u64;
     let mut has_script = false;
-    for (index, &(first, second)) in REQUIRED_UNICODE_BITS.iter().enumerate() {
-        let bit = |b: u8| unicode_range[usize::from(b / 32)] & (1 << (b & 31)) != 0;
-        if first != 126 && bit(first) && (second == 127 || bit(second)) {
+    for (index, spec) in WRITING_SYSTEMS.iter().enumerate() {
+        if let Some(bit_idx) = spec.unicode_bit
+            && unicode_range[usize::from(bit_idx / 32)] & (1 << (bit_idx & 31)) != 0
+        {
             systems |= 1 << index;
             has_script = true;
         }
@@ -1000,7 +975,7 @@ fn writing_systems_from_bits(unicode_range: [u32; 4], code_page_range: [u32; 2])
     systems
 }
 
-/// `QWindowsDirectWriteFontDatabase::supportedWritingSystems`: from the `OS/2` table, else from the
+/// DirectWrite font catalog: from the `OS/2` table, else from the
 /// first character of each Unicode range the face covers.
 fn face_writing_systems(face: &IDWriteFontFace) -> u64 {
     let mut systems = 1u64 << ws::ANY;
@@ -1048,9 +1023,9 @@ fn face_writing_systems(face: &IDWriteFontFace) -> u64 {
             for range in &ranges[..count as usize] {
                 let script = char::from_u32(range.first).map(|c| c.script());
                 let system = script.and_then(|script| {
-                    SCRIPT_FOR_WRITING_SYSTEM
+                    WRITING_SYSTEMS
                         .iter()
-                        .position(|&candidate| candidate == script)
+                        .position(|spec| spec.script == script)
                 });
                 if let Some(system) = system.filter(|&s| s > ws::ANY && s < ws::COUNT) {
                     systems |= 1 << system;

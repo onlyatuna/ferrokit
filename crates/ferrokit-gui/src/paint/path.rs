@@ -329,8 +329,8 @@ impl PainterPath {
     /// infinite) argument or a null rectangle (zero width and height) is ignored. Qt hangs/UB
     /// here; ferrokit also ignores an `angle` beyond 1e9 degrees (see [`arc_to`](Self::arc_to)).
     ///
-    /// Mirrors `QPainterPath::arcMoveTo` with `qt_find_ellipse_coords` (qtbase v6.11.2,
-    /// `qpainterpath.cpp`). The point is computed in `f64` as Qt does and stored as `f32`.
+    /// Mirrors `QPainterPath::arcMoveTo` with the helper (reference behavior v6.11.2,
+    /// ). The point is computed in `f64` as Qt does and stored as `f32`.
     pub fn arc_move_to(&mut self, rect: RectF, angle: f32) {
         let r = Rc::new(
             f64::from(rect.x),
@@ -357,16 +357,16 @@ impl PainterPath {
     /// is dropped when the two coincide, e.g. right after [`arc_move_to`](Self::arc_move_to) with
     /// the same angle), and the arc is made of at most five cubic Beziers: whole quadrants use
     /// the `QT_PATH_KAPPA` circle approximation and the partial quadrants at both ends are cut
-    /// out of it with `QBezier::bezierOnInterval` at the parameter `qt_t_for_arc_angle` finds.
+    /// out of it with `QBezier::bezierOnInterval` at the parameter the helper finds.
     /// Invalid arguments and a null rectangle are ignored. A path without elements starts at
     /// `(0, 0)` like Qt's.
     ///
     /// Qt hangs/UB here; ferrokit ignores the call when `|start_angle|` exceeds 1e9 degrees:
-    /// Qt's `qt_curves_for_arc` keeps the number of the start quadrant in an `int`, which a
+    /// Qt's the helper keeps the number of the start quadrant in an `int`, which a
     /// larger angle overflows.
     ///
-    /// Mirrors `QPainterPath::arcTo`, `qt_curves_for_arc` and `qt_t_for_arc_angle` (qtbase
-    /// v6.11.2, `qpainterpath.cpp`, `qstroker.cpp`). Qt computes in `double`; so does this, and
+    /// Mirrors `QPainterPath::arcTo`, the helper and the helper (reference behavior
+    /// v6.11.2). Qt computes in `double`; so does this, and
     /// only the resulting points are narrowed to the `f32` this path stores.
     pub fn arc_to(&mut self, rect: RectF, start_angle: f32, sweep_length: f32) {
         let r = Rc::new(

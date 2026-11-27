@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! One line of text itemized, shaped and laid out as `QTextEngine` does for
-//! `QPainter::drawText(QPointF, QString)` and `QFontMetricsF::horizontalAdvance` (qpainter.cpp:5698,
-//! qfontmetrics.cpp:1388, qtextengine.cpp: `itemize`, `shapeLine`, `width`, `calculateTabWidth`,
+//! `QPainter::drawText(QPointF, QString)` and `QFontMetricsF::horizontalAdvance` (
+//! ,: `itemize`, `shapeLine`, `width`, `calculateTabWidth`,
 //! `bidiReorder`).
 //!
 //! The text is cut into items: runs of one bidi embedding level, each tab on its own (a tab has no
@@ -66,7 +66,7 @@ pub(crate) struct LineItems {
     items: Vec<Item>,
 }
 
-/// `QFixed::fromReal`: Qt keeps a pen position in 1/64 px and cuts what is finer off.
+/// 26.6 fixed-point conversion: Qt keeps a pen position in 1/64 px and cuts what is finer off.
 pub(crate) fn qfixed_from_real(value: f32) -> f32 {
     (f64::from(value) * 64.0).trunc() as f32 / 64.0
 }
@@ -167,8 +167,8 @@ impl LineItems {
         }
         let layout = GlyphLayout::shape_piece(text, range, font, engines, Some(level % 2 == 1));
         // The soft hyphen and the form feed are shaped but not drawn: Qt gives their glyph
-        // `dontPrint` (`applyVisibilityRules`, qtextengine.cpp:1329-1356), and
-        // `QFontEngine::getGlyphPositions` leaves such glyphs out.
+        // `dontPrint` (`applyVisibilityRules`), and
+        // the glyph backend leaves such glyphs out.
         let glyphs = layout
             .glyphs
             .into_iter()
