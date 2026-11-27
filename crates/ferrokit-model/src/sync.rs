@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-3.0-only
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Pluggable synchronization primitives for Loom, Shuttle, and standard execution.
 //!
 //! `thread_local!` is re-exported too: both Loom (`loom::thread_local!`, `LocalKey::try_with`,

@@ -2,9 +2,10 @@ ferrokit
 Copyright (C) 2026 The ferrokit contributors
 
 ferrokit is licensed under the GNU Lesser General Public License, version 3 only
-(SPDX: LGPL-3.0-only). The license text is in LICENSE. The LGPL is a set of additional
-permissions on top of the GNU General Public License, version 3, whose text is in
-LICENSES/GPL-3.0-only.txt. LICENSES/GPL-3.0-only.txt is included solely as the base
+(SPDX: LGPL-3.0-only), except `ferrokit-derive` and `ferrokit-model` which are dual-licensed under
+`MIT OR Apache-2.0` (`LICENSE-MIT`, `LICENSE-APACHE`). The LGPL-3.0-only text is in LICENSE. The
+LGPL is a set of additional permissions on top of the GNU General Public License, version 3, whose
+text is in LICENSES/GPL-3.0-only.txt. LICENSES/GPL-3.0-only.txt is included solely as the base
 license text referenced by LGPL-3.0-only (per REUSE); ferrokit itself is not GPL-3.0-only.
 
 
@@ -41,33 +42,6 @@ which includes LGPL-3.0-only (checked in the qtbase checkout named above):
   plugins/platforms/cocoa/qcocoaeventdispatcher.mm
       Copyright (C) 2016 The Qt Company Ltd.
       Copyright (c) 2007-2008, Apple, Inc.
-
-
-FreeType
---------
-Parts of ferrokit are ports of FreeType 2.14.2 code (https://freetype.org). Portions of this
-software are copyright (C) 1996-2025 The FreeType Project (www.freetype.org). All rights reserved.
-That code is used under the FreeType License (FTL, LICENSES/FTL.txt, the file docs/FTL.TXT of
-FreeType 2.14.2, unchanged), and the name of the FreeType Project is not used to endorse or promote
-anything:
-
-  Copyright (C) 1996-2025 by
-  David Turner, Robert Wilhelm, and Werner Lemberg.
-
-Where it is, file by file (every one of them says so in its first lines, with the SPDX line
-`... AND FTL`, and names the C functions it follows):
-
-  crates/ferrokit-gui/src/text/ftgrays.rs  `LGPL-3.0-only AND FTL`: a Rust port of the
-      anti-aliasing rasterizer src/smooth/ftgrays.c and src/smooth/ftsmooth.c, and the bitmap box
-      and outline walk of src/base/ftobjs.c and src/base/ftoutln.c.
-
-FreeType is offered under two mutually exclusive licences, of which one must be chosen (its
-LICENSE.TXT): the FreeType License (FTL) or the GNU GPL version 2 or later. ferrokit takes the FTL
-(the file header of ftgrays.c says "the FreeType project license, LICENSE.TXT"): it is compatible
-with the GPL version 3 that the LGPL-3.0-only is built on (LICENSE.TXT says so), and the GPL
-alternative would put the code under a stronger copyleft than the rest of the library. The FTL's
-credit and no-warranty terms apply to every program that contains the code (the credit is the
-paragraph above).
 
 
 Easing equations

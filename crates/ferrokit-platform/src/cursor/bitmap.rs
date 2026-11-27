@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! The cursors Qt does not take from the system on Windows and draws itself: the split cursors,
-//! the open and closed hand, and the three drag cursors (`QWindowsCursor::customCursor`,
-//! qwindowscursor.cpp:190-405, the variant without PNG resources). Pure pixel data and scaling, so
-//! it is the same on every platform and testable without a window system.
+//! Software cursor bitmaps for shapes not provided by the host platform cursor API.
+//!
+//! Pure pixel data and bilinear scaling, shared across platforms and testable without a window
+//! system.
 
 use crate::cursor::CursorShape;
 
@@ -29,76 +29,57 @@ impl CursorImage {
     }
 }
 
-/// `QBitmap::fromData(QSize(size, size), bits)` (`Format_MonoLSB`: bit 0 of a byte is the leftmost
-/// pixel) with `maskBits` as the mask: a set mask bit is opaque; a set data bit is `Qt::color1`
-/// (black), a clear one `Qt::color0` (white). The hot spot is the centre
-/// (`createPixmapCursorFromData`, qwindowscursor.cpp:190-209).
-fn from_bitmap_data(size: usize, bits: &[u8], mask: &[u8]) -> CursorImage {
-    let stride = size.div_ceil(8);
-    let mut bgra = vec![0u8; size * size * 4];
-    for y in 0..size {
-        for x in 0..size {
-            let at = y * stride + x / 8;
-            let bit = 1u8 << (x % 8);
-            if mask[at] & bit == 0 {
-                continue;
-            }
-            let v = if bits[at] & bit != 0 { 0 } else { 255 };
-            let i = (y * size + x) * 4;
-            bgra[i..i + 4].copy_from_slice(&[v, v, v, 255]);
+/// Renders a monochrome silhouette (`'#'` = black interior, `'.'` = background) with an automatic
+/// 1-pixel 8-connected white outline (`[255, 255, 255, 255]`) around every black pixel
+/// (`[0, 0, 0, 255]`).
+fn from_silhouette(
+    width: usize,
+    height: usize,
+    hot_x: i32,
+    hot_y: i32,
+    rows: &[&str],
+) -> CursorImage {
+    debug_assert_eq!(rows.len(), height);
+    let is_black = |x: isize, y: isize| -> bool {
+        if x < 0 || y < 0 || x >= width as isize || y >= height as isize {
+            return false;
         }
-    }
-    CursorImage {
-        width: size,
-        height: size,
-        hot_x: (size / 2) as i32,
-        hot_y: (size / 2) as i32,
-        bgra,
-    }
-}
+        rows[y as usize].as_bytes().get(x as usize) == Some(&b'#')
+    };
 
-/// Parses a one-character-per-pixel XPM (`QPixmap(const char *const[])`) with hot spot `(0, 0)`:
-/// `"w h colors 1"`, the colour lines (`"k c #RRGGBB"` or `"k c None"`), then the rows.
-fn from_xpm(rows: &[&str]) -> CursorImage {
-    let mut header = rows[0]
-        .split_whitespace()
-        .map(|t| t.parse::<usize>().unwrap_or(0));
-    let (width, height, colors) = (
-        header.next().unwrap_or(0),
-        header.next().unwrap_or(0),
-        header.next().unwrap_or(0),
-    );
-    let mut palette: Vec<(u8, Option<[u8; 3]>)> = Vec::new();
-    for line in &rows[1..=colors] {
-        let key = line.as_bytes()[0];
-        let value = line.split_whitespace().last().unwrap_or("None");
-        let rgb = value.strip_prefix('#').and_then(|hex| {
-            let n = u32::from_str_radix(hex, 16).ok()?;
-            Some([(n >> 16) as u8, (n >> 8) as u8, n as u8])
-        });
-        palette.push((key, rgb));
-    }
     let mut bgra = vec![0u8; width * height * 4];
-    for (y, row) in rows[1 + colors..].iter().take(height).enumerate() {
-        for (x, key) in row.bytes().take(width).enumerate() {
-            if let Some((_, Some([r, g, b]))) = palette.iter().find(|(k, _)| *k == key) {
-                let i = (y * width + x) * 4;
-                bgra[i..i + 4].copy_from_slice(&[*b, *g, *r, 255]);
+    for y in 0..height {
+        for x in 0..width {
+            let i = (y * width + x) * 4;
+            if is_black(x as isize, y as isize) {
+                bgra[i..i + 4].copy_from_slice(&[0, 0, 0, 255]);
+            } else {
+                let mut touches_black = false;
+                'neighbors: for dy in -1isize..=1 {
+                    for dx in -1isize..=1 {
+                        if is_black(x as isize + dx, y as isize + dy) {
+                            touches_black = true;
+                            break 'neighbors;
+                        }
+                    }
+                }
+                if touches_black {
+                    bgra[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
+                }
             }
         }
     }
+
     CursorImage {
         width,
         height,
-        hot_x: 0,
-        hot_y: 0,
+        hot_x,
+        hot_y,
         bgra,
     }
 }
 
-/// `QPixmap::transformed(QTransform::fromScale(factor, factor), Qt::SmoothTransformation)`:
-/// bilinear resampling of the premultiplied pixels, target size rounded. The hot spot moves with
-/// the centre rule of [`custom_cursor_image`] (`rawImage.width() / 2`).
+/// Bilinearly resamples premultiplied BGRA pixels by `factor`, rounding target dimensions.
 fn scale_smooth(image: &CursorImage, factor: f64) -> CursorImage {
     let width = ((image.width as f64 * factor).round() as usize).max(1);
     let height = ((image.height as f64 * factor).round() as usize).max(1);
@@ -126,13 +107,6 @@ fn scale_smooth(image: &CursorImage, factor: f64) -> CursorImage {
         hot_y: (height / 2) as i32,
         bgra,
     }
-}
-
-fn from_xpm_at(rows: &[&str], hot_x: i32, hot_y: i32) -> CursorImage {
-    let mut image = from_xpm(rows);
-    image.hot_x = hot_x;
-    image.hot_y = hot_y;
-    image
 }
 
 fn flip_horizontal(image: &CursorImage) -> CursorImage {
@@ -168,10 +142,10 @@ pub fn bgra_to_rgba(bgra: &[u8]) -> Vec<u8> {
     rgba
 }
 
-/// The image Qt's Windows plugin draws for `shape`, or `None` for a shape the system provides.
-/// `screen_cursor_width` is the system cursor width (`SM_CXCURSOR`, 32 at 100%): the bitmap
-/// cursors are made for a 32 pixel cursor and are scaled once it differs by more than 0.4 of that
-/// (`createPixmapCursorFromData`); the drag cursors are never scaled.
+/// Custom cursor image for shapes the Windows system cursor set does not provide, or `None` for
+/// system-provided shapes. `screen_cursor_width` is the system cursor width (`SM_CXCURSOR`, 32 at
+/// 100%); bitmap cursors are authored at 32px base scale and resampled when the system cursor
+/// width differs by more than 40%, while drag cursors stay unscaled.
 pub fn custom_cursor_image(shape: CursorShape, screen_cursor_width: i32) -> Option<CursorImage> {
     let scaled = |image: CursorImage| {
         let factor = screen_cursor_width as f64 / 32.0;
@@ -182,202 +156,34 @@ pub fn custom_cursor_image(shape: CursorShape, screen_cursor_width: i32) -> Opti
         }
     };
     match shape {
-        CursorShape::SplitV => Some(scaled(from_bitmap_data(32, &VSPLIT_BITS, &VSPLITM_BITS))),
-        CursorShape::SplitH => Some(scaled(from_bitmap_data(32, &HSPLIT_BITS, &HSPLITM_BITS))),
-        CursorShape::OpenHand => Some(scaled(from_bitmap_data(
-            16,
-            &OPENHAND_BITS,
-            &OPENHANDM_BITS,
-        ))),
-        CursorShape::ClosedHand => Some(scaled(from_bitmap_data(
-            16,
-            &CLOSEDHAND_BITS,
-            &CLOSEDHANDM_BITS,
-        ))),
-        CursorShape::DragCopy => Some(from_xpm(&DRAG_COPY_XPM)),
-        CursorShape::DragMove => Some(from_xpm(&DRAG_MOVE_XPM)),
-        CursorShape::DragLink => Some(from_xpm(&DRAG_LINK_XPM)),
+        CursorShape::SplitV => Some(scaled(from_silhouette(32, 32, 16, 16, &SPLIT_V_ROWS))),
+        CursorShape::SplitH => Some(scaled(from_silhouette(32, 32, 16, 16, &SPLIT_H_ROWS))),
+        CursorShape::OpenHand => Some(scaled(from_silhouette(16, 16, 8, 8, &OPEN_HAND_ROWS))),
+        CursorShape::ClosedHand => Some(scaled(from_silhouette(16, 16, 8, 8, &CLOSED_HAND_ROWS))),
+        CursorShape::DragMove => Some(from_silhouette(11, 20, 0, 0, &DRAG_MOVE_ROWS)),
+        CursorShape::DragCopy => Some(from_silhouette(24, 30, 0, 0, &DRAG_COPY_ROWS)),
+        CursorShape::DragLink => Some(from_silhouette(24, 30, 0, 0, &DRAG_LINK_ROWS)),
         _ => None,
     }
 }
 
-const VSPLIT_BITS: [u8; 128] = [
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0xc0, 0x01, 0x00,
-    0x00, 0xe0, 0x03, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00,
-    0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0xff, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x7f, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00,
-    0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0xe0, 0x03, 0x00,
-    0x00, 0xc0, 0x01, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-];
-
-const VSPLITM_BITS: [u8; 128] = [
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0xc0, 0x01, 0x00, 0x00, 0xe0, 0x03, 0x00,
-    0x00, 0xf0, 0x07, 0x00, 0x00, 0xf8, 0x0f, 0x00, 0x00, 0xc0, 0x01, 0x00, 0x00, 0xc0, 0x01, 0x00,
-    0x00, 0xc0, 0x01, 0x00, 0x80, 0xff, 0xff, 0x00, 0x80, 0xff, 0xff, 0x00, 0x80, 0xff, 0xff, 0x00,
-    0x80, 0xff, 0xff, 0x00, 0x80, 0xff, 0xff, 0x00, 0x80, 0xff, 0xff, 0x00, 0x00, 0xc0, 0x01, 0x00,
-    0x00, 0xc0, 0x01, 0x00, 0x00, 0xc0, 0x01, 0x00, 0x00, 0xf8, 0x0f, 0x00, 0x00, 0xf0, 0x07, 0x00,
-    0x00, 0xe0, 0x03, 0x00, 0x00, 0xc0, 0x01, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-];
-
-const HSPLIT_BITS: [u8; 128] = [
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x02, 0x00,
-    0x00, 0x40, 0x02, 0x00, 0x00, 0x40, 0x02, 0x00, 0x00, 0x40, 0x02, 0x00, 0x00, 0x40, 0x02, 0x00,
-    0x00, 0x41, 0x82, 0x00, 0x80, 0x41, 0x82, 0x01, 0xc0, 0x7f, 0xfe, 0x03, 0x80, 0x41, 0x82, 0x01,
-    0x00, 0x41, 0x82, 0x00, 0x00, 0x40, 0x02, 0x00, 0x00, 0x40, 0x02, 0x00, 0x00, 0x40, 0x02, 0x00,
-    0x00, 0x40, 0x02, 0x00, 0x00, 0x40, 0x02, 0x00, 0x00, 0x40, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-];
-
-const HSPLITM_BITS: [u8; 128] = [
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe0, 0x07, 0x00, 0x00, 0xe0, 0x07, 0x00,
-    0x00, 0xe0, 0x07, 0x00, 0x00, 0xe0, 0x07, 0x00, 0x00, 0xe2, 0x47, 0x00, 0x00, 0xe3, 0xc7, 0x00,
-    0x80, 0xe3, 0xc7, 0x01, 0xc0, 0xff, 0xff, 0x03, 0xe0, 0xff, 0xff, 0x07, 0xc0, 0xff, 0xff, 0x03,
-    0x80, 0xe3, 0xc7, 0x01, 0x00, 0xe3, 0xc7, 0x00, 0x00, 0xe2, 0x47, 0x00, 0x00, 0xe0, 0x07, 0x00,
-    0x00, 0xe0, 0x07, 0x00, 0x00, 0xe0, 0x07, 0x00, 0x00, 0xe0, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-];
-
-const OPENHAND_BITS: [u8; 32] = [
-    0x80, 0x01, 0x58, 0x0e, 0x64, 0x12, 0x64, 0x52, 0x48, 0xb2, 0x48, 0x92, 0x16, 0x90, 0x19, 0x80,
-    0x11, 0x40, 0x02, 0x40, 0x04, 0x40, 0x04, 0x20, 0x08, 0x20, 0x10, 0x10, 0x20, 0x10, 0x00, 0x00,
-];
-
-const OPENHANDM_BITS: [u8; 32] = [
-    0x80, 0x01, 0xd8, 0x0f, 0xfc, 0x1f, 0xfc, 0x5f, 0xf8, 0xff, 0xf8, 0xff, 0xf6, 0xff, 0xff, 0xff,
-    0xff, 0x7f, 0xfe, 0x7f, 0xfc, 0x7f, 0xfc, 0x3f, 0xf8, 0x3f, 0xf0, 0x1f, 0xe0, 0x1f, 0x00, 0x00,
-];
-
-const CLOSEDHAND_BITS: [u8; 32] = [
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xb0, 0x0d, 0x48, 0x32, 0x08, 0x50, 0x10, 0x40, 0x18, 0x40,
-    0x04, 0x40, 0x04, 0x20, 0x08, 0x20, 0x10, 0x10, 0x20, 0x10, 0x20, 0x10, 0x00, 0x00, 0x00, 0x00,
-];
-
-const CLOSEDHANDM_BITS: [u8; 32] = [
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xb0, 0x0d, 0xf8, 0x3f, 0xf8, 0x7f, 0xf0, 0x7f, 0xf8, 0x7f,
-    0xfc, 0x7f, 0xfc, 0x3f, 0xf8, 0x3f, 0xf0, 0x1f, 0xe0, 0x1f, 0xe0, 0x1f, 0x00, 0x00, 0x00, 0x00,
-];
-
-const DRAG_MOVE_XPM: [&str; 24] = [
-    "11 20 3 1",
-    ".        c None",
-    "a        c #FFFFFF",
-    "X        c #000000",
-    "aa.........",
-    "aXa........",
-    "aXXa.......",
-    "aXXXa......",
-    "aXXXXa.....",
-    "aXXXXXa....",
-    "aXXXXXXa...",
-    "aXXXXXXXa..",
-    "aXXXXXXXXa.",
-    "aXXXXXXXXXa",
-    "aXXXXXXaaaa",
-    "aXXXaXXa...",
-    "aXXaaXXa...",
-    "aXa..aXXa..",
-    "aa...aXXa..",
-    "a.....aXXa.",
-    "......aXXa.",
-    ".......aXXa",
-    ".......aXXa",
-    "........aa.",
-];
-
-const DRAG_COPY_XPM: [&str; 34] = [
-    "24 30 3 1",
-    ".        c None",
-    "a        c #000000",
-    "X        c #FFFFFF",
-    "XX......................",
-    "XaX.....................",
-    "XaaX....................",
-    "XaaaX...................",
-    "XaaaaX..................",
-    "XaaaaaX.................",
-    "XaaaaaaX................",
-    "XaaaaaaaX...............",
-    "XaaaaaaaaX..............",
-    "XaaaaaaaaaX.............",
-    "XaaaaaaXXXX.............",
-    "XaaaXaaX................",
-    "XaaXXaaX................",
-    "XaX..XaaX...............",
-    "XX...XaaX...............",
-    "X.....XaaX..............",
-    "......XaaX..............",
-    ".......XaaX.............",
-    ".......XaaX.............",
-    "........XX...aaaaaaaaaaa",
-    ".............aXXXXXXXXXa",
-    ".............aXXXXXXXXXa",
-    ".............aXXXXaXXXXa",
-    ".............aXXXXaXXXXa",
-    ".............aXXaaaaaXXa",
-    ".............aXXXXaXXXXa",
-    ".............aXXXXaXXXXa",
-    ".............aXXXXXXXXXa",
-    ".............aXXXXXXXXXa",
-    ".............aaaaaaaaaaa",
-];
-
-const DRAG_LINK_XPM: [&str; 34] = [
-    "24 30 3 1",
-    ".        c None",
-    "a        c #000000",
-    "X        c #FFFFFF",
-    "XX......................",
-    "XaX.....................",
-    "XaaX....................",
-    "XaaaX...................",
-    "XaaaaX..................",
-    "XaaaaaX.................",
-    "XaaaaaaX................",
-    "XaaaaaaaX...............",
-    "XaaaaaaaaX..............",
-    "XaaaaaaaaaX.............",
-    "XaaaaaaXXXX.............",
-    "XaaaXaaX................",
-    "XaaXXaaX................",
-    "XaX..XaaX...............",
-    "XX...XaaX...............",
-    "X.....XaaX..............",
-    "......XaaX..............",
-    ".......XaaX.............",
-    ".......XaaX.............",
-    "........XX...aaaaaaaaaaa",
-    ".............aXXXXXXXXXa",
-    ".............aXXXaaaaXXa",
-    ".............aXXXXaaaXXa",
-    ".............aXXXaaaaXXa",
-    ".............aXXaaaXaXXa",
-    ".............aXXaaXXXXXa",
-    ".............aXXaXXXXXXa",
-    ".............aXXXaXXXXXa",
-    ".............aXXXXXXXXXa",
-    ".............aaaaaaaaaaa",
-];
-
-/// Custom cursor image for shapes AppKit has no public cross-version `NSCursor` class method
-/// for (`QCocoaCursor::createCursorFromShape` fallback shapes plus diagonal resizes and `Blank`),
+/// Custom cursor image for shapes AppKit has no public cross-version `NSCursor` class method for,
 /// or `None` when a public `NSCursor` class selector provides the shape natively.
 pub fn cocoa_custom_cursor_image(shape: CursorShape) -> Option<CursorImage> {
     match shape {
-        CursorShape::SizeFDiag => Some(from_xpm_at(&COCOA_SIZE_FDIAG_XPM, 8, 8)),
-        CursorShape::SizeBDiag => Some(flip_horizontal(&from_xpm_at(&COCOA_SIZE_FDIAG_XPM, 8, 8))),
-        CursorShape::SizeAll => Some(from_xpm_at(&COCOA_SIZE_ALL_XPM, 8, 8)),
-        CursorShape::UpArrow => Some(from_xpm_at(&COCOA_UP_ARROW_XPM, 6, 1)),
-        CursorShape::Wait => Some(from_xpm_at(&COCOA_WAIT_XPM, 7, 9)),
-        CursorShape::Busy => Some(from_xpm_at(&COCOA_BUSY_XPM, 1, 1)),
-        CursorShape::WhatsThis => Some(from_xpm_at(&COCOA_WHATS_THIS_XPM, 1, 1)),
+        CursorShape::SizeFDiag => Some(from_silhouette(17, 17, 8, 8, &COCOA_SIZE_FDIAG_ROWS)),
+        CursorShape::SizeBDiag => Some(flip_horizontal(&from_silhouette(
+            17,
+            17,
+            8,
+            8,
+            &COCOA_SIZE_FDIAG_ROWS,
+        ))),
+        CursorShape::SizeAll => Some(from_silhouette(17, 17, 8, 8, &COCOA_SIZE_ALL_ROWS)),
+        CursorShape::UpArrow => Some(from_silhouette(13, 17, 6, 1, &COCOA_UP_ARROW_ROWS)),
+        CursorShape::Wait => Some(from_silhouette(15, 19, 7, 9, &COCOA_WAIT_ROWS)),
+        CursorShape::Busy => Some(from_silhouette(24, 24, 1, 1, &COCOA_BUSY_ROWS)),
+        CursorShape::WhatsThis => Some(from_silhouette(24, 24, 1, 1, &COCOA_WHATS_THIS_ROWS)),
         CursorShape::Blank => Some(CursorImage {
             width: 1,
             height: 1,
@@ -389,166 +195,348 @@ pub fn cocoa_custom_cursor_image(shape: CursorShape) -> Option<CursorImage> {
     }
 }
 
-const COCOA_SIZE_FDIAG_XPM: [&str; 21] = [
-    "17 17 3 1",
-    ".        c None",
-    "a        c #000000",
-    "X        c #FFFFFF",
-    "XXXXXXXX.........",
-    "XaaaaaaX.........",
-    "XaaaaaXX.........",
-    "XaaaaXX..........",
-    "XaaaaaXX.........",
-    "XaaXaaaXX........",
-    "XaXXXaaaXX.......",
-    "XXX.XXaaaXX......",
-    ".....XXaaaXX.....",
-    "......XXaaaXX.XXX",
-    ".......XXaaaXXXaX",
-    "........XXaaaXaaX",
-    ".........XXaaaaaX",
-    "..........XXaaaaX",
-    ".........XXaaaaaX",
-    ".........XaaaaaaX",
-    ".........XXXXXXXX",
+#[rustfmt::skip]
+const SPLIT_V_ROWS: [&str; 32] = [
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "...............##...............",
+    "..............####..............",
+    ".............######.............",
+    "............########............",
+    "...............##...............",
+    "...............##...............",
+    "...............##...............",
+    "...............##...............",
+    "........################........",
+    "................................",
+    "................................",
+    "........################........",
+    "...............##...............",
+    "...............##...............",
+    "...............##...............",
+    "...............##...............",
+    "............########............",
+    ".............######.............",
+    "..............####..............",
+    "...............##...............",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
 ];
 
-const COCOA_SIZE_ALL_XPM: [&str; 21] = [
-    "17 17 3 1",
-    ".        c None",
-    "a        c #000000",
-    "X        c #FFFFFF",
-    ".......XXX.......",
-    "......XXaXX......",
-    ".....XXaaaXX.....",
-    ".....XaaaaaX.....",
-    ".....XXXaXXX.....",
-    "..XXX..XaX..XXX..",
-    ".XXaX..XaX..XaXX.",
-    "XXaaXXXXaXXXXaaXX",
-    "XaaaaaaaaaaaaaaaX",
-    "XXaaXXXXaXXXXaaXX",
-    ".XXaX..XaX..XaXX.",
-    "..XXX..XaX..XXX..",
-    ".....XXXaXXX.....",
-    ".....XaaaaaX.....",
-    ".....XXaaaXX.....",
-    "......XXaXX......",
-    ".......XXX.......",
+#[rustfmt::skip]
+const SPLIT_H_ROWS: [&str; 32] = [
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "..............#..#..............",
+    "..............#..#..............",
+    "..............#..#..............",
+    "..............#..#..............",
+    ".........#....#..#....#.........",
+    "........##....#..#....##........",
+    ".......###....#..#....###.......",
+    "......######..#..#..######......",
+    "......######..#..#..######......",
+    ".......###....#..#....###.......",
+    "........##....#..#....##........",
+    ".........#....#..#....#.........",
+    "..............#..#..............",
+    "..............#..#..............",
+    "..............#..#..............",
+    "..............#..#..............",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
 ];
 
-const COCOA_UP_ARROW_XPM: [&str; 21] = [
-    "13 17 3 1",
-    ".        c None",
-    "a        c #000000",
-    "X        c #FFFFFF",
-    ".....XXX.....",
-    "....XXaXX....",
-    "...XXaaaXX...",
-    "..XXaaaaaXX..",
-    ".XXaaaaaaaXX.",
-    "XXaaaaaaaaaXX",
-    "XXXXXaaaXXXXX",
-    "....XaaaX....",
-    "....XaaaX....",
-    "....XaaaX....",
-    "....XaaaX....",
-    "....XaaaX....",
-    "....XaaaX....",
-    "....XaaaX....",
-    "....XaaaX....",
-    "....XaaaX....",
-    "....XXXXX....",
+#[rustfmt::skip]
+const OPEN_HAND_ROWS: [&str; 16] = [
+    "................",
+    ".......##.......",
+    "....##.##.##....",
+    "....##.##.##....",
+    "....##.##.##.##.",
+    "....##.##.##.##.",
+    ".##.###########.",
+    ".##.###########.",
+    "..#############.",
+    "...############.",
+    "...############.",
+    "....##########..",
+    "....##########..",
+    ".....########...",
+    ".....########...",
+    "................",
 ];
 
-const COCOA_WAIT_XPM: [&str; 23] = [
-    "15 19 3 1",
-    ".        c None",
-    "a        c #000000",
-    "X        c #FFFFFF",
-    "XXXXXXXXXXXXXXX",
-    "XaaaaaaaaaaaaaX",
-    "XXaaaaaaaaaaaXX",
-    ".XaXXXXXXXXXaX.",
-    ".XaXaaaaaaaXaX.",
-    ".XXaXaaaaaXaXX.",
-    "..XaXXaaaXXaX..",
-    "..XXaXXaXXaXX..",
-    "...XXaXaXaXX...",
-    "....XXaXaXX....",
-    "...XXaXXXaXX...",
-    "..XXaXXaXXaXX..",
-    "..XaXXXXXXXaX..",
-    ".XXaXXXaXXXaXX.",
-    ".XaXXXaaaXXXaX.",
-    ".XaXaaaaaaaXaX.",
-    "XXaaaaaaaaaaaXX",
-    "XaaaaaaaaaaaaaX",
-    "XXXXXXXXXXXXXXX",
+#[rustfmt::skip]
+const CLOSED_HAND_ROWS: [&str; 16] = [
+    "................",
+    "................",
+    "................",
+    "................",
+    ".....##.##.##...",
+    "....##########..",
+    "...###########..",
+    "...###########..",
+    "...###########..",
+    "....##########..",
+    "....##########..",
+    ".....########...",
+    ".....########...",
+    ".....########...",
+    "................",
+    "................",
 ];
 
-const COCOA_BUSY_XPM: [&str; 31] = [
-    "24 27 3 1",
-    ".        c None",
-    "a        c #000000",
-    "X        c #FFFFFF",
-    "XXX.....................",
-    "XaXX....................",
-    "XaaXX...................",
-    "XaaaXX..................",
-    "XaaaaXX.................",
-    "XaaaaaXX................",
-    "XaaaaaaXX...............",
-    "XaaaaaaaXX..............",
-    "XaaaaaaaaXX.............",
-    "XaaaaaaaaaXX............",
-    "XaaaaaaXXXXX............",
-    "XaaaXaaXX...............",
-    "XaaXXaaXX...............",
-    "XaXXXXaaXX..............",
-    "XXX..XaaXX..............",
-    ".....XXaaXX.............",
-    "......XaaXX..XXXXXXXXX..",
-    "......XXaaXX.XaaaaaaaX..",
-    ".......XaaXX.XXaXXXaXX..",
-    ".......XXXXX..XaXaXaX...",
-    "..............XXaXaXX...",
-    "...............XaXaX....",
-    "..............XXaXaXX...",
-    "..............XaXaXaX...",
-    ".............XXaXaXaXX..",
-    ".............XaaaaaaaX..",
-    ".............XXXXXXXXX..",
+#[rustfmt::skip]
+const DRAG_MOVE_ROWS: [&str; 20] = [
+    "...........",
+    ".#.........",
+    ".##........",
+    ".###.......",
+    ".####......",
+    ".#####.....",
+    ".######....",
+    ".#######...",
+    ".########..",
+    ".#########.",
+    ".######....",
+    ".###.##....",
+    ".##..###...",
+    ".#...###...",
+    "......###..",
+    "......###..",
+    ".......##..",
+    "...........",
+    "...........",
+    "...........",
 ];
 
-const COCOA_WHATS_THIS_XPM: [&str; 29] = [
-    "24 25 3 1",
-    ".        c None",
-    "a        c #000000",
-    "X        c #FFFFFF",
-    "XXX.....................",
-    "XaXX....................",
-    "XaaXX...................",
-    "XaaaXX..................",
-    "XaaaaXX.................",
-    "XaaaaaXX................",
-    "XaaaaaaXX...............",
-    "XaaaaaaaXX..............",
-    "XaaaaaaaaXX.............",
-    "XaaaaaaaaaXX............",
-    "XaaaaaaXXXXX............",
-    "XaaaXaaXX...............",
-    "XaaXXaaXX...............",
-    "XaXXXXaaXX..............",
-    "XXX..XaaXX..............",
-    ".....XXaaXX...XXXXXXX...",
-    "......XXaaXX.XXaaaaaXX..",
-    ".......XaaXX.XaaXXXaaX..",
-    ".......XaaXX.XXXXXXaaX..",
-    ".......XXXXX....XXaXXX..",
-    "...............XXaXX....",
-    "................XaX.....",
-    "................XXX.....",
-    "................XaX.....",
-    "................XXX.....",
+#[rustfmt::skip]
+const DRAG_COPY_ROWS: [&str; 30] = [
+    "........................",
+    ".#......................",
+    ".##.....................",
+    ".###....................",
+    ".####...................",
+    ".#####..................",
+    ".######.................",
+    ".#######................",
+    ".########...............",
+    ".#########..............",
+    ".######.................",
+    ".###.##.................",
+    ".##..###................",
+    ".#...###................",
+    "......###...............",
+    "......###...............",
+    ".......##...............",
+    "........................",
+    "........................",
+    "...............##.......",
+    "...............##.......",
+    "...............##.......",
+    "............########....",
+    "............########....",
+    "...............##.......",
+    "...............##.......",
+    "...............##.......",
+    "........................",
+    "........................",
+    "........................",
+];
+
+#[rustfmt::skip]
+const DRAG_LINK_ROWS: [&str; 30] = [
+    "........................",
+    ".#......................",
+    ".##.....................",
+    ".###....................",
+    ".####...................",
+    ".#####..................",
+    ".######.................",
+    ".#######................",
+    ".########...............",
+    ".#########..............",
+    ".######.................",
+    ".###.##.................",
+    ".##..###................",
+    ".#...###................",
+    "......###...............",
+    "......###...............",
+    ".......##...............",
+    "........................",
+    "........................",
+    "..............######....",
+    "...............#####....",
+    "................####....",
+    "...............##.##....",
+    "..............##...#....",
+    ".............##.........",
+    "............##..........",
+    "...........##...........",
+    "........................",
+    "........................",
+    "........................",
+];
+
+#[rustfmt::skip]
+const COCOA_SIZE_FDIAG_ROWS: [&str; 17] = [
+    ".................",
+    ".######..........",
+    ".#####...........",
+    ".####............",
+    ".#####...........",
+    ".##.###..........",
+    ".#...###.........",
+    "......###........",
+    ".......###.......",
+    "........###......",
+    ".........###...#.",
+    "..........###.##.",
+    "...........#####.",
+    "............####.",
+    "...........#####.",
+    "..........######.",
+    ".................",
+];
+
+#[rustfmt::skip]
+const COCOA_SIZE_ALL_ROWS: [&str; 17] = [
+    ".................",
+    "........#........",
+    ".......###.......",
+    "......#####......",
+    "........#........",
+    "........#........",
+    "...#....#....#...",
+    "..##....#....##..",
+    ".###############.",
+    "..##....#....##..",
+    "...#....#....#...",
+    "........#........",
+    "........#........",
+    "......#####......",
+    ".......###.......",
+    "........#........",
+    ".................",
+];
+
+#[rustfmt::skip]
+const COCOA_UP_ARROW_ROWS: [&str; 17] = [
+    ".............",
+    "......#......",
+    ".....###.....",
+    "....#####....",
+    "...#######...",
+    "..#########..",
+    ".....###.....",
+    ".....###.....",
+    ".....###.....",
+    ".....###.....",
+    ".....###.....",
+    ".....###.....",
+    ".....###.....",
+    ".....###.....",
+    ".....###.....",
+    ".....###.....",
+    ".............",
+];
+
+#[rustfmt::skip]
+const COCOA_WAIT_ROWS: [&str; 19] = [
+    "...............",
+    "..###########..",
+    "..###########..",
+    "...#########...",
+    "....#######....",
+    ".....#####.....",
+    "......###......",
+    ".......#.......",
+    "......###......",
+    ".....#####.....",
+    "....#######....",
+    "...#########...",
+    "..###########..",
+    "..###########..",
+    "..###########..",
+    "..###########..",
+    "..###########..",
+    "..###########..",
+    "...............",
+];
+
+#[rustfmt::skip]
+const COCOA_BUSY_ROWS: [&str; 24] = [
+    "........................",
+    ".#......................",
+    ".##.....................",
+    ".###....................",
+    ".####...................",
+    ".#####..................",
+    ".######.................",
+    ".#######................",
+    ".########...............",
+    ".#########..............",
+    ".######.................",
+    ".###.##.......#######...",
+    ".##..###......#######...",
+    ".#...###.......#####....",
+    "......###.......###.....",
+    "......###........#......",
+    ".......##.......###.....",
+    "...............#####....",
+    "..............#######...",
+    "..............#######...",
+    "..............#######...",
+    "..............#######...",
+    "........................",
+    "........................",
+];
+
+#[rustfmt::skip]
+const COCOA_WHATS_THIS_ROWS: [&str; 24] = [
+    "........................",
+    ".#......................",
+    ".##.....................",
+    ".###....................",
+    ".####...................",
+    ".#####..................",
+    ".######.................",
+    ".#######................",
+    ".########...............",
+    ".#########..............",
+    ".######.................",
+    ".###.##.......#####.....",
+    ".##..###.....#######....",
+    ".#...###.....##...##....",
+    "......###........###....",
+    "......###.......###.....",
+    ".......##.......##......",
+    "................##......",
+    "........................",
+    "................##......",
+    "................##......",
+    "........................",
+    "........................",
+    "........................",
 ];

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-3.0-only
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Loom model tests: exhaustive verification of 2-thread concurrent operations.
 
 #![cfg(feature = "loom")]

@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Linux/Unix glyph backend: Qt's FreeType engine (`QFontEngineFT`, qfontengine_ft.cpp) rebuilt
-//! from `skrifa` hinted outlines and a port of FreeType's rasterizer ([`ftgrays`]).
+//! Linux/Unix glyph backend: `skrifa` hinted outlines rasterized with `ab_glyph_rasterizer`.
 //!
 //! A glyph goes through the steps `QFontEngineFT::loadGlyph` takes it through:
 //!
@@ -13,12 +12,11 @@
 //!   driver; in normal mode a TrueType font with no `fpgm` and a tiny `prep` goes to the
 //!   auto-hinter too, and a tricky font never does (`FT_Load_Glyph`, ftobjs.c). skrifa follows the
 //!   same rules (`Engine::Auto`, `Engine::AutoFallback`, `require_interpreter`). Its outline
-//!   points are FreeType's 26.6 points;
+//!   points are 26.6 fixed-point values;
 //! * `FT_Set_Transform(face, &matrix, &delta)`: the device scale (glyphs are then loaded
 //!   unhinted, `loadGlyphFor`) and the sub-pixel position the raster engine asks for, applied to
 //!   the outline after hinting;
-//! * `FT_Render_Glyph` in `FT_RENDER_MODE_LIGHT` or `FT_RENDER_MODE_NORMAL` (both render alike),
-//!   which [`ftgrays::render`] ports, bitmap box included.
+//! * anti-aliased area-coverage rasterization via `ab_glyph_rasterizer`.
 //!
 //! The advance a glyph is laid out with is `recalcAdvances`': the linear advance
 //! (`linearHoriAdvance >> 10`) when the engine uses design metrics (hint style none or light),
@@ -31,17 +29,17 @@
 //! style is the process default or the font's hinting preference), synthetic bold and oblique,
 //! and the switch to auto-hinting Qt makes after `FT_Err_Execution_Too_Long`.
 //!
-//! This backend uses upstream crates.io `skrifa` + [`ftgrays`] (with CFF gamma-corrected blending
-//! reported via [`GlyphFace::gamma_corrected_blending`]).
+//! This backend uses upstream crates.io `skrifa` + `ab_glyph_rasterizer` (with CFF gamma-corrected
+//! blending reported via [`GlyphFace::gamma_corrected_blending`]).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::text::font::SharedFontData;
 use crate::text::font_database::HintStyle;
-use crate::text::ftgrays::{self, Outline, Vector};
 use crate::text::glyph_face::{GlyphFace, GlyphMetrics, LineMetrics, subpixel_bucket_offset};
 use crate::text::outline_face::OutlineFace;
+use ab_glyph_rasterizer::{Point, Rasterizer, point};
 use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{
     DrawSettings, Engine, GlyphStyles, HintingInstance, HintingOptions, OutlineGlyphCollection,
@@ -53,24 +51,227 @@ use skrifa::{FontRef, GlyphId, MetadataProvider};
 const INSTANCE_CACHE_LIMIT: usize = 32;
 const ADVANCE_CACHE_LIMIT: usize = 8192;
 
+/// An outline drawing command in 26.6 fixed-point pixel coordinates (y up).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OutlineCommand {
+    MoveTo {
+        x: i64,
+        y: i64,
+    },
+    LineTo {
+        x: i64,
+        y: i64,
+    },
+    QuadTo {
+        cx: i64,
+        cy: i64,
+        x: i64,
+        y: i64,
+    },
+    CubicTo {
+        c0x: i64,
+        c0y: i64,
+        c1x: i64,
+        c1y: i64,
+        x: i64,
+        y: i64,
+    },
+    Close,
+}
+
+/// A hinted or unhinted glyph outline in 26.6 fixed-point pixel coordinates (y up).
+#[derive(Default, Clone, Debug)]
+pub struct GlyphOutline {
+    pub commands: Vec<OutlineCommand>,
+    pub contours: usize,
+    pub has_overlaps: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ControlBox {
+    x_min: i64,
+    y_min: i64,
+    x_max: i64,
+    y_max: i64,
+}
+
+fn mul_fix(a: i64, b: i64) -> i64 {
+    let neg = (a < 0) ^ (b < 0);
+    let prod = i128::from(a).abs() * i128::from(b).abs();
+    let q = ((prod + 0x8000) >> 16) as i64;
+    if neg { -q } else { q }
+}
+
+fn div_fix(a: i64, b: i64) -> i64 {
+    if b == 0 {
+        return if a < 0 { i64::MIN } else { i64::MAX };
+    }
+    let neg = (a < 0) ^ (b < 0);
+    let num = i128::from(a).abs() << 16;
+    let den = i128::from(b).abs();
+    let q = ((num + (den >> 1)) / den) as i64;
+    if neg { -q } else { q }
+}
+
+fn mul_div(a: i64, b: i64, c: i64) -> i64 {
+    if c == 0 {
+        return if (a ^ b) < 0 { i64::MIN } else { i64::MAX };
+    }
+    let neg = (a < 0) ^ (b < 0) ^ (c < 0);
+    let num = i128::from(a).abs() * i128::from(b).abs();
+    let den = i128::from(c).abs();
+    let q = ((num + (den >> 1)) / den) as i64;
+    if neg { -q } else { q }
+}
+
+fn to_26_6(v: f32) -> i64 {
+    (f64::from(v) * 64.0).round() as i64
+}
+
+fn control_box(commands: &[OutlineCommand]) -> Option<ControlBox> {
+    let mut x_min = i64::MAX;
+    let mut y_min = i64::MAX;
+    let mut x_max = i64::MIN;
+    let mut y_max = i64::MIN;
+    let mut any = false;
+    let mut include = |x: i64, y: i64| {
+        any = true;
+        x_min = x_min.min(x);
+        y_min = y_min.min(y);
+        x_max = x_max.max(x);
+        y_max = y_max.max(y);
+    };
+    for &cmd in commands {
+        match cmd {
+            OutlineCommand::MoveTo { x, y } | OutlineCommand::LineTo { x, y } => include(x, y),
+            OutlineCommand::QuadTo { cx, cy, x, y } => {
+                include(cx, cy);
+                include(x, y);
+            }
+            OutlineCommand::CubicTo {
+                c0x,
+                c0y,
+                c1x,
+                c1y,
+                x,
+                y,
+            } => {
+                include(c0x, c0y);
+                include(c1x, c1y);
+                include(x, y);
+            }
+            OutlineCommand::Close => {}
+        }
+    }
+    any.then_some(ControlBox {
+        x_min,
+        y_min,
+        x_max,
+        y_max,
+    })
+}
+
+fn pixel_bounds(commands: &[OutlineCommand]) -> Option<(i32, i32, u32, u32)> {
+    let cbox = control_box(commands)?;
+    let x_min_px = (cbox.x_min >> 6) as i32;
+    let y_min_px = (cbox.y_min >> 6) as i32;
+    let x_max_px = ((cbox.x_max + 63) >> 6) as i32;
+    let y_max_px = ((cbox.y_max + 63) >> 6) as i32;
+    let width = x_max_px.saturating_sub(x_min_px);
+    let height = y_max_px.saturating_sub(y_min_px);
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    Some((x_min_px, y_max_px, width as u32, height as u32))
+}
+
+fn rasterize_outline(outline: &GlyphOutline) -> Option<(i32, i32, u32, u32, Vec<u8>)> {
+    let (left, top, width, rows) = pixel_bounds(&outline.commands)?;
+    let mut ras = Rasterizer::new(width as usize, rows as usize);
+    let to_ras = |x: i64, y: i64| -> Point {
+        point(
+            (x as f32 / 64.0) - left as f32,
+            top as f32 - (y as f32 / 64.0),
+        )
+    };
+    let mut start = point(0.0, 0.0);
+    let mut cur = point(0.0, 0.0);
+    let mut has_open = false;
+    for &cmd in &outline.commands {
+        match cmd {
+            OutlineCommand::MoveTo { x, y } => {
+                if has_open && cur != start {
+                    ras.draw_line(cur, start);
+                }
+                let p = to_ras(x, y);
+                start = p;
+                cur = p;
+                has_open = true;
+            }
+            OutlineCommand::LineTo { x, y } => {
+                let p = to_ras(x, y);
+                ras.draw_line(cur, p);
+                cur = p;
+            }
+            OutlineCommand::QuadTo { cx, cy, x, y } => {
+                let c = to_ras(cx, cy);
+                let p = to_ras(x, y);
+                ras.draw_quad(cur, c, p);
+                cur = p;
+            }
+            OutlineCommand::CubicTo {
+                c0x,
+                c0y,
+                c1x,
+                c1y,
+                x,
+                y,
+            } => {
+                let c0 = to_ras(c0x, c0y);
+                let c1 = to_ras(c1x, c1y);
+                let p = to_ras(x, y);
+                ras.draw_cubic(cur, c0, c1, p);
+                cur = p;
+            }
+            OutlineCommand::Close => {
+                if has_open && cur != start {
+                    ras.draw_line(cur, start);
+                }
+                cur = start;
+                has_open = false;
+            }
+        }
+    }
+    if has_open && cur != start {
+        ras.draw_line(cur, start);
+    }
+    let mut buffer = vec![0u8; (width * rows) as usize];
+    ras.for_each_pixel(|idx, alpha| {
+        buffer[idx] = (alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+    });
+    Some((left, top, width, rows, buffer))
+}
+
 /// The glyph slot `FT_Load_Glyph` fills: the outline in 26.6 pixels (y up, origin on the pen
 /// position) and `advance.x`.
 struct Slot {
-    outline: Outline,
+    outline: GlyphOutline,
     advance: i64,
 }
 
-/// Collects a skrifa outline as the points, tags and contour ends of an `FT_Outline`.
+/// Collects a skrifa outline as [`OutlineCommand`]s in 26.6 pixels.
 ///
 /// A CFF contour (`cff`) does not repeat its first point at the end (`cff_builder_close_contour`).
 #[derive(Default)]
 struct SlotPen {
-    outline: Outline,
+    outline: GlyphOutline,
     open: bool,
     /// The outline comes from the CFF driver.
     cff: bool,
-    /// Index in `outline.points` of the open contour's first point.
-    first: usize,
+    /// Start point of the currently open contour.
+    start: Option<(i64, i64)>,
+    /// Index in `outline.commands` where the open contour began.
+    first_cmd: usize,
 }
 
 impl SlotPen {
@@ -81,40 +282,29 @@ impl SlotPen {
         }
     }
 
-    fn push(&mut self, x: f32, y: f32, tag: u8) {
-        // skrifa's coordinates are 26.6 (TrueType, auto-hinter) or 16.16 (CFF) values as `f32`;
-        // FreeType keeps 26.6.
-        self.outline.points.push(Vector::new(
-            (f64::from(x) * 64.0).round() as i64,
-            (f64::from(y) * 64.0).round() as i64,
-        ));
-        self.outline.tags.push(tag);
-    }
-
     fn end_contour(&mut self) {
         if !self.open {
             return;
         }
         self.open = false;
-        let n = self.outline.points.len() - self.first;
+        let cmd_count = self.outline.commands.len() - self.first_cmd;
         if self.cff
-            && n > 1
-            && self.outline.tags.last() == Some(&ftgrays::TAG_ON)
-            && self.outline.points.last() == self.outline.points.get(self.first)
+            && cmd_count > 1
+            && let (Some(OutlineCommand::LineTo { x, y }), Some((sx, sy))) =
+                (self.outline.commands.last().copied(), self.start)
+            && x == sx
+            && y == sy
         {
-            // `cff_builder_close_contour`: a contour does not repeat its first point.
-            self.outline.points.pop();
-            self.outline.tags.pop();
+            // A CFF contour does not repeat its first point with a closing line segment.
+            self.outline.commands.pop();
         }
-        if self.outline.points.len() > self.first {
-            let last = self.outline.points.len() - 1;
-            self.outline
-                .contours
-                .push(last.min(usize::from(u16::MAX)) as u16);
+        if self.outline.commands.len() > self.first_cmd {
+            self.outline.commands.push(OutlineCommand::Close);
+            self.outline.contours += 1;
         }
     }
 
-    fn finish(mut self) -> Outline {
+    fn finish(mut self) -> GlyphOutline {
         self.end_contour();
         self.outline
     }
@@ -124,20 +314,36 @@ impl OutlinePen for SlotPen {
     fn move_to(&mut self, x: f32, y: f32) {
         self.end_contour();
         self.open = true;
-        self.first = self.outline.points.len();
-        self.push(x, y, ftgrays::TAG_ON);
+        self.first_cmd = self.outline.commands.len();
+        let (qx, qy) = (to_26_6(x), to_26_6(y));
+        self.start = Some((qx, qy));
+        self.outline
+            .commands
+            .push(OutlineCommand::MoveTo { x: qx, y: qy });
     }
     fn line_to(&mut self, x: f32, y: f32) {
-        self.push(x, y, ftgrays::TAG_ON);
+        self.outline.commands.push(OutlineCommand::LineTo {
+            x: to_26_6(x),
+            y: to_26_6(y),
+        });
     }
     fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
-        self.push(cx, cy, ftgrays::TAG_CONIC);
-        self.push(x, y, ftgrays::TAG_ON);
+        self.outline.commands.push(OutlineCommand::QuadTo {
+            cx: to_26_6(cx),
+            cy: to_26_6(cy),
+            x: to_26_6(x),
+            y: to_26_6(y),
+        });
     }
     fn curve_to(&mut self, c0x: f32, c0y: f32, c1x: f32, c1y: f32, x: f32, y: f32) {
-        self.push(c0x, c0y, ftgrays::TAG_CUBIC);
-        self.push(c1x, c1y, ftgrays::TAG_CUBIC);
-        self.push(x, y, ftgrays::TAG_ON);
+        self.outline.commands.push(OutlineCommand::CubicTo {
+            c0x: to_26_6(c0x),
+            c0y: to_26_6(c0y),
+            c1x: to_26_6(c1x),
+            c1y: to_26_6(c1y),
+            x: to_26_6(x),
+            y: to_26_6(y),
+        });
     }
     fn close(&mut self) {
         self.end_contour();
@@ -304,9 +510,7 @@ impl SkrifaFace {
             let mut pen = SlotPen::new(self.cff);
             let metrics = glyph.draw(settings, &mut pen).ok()?;
             let mut outline = pen.finish();
-            if metrics.has_overlaps {
-                outline.flags |= ftgrays::OUTLINE_OVERLAP;
-            }
+            outline.has_overlaps = metrics.has_overlaps;
             Some((outline, metrics.advance_width))
         };
         let (outline, advance) = match target {
@@ -332,7 +536,7 @@ impl SkrifaFace {
             // A CFF glyph without a width of its own: the `hmtx` advance, as FreeType takes it.
             None => {
                 let design = i64::from(self.base.glyph_hor_advance(glyph_id).unwrap_or(0));
-                let scaled = ftgrays::mul_fix(design, self.x_scale(ysize));
+                let scaled = mul_fix(design, self.x_scale(ysize));
                 if target.is_some() {
                     (scaled + 32) & -64
                 } else {
@@ -345,7 +549,7 @@ impl SkrifaFace {
 
     /// `size->metrics.x_scale` for `FT_Set_Char_Size(face, ysize, ysize, 0, 0)`.
     fn x_scale(&self, ysize: i64) -> i64 {
-        ftgrays::div_fix(ysize, i64::from(self.units_per_em))
+        div_fix(ysize, i64::from(self.units_per_em))
     }
 
     /// `qRound(pixelSize * 64)`: the 26.6 size `QFreetypeFace::computeSize` sets.
@@ -355,15 +559,14 @@ impl SkrifaFace {
 
     /// The outline of `glyph_id` at `size` pixels per em drawn through the uniform device scale
     /// `scale`, moved right by `x_offset` 64ths of a device pixel: the glyph slot outline
-    /// `QFontEngineFT::loadGlyph` hands to `FT_Render_Glyph`. `None` where FreeType fails to load
-    /// the glyph.
+    /// `QFontEngineFT::loadGlyph` hands to the rasterizer. `None` where loading fails.
     pub fn freetype_outline(
         &self,
         glyph_id: u16,
         size: f32,
         scale: f32,
         x_offset: i32,
-    ) -> Option<Outline> {
+    ) -> Option<GlyphOutline> {
         if !(size > 0.0 && scale > 0.0) {
             return None;
         }
@@ -377,27 +580,67 @@ impl SkrifaFace {
         if transformed {
             // `QTransformToFTMatrix`: `FT_Fixed(m11 * 65536)`, truncated.
             let m = (f64::from(scale) * 65536.0) as i64;
-            ftgrays::transform(&mut outline.points, m, 0, 0, m);
+            for cmd in &mut outline.commands {
+                match cmd {
+                    OutlineCommand::MoveTo { x, y } | OutlineCommand::LineTo { x, y } => {
+                        *x = mul_fix(*x, m);
+                        *y = mul_fix(*y, m);
+                    }
+                    OutlineCommand::QuadTo { cx, cy, x, y } => {
+                        *cx = mul_fix(*cx, m);
+                        *cy = mul_fix(*cy, m);
+                        *x = mul_fix(*x, m);
+                        *y = mul_fix(*y, m);
+                    }
+                    OutlineCommand::CubicTo {
+                        c0x,
+                        c0y,
+                        c1x,
+                        c1y,
+                        x,
+                        y,
+                    } => {
+                        *c0x = mul_fix(*c0x, m);
+                        *c0y = mul_fix(*c0y, m);
+                        *c1x = mul_fix(*c1x, m);
+                        *c1y = mul_fix(*c1y, m);
+                        *x = mul_fix(*x, m);
+                        *y = mul_fix(*y, m);
+                    }
+                    OutlineCommand::Close => {}
+                }
+            }
         }
         if x_offset != 0 {
-            for v in &mut outline.points {
-                v.x = v.x.wrapping_add(i64::from(x_offset));
+            let dx = i64::from(x_offset);
+            for cmd in &mut outline.commands {
+                match cmd {
+                    OutlineCommand::MoveTo { x, .. } | OutlineCommand::LineTo { x, .. } => {
+                        *x = x.wrapping_add(dx);
+                    }
+                    OutlineCommand::QuadTo { cx, x, .. } => {
+                        *cx = cx.wrapping_add(dx);
+                        *x = x.wrapping_add(dx);
+                    }
+                    OutlineCommand::CubicTo { c0x, c1x, x, .. } => {
+                        *c0x = c0x.wrapping_add(dx);
+                        *c1x = c1x.wrapping_add(dx);
+                        *x = x.wrapping_add(dx);
+                    }
+                    OutlineCommand::Close => {}
+                }
             }
         }
         Some(outline)
     }
 
-    /// `x_ppem` and `y_ppem` of the FreeType size for `size` pixels per em.
-    fn ppem(size: f32) -> (u16, u16) {
-        let ppem = ((Self::ysize(size) + 32) >> 6).clamp(0, i64::from(u16::MAX)) as u16;
-        (ppem, ppem)
-    }
-
     /// `QFontEngine::glyphBoundingBoxExceedsLimit` with Qt's default `QT_MAX_GLYPH_SIZE` of 4096:
     /// a glyph whose control box is beyond 16 times the pixel size (and 256 pixels) is not drawn.
-    fn exceeds_qt_glyph_limit(outline: &Outline, size: f32, scale: f32) -> bool {
+    fn exceeds_qt_glyph_limit(outline: &GlyphOutline, size: f32, scale: f32) -> bool {
         const LIMIT: f64 = 4096.0;
-        let cbox = ftgrays::control_box(&outline.points);
+        let Some(cbox) = control_box(&outline.commands) else {
+            return false;
+        };
         let width = ((cbox.x_max - cbox.x_min) >> 6) as f64;
         let height = ((cbox.y_max - cbox.y_min) >> 6) as f64;
         let effective = f64::from(size) * f64::from(size) * f64::from(scale) * f64::from(scale);
@@ -422,7 +665,7 @@ impl SkrifaFace {
                     return 0;
                 }
                 let design = i64::from(self.base.glyph_hor_advance(glyph_id).unwrap_or(0));
-                ftgrays::mul_div(design, self.x_scale(ysize), 64) >> 10
+                mul_div(design, self.x_scale(ysize), 64) >> 10
             }
             // `QFixed(g->advance)`: `TRUNC(ROUND(slot->advance.x))` of the hinted glyph.
             HintStyle::HintMedium | HintStyle::HintFull => {
@@ -448,8 +691,7 @@ impl SkrifaFace {
         }
     }
 
-    /// `FT_Render_Glyph` of [`freetype_outline`](Self::freetype_outline), as glyph metrics and
-    /// coverage.
+    /// Rasterizes [`freetype_outline`](Self::freetype_outline) into glyph metrics and coverage.
     fn render(
         &self,
         glyph_id: u16,
@@ -468,19 +710,18 @@ impl SkrifaFace {
         if Self::exceeds_qt_glyph_limit(&outline, size, scale) {
             return (empty, Vec::new());
         }
-        // Qt asks FreeType for bitmaps at the size of the font, not the device size.
-        let Ok(bitmap) = ftgrays::render(&outline, Self::ppem(size)) else {
+        let Some((left, top, width, rows, buffer)) = rasterize_outline(&outline) else {
             return (empty, Vec::new());
         };
         let metrics = GlyphMetrics {
-            xmin: bitmap.left,
-            ymin: bitmap.top.wrapping_sub(bitmap.rows as i32),
-            width: bitmap.width as usize,
-            height: bitmap.rows as usize,
+            xmin: left,
+            ymin: top.wrapping_sub(rows as i32),
+            width: width as usize,
+            height: rows as usize,
             advance_width,
             advance_height: 0.0,
         };
-        (metrics, bitmap.buffer)
+        (metrics, buffer)
     }
 }
 
@@ -493,7 +734,7 @@ impl GlyphFace for SkrifaFace {
         self.face_index
     }
 
-    /// The bitmap box of the glyph (`FT_Render_Glyph` without the coverage).
+    /// The bitmap box of the glyph without rasterizing coverage.
     fn metrics_indexed(&self, glyph_id: u16, px: f32) -> GlyphMetrics {
         let advance_width = self.layout_advance_26_6(glyph_id, px) as f32 / 64.0;
         let Some(outline) = self.freetype_outline(glyph_id, px, 1.0, 0) else {
@@ -502,7 +743,13 @@ impl GlyphFace for SkrifaFace {
                 ..GlyphMetrics::default()
             };
         };
-        match ftgrays::preset_bitmap(&outline.points, Self::ppem(px)) {
+        if Self::exceeds_qt_glyph_limit(&outline, px, 1.0) {
+            return GlyphMetrics {
+                advance_width,
+                ..GlyphMetrics::default()
+            };
+        }
+        match pixel_bounds(&outline.commands) {
             Some((left, top, width, rows)) if width > 0 && rows > 0 => GlyphMetrics {
                 xmin: left,
                 ymin: top.wrapping_sub(rows as i32),
@@ -584,14 +831,6 @@ impl GlyphFace for SkrifaFace {
 mod tests {
     use super::*;
 
-    fn pts(o: &Outline) -> Vec<(i64, i64, u8)> {
-        o.points
-            .iter()
-            .zip(&o.tags)
-            .map(|(p, &t)| (p.x, p.y, t))
-            .collect()
-    }
-
     #[test]
     fn closing_curve_back_to_an_explicit_start_adds_point() {
         let mut pen = SlotPen::default();
@@ -601,15 +840,20 @@ mod tests {
         pen.quad_to(0.5, 1.5, 0.0, 0.0);
         pen.close();
         let o = pen.finish();
-        assert_eq!(o.contours, [4]);
+        assert_eq!(o.contours, 1);
         assert_eq!(
-            pts(&o),
+            o.commands,
             [
-                (0, 0, ftgrays::TAG_ON),
-                (64, 0, ftgrays::TAG_ON),
-                (64, 64, ftgrays::TAG_ON),
-                (32, 96, ftgrays::TAG_CONIC),
-                (0, 0, ftgrays::TAG_ON)
+                OutlineCommand::MoveTo { x: 0, y: 0 },
+                OutlineCommand::LineTo { x: 64, y: 0 },
+                OutlineCommand::LineTo { x: 64, y: 64 },
+                OutlineCommand::QuadTo {
+                    cx: 32,
+                    cy: 96,
+                    x: 0,
+                    y: 0
+                },
+                OutlineCommand::Close,
             ]
         );
     }
@@ -625,8 +869,8 @@ mod tests {
             pen.close();
             pen.finish()
         };
-        assert_eq!(draw(false).contours, [3]);
-        assert_eq!(draw(true).contours, [2]);
+        assert_eq!(draw(false).commands.len(), 5);
+        assert_eq!(draw(true).commands.len(), 4);
     }
 
     #[test]
@@ -638,6 +882,7 @@ mod tests {
             pen.line_to(1.0, y + 1.0);
             pen.close();
         }
-        assert_eq!(pen.finish().contours, [2, 5]);
+        let o = pen.finish();
+        assert_eq!(o.contours, 2);
     }
 }

@@ -61,14 +61,16 @@ cargo test --workspace
 
 ## License
 
-LGPL-3.0-only, see [LICENSE](LICENSE). ferrokit is derived from the design and behaviour of Qt, see
-[NOTICE](NOTICE) for the attribution. Qt is a registered trademark of The Qt Company Ltd. and its
-subsidiaries; this project is independent and is not affiliated with them.
+`ferrokit-core`, `ferrokit-gui`, `ferrokit-platform`, and `ferrokit-widgets` are licensed under
+`LGPL-3.0-only`, see [LICENSE](LICENSE). `ferrokit-derive` and `ferrokit-model` are dual-licensed
+under `MIT OR Apache-2.0` ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)). ferrokit
+is derived from the design and behaviour of Qt, see [NOTICE](NOTICE) for the attribution. Qt is a
+registered trademark of The Qt Company Ltd. and its subsidiaries; this project is independent and is
+not affiliated with them.
 
-Every Rust source file of the crates starts with an `SPDX-License-Identifier: LGPL-3.0-only` line,
-except where it says otherwise: `ftgrays.rs` is `LGPL-3.0-only AND FTL` (a port of FreeType code),
-see [NOTICE](NOTICE). Unless you state otherwise, a contribution you submit is licensed under
-LGPL-3.0-only, with no additional terms.
+Every Rust source file of the crates starts with an `SPDX-License-Identifier` line matching its
+crate's license (`LGPL-3.0-only` or `MIT OR Apache-2.0`). Unless you state otherwise, a contribution
+you submit is licensed under the target crate's license, with no additional terms.
 
 Rust links crates statically by default. If you distribute a closed-source program that includes
 ferrokit, section 4 of the LGPL applies to you, in particular its requirements about letting users

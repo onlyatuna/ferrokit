@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-3.0-only
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Shuttle model tests: randomized and reproducible schedule testing.
 
 #![cfg(feature = "shuttle")]

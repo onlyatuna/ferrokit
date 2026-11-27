@@ -3,7 +3,7 @@ name = "ferrokit-derive"
 version = "0.1.0"
 edition = "2024"
 description = "Derive macro for the ferrokit object model."
-license = "LGPL-3.0-only"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/onlyatuna/ferrokit"
 publish = false
 
