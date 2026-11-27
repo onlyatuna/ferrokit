@@ -30,7 +30,7 @@ fn default_blank_icon() -> Icon {
 /// System tray icon (`QSystemTrayIcon`).
 ///
 /// Bridges the platform-native tray icon (`ferrokit-platform`) with the custom-drawn
-/// widget [`Menu`] (`QMenu`), following Qt's `QSystemTrayIcon::setContextMenu(QMenu*)`
+/// widget [`Menu`] (a menu), following Qt's `QSystemTrayIcon::setContextMenu(QMenu*)`
 /// architecture.
 pub struct SystemTrayIcon {
     platform_tray: Box<TrayIcon>,

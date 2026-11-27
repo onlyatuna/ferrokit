@@ -91,7 +91,7 @@ fn arm_wake(flag: &'static LocalKey<Arc<AtomicBool>>, arm: impl FnOnce(Box<dyn F
 }
 
 /// Makes the event loop flush the queue on its next turn, as `QCoreApplication::postEvent`
-/// wakes the dispatcher (qcoreapplication.cpp:1725-1730), so a task posted while no widget event
+/// wakes the dispatcher, so a task posted while no widget event
 /// is dispatched (a system setting change, a timer slot) is not left until one arrives.
 fn wake_loop() {
     arm_wake(&WAKE_PENDING, |wake| {
@@ -202,7 +202,7 @@ impl WidgetCommandQueue {
     /// [`flush`](Self::flush) it never runs tasks or deletions, which may need the caller's
     /// borrows released first.
     ///
-    /// A layout that rebuilt its metrics ends with `updateGeometry()` (qlayout.cpp:1131), which
+    /// A layout that rebuilt its metrics ends with `updateGeometry`, which
     /// requests its parent's layout in turn; those requests are delivered too, one level per
     /// round, until a round posts none.
     pub fn flush_layouts() {
@@ -258,7 +258,7 @@ impl WidgetCommandQueue {
 
     /// Safely requests deferred deletion of a `WidgetRef` (`QObject::deleteLater`).
     ///
-    /// The `DeferredDelete` is posted to the core loop (qobject.cpp:2511-2565), so the widget
+    /// The `DeferredDelete` is posted to the core loop, so the widget
     /// lives until the loop reaches it. Its parent link is dropped in `on_deferred_delete`. If the
     /// widget's `RefCell` is currently borrowed (e.g. inside its own event callback), the request
     /// is deferred to a queued task that runs once the borrow is released.
@@ -384,7 +384,7 @@ impl WidgetCommandQueue {
 
 /// Hook run after each delivered `DeferredDelete` (`set_deferred_delete_hook`). Removes the
 /// widget from its parent, since Qt drops a deleted child from its parent's children
-/// (qcoreapplication.cpp:1870-1909 delivers the event and then runs this hook).
+/// ( delivers the event and then runs this hook).
 fn on_deferred_delete(id: ObjectId) {
     let pending = PENDING_DELETES.with(|pending| -> Option<PendingDelete> {
         let mut pending = pending.borrow_mut();

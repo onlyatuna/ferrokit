@@ -21,11 +21,11 @@ type WindowEventFn = Box<dyn Fn(&mut Event)>;
 type WindowEventCallback = std::rc::Rc<std::cell::RefCell<Option<WindowEventFn>>>;
 
 /// The state `Window::show/hide/close` and the native close request share, so that both paths run
-/// the same Qt sequence: `QWidgetPrivate::handleClose`, `show_helper`, `hide_helper`
-/// (qwidget.cpp:8074-8130, 8238-8260, 8604-8640).
+/// the same Qt sequence: widget internals, `show_helper`, `hide_helper`
+/// (8238-8260, 8604-8640).
 ///
 /// The window widget of a Qt top-level window is the root widget here; the optional window event
-/// handler stands in for the `QWidget` subclass that overrides `closeEvent`, `moveEvent`, ...
+/// handler stands in for the a widget subclass that overrides `closeEvent`, `moveEvent`,...
 #[derive(Clone)]
 struct WindowCore {
     /// Weak: the platform window owns the window event handler that owns this core, so a strong
@@ -38,9 +38,9 @@ struct WindowCore {
 }
 
 impl WindowCore {
-    /// `QApplicationPrivate::setActiveWindow` (qapplication.cpp:1816-1880) for this window: it
-    /// becomes (or stops being) `QApplication::activeWindow()`, and `WindowActivate` /
-    /// `WindowDeactivate` is sent to it and, like `QWidget::event` does (qwidget.cpp:9317-9327),
+    /// `QApplicationPrivate::setActiveWindow` for this window: it
+    /// becomes (or stops being) the widget application, and `WindowActivate` /
+    /// `WindowDeactivate` is sent to it and, like the widget does,
     /// on to every visible child that is not a window.
     fn set_active(&self, active: bool) {
         use crate::application::Application;
@@ -106,7 +106,7 @@ impl WindowCore {
     }
 
     /// `QShowEvent`s: every child that is not explicitly hidden first, then the window itself.
-    /// The window is shown before any of them is sent, as `QWidget::isVisible` is true while
+    /// The window is shown before any of them is sent, as the widget is true while
     /// `show_helper` runs.
     fn show(&self) {
         if !self.visible.replace(true) {
@@ -136,10 +136,9 @@ impl WindowCore {
         }
     }
 
-    /// `QWidget::close` / the system close request: the window may refuse by ignoring the
+    /// the widget / the system close request: the window may refuse by ignoring the
     /// `QCloseEvent`; otherwise it is hidden. The event is delivered whether or not the window is
     /// visible. Only a window that was visible can end the application when it closes
-    /// (`qwindow.cpp:2722-2735`).
     fn close(&self, spontaneous: bool) -> bool {
         let was_visible = self.visible.get();
         let mut ev = if spontaneous {
@@ -239,7 +238,7 @@ struct RenderState {
     retry_used: std::cell::Cell<bool>,
     /// `QWindow::devicePixelRatio`: cached per window, set from the window's own screen when the
     /// window is created and updated only by a DPI change (`QWindowPrivate::updateDevicePixelRatio`,
-    /// `qwindow.cpp:1436`). It is never re-read from the primary screen.
+    /// ). It is never re-read from the primary screen.
     device_pixel_ratio: std::cell::Cell<f32>,
     /// Top-left of the screen the window is on: the identity of `QWindow::screen()`. Qt keeps
     /// the `QScreen*`; ferrokit platform screens are rebuilt per query, so the origin, which is unique
@@ -250,7 +249,7 @@ struct RenderState {
         ferrokit_core::signal::Signal<Box<dyn ferrokit_platform::screen::PlatformScreen>>,
     stats: std::cell::Cell<RenderStats>,
     /// The widget the pointer is over, whose cursor the window shows (`qt_qpa_set_cursor`'s
-    /// `lastUnderMouse`, qwidget.cpp:5043-5050); empty while the pointer is outside the window.
+    /// `lastUnderMouse`); empty while the pointer is outside the window.
     cursor_target: std::cell::RefCell<crate::widget::WidgetWeak>,
     /// The cursor `Window::set_cursor` gave the window itself (`QWindow::setCursor`); shown where
     /// no widget has a cursor of its own.
@@ -261,7 +260,7 @@ struct RenderState {
     cursor_retry: std::cell::Cell<Option<bool>>,
 }
 
-/// `QApplication::event(Timer)` gate for showing a tool tip (qapplication.cpp:1715-1726): the tip
+/// the widget application gate for showing a tool tip: the tip
 /// shows when the widget's window has `WA_AlwaysShowToolTips`, or is the active window. A widget
 /// tree that belongs to no `Window` is not an active window.
 pub(crate) fn window_shows_tool_tips(top_level: &WidgetRef) -> bool {
@@ -284,7 +283,7 @@ pub(crate) fn window_shows_tool_tips(top_level: &WidgetRef) -> bool {
         .unwrap_or(false)
 }
 
-/// The window state of the top-level window `widget` is in (`QWidget::windowHandle` of its
+/// The window state of the top-level window `widget` is in (the widget of its
 /// native parent), if it is in a `Window`.
 fn render_state_of<W: crate::widget::Widget + ?Sized>(
     widget: &W,
@@ -303,12 +302,12 @@ fn render_state_of<W: crate::widget::Widget + ?Sized>(
         .flatten()
 }
 
-/// Whether `widget` is in a `Window` (`grabberWindow` found a window, qwidget.cpp:12640-12647).
+/// Whether `widget` is in a `Window` (`grabberWindow` found a window).
 pub(crate) fn is_in_window<W: crate::widget::Widget + ?Sized>(widget: &W) -> bool {
     render_state_of(widget).is_some()
 }
 
-/// `qt_qpa_set_cursor(widget, false)` (qwidget.cpp:5038-5078): a change to `widget`'s cursor or
+/// `qt_qpa_set_cursor(widget, false)`: a change to `widget`'s cursor or
 /// enabled state reaches the screen when the pointer is over it now.
 pub(crate) fn refresh_cursor_of<W: crate::widget::Widget + ?Sized>(widget: &W) {
     if let Some(state) = render_state_of(widget)
@@ -347,7 +346,7 @@ fn retry_cursor_refresh(window_id: ObjectId, force: bool) {
 }
 
 /// Re-applies the cursor of the windows after the application override cursor changed
-/// (`applyWindowCursor`, qguiapplication.cpp:4415-4427). A backend with override cursors
+/// (`applyWindowCursor`). A backend with override cursors
 /// (`native_override`) has one global cursor, which only the window under the pointer may set;
 /// any other applies it to every window, as Qt does for plugins without them.
 pub(crate) fn refresh_all_cursors(native_override: bool) {
@@ -386,8 +385,8 @@ pub(crate) fn window_id_if_root<W: crate::widget::Widget + ?Sized>(widget: &W) -
     }
 }
 
-/// `QWindow::setMouseGrabEnabled` for the window `widget` is in (`QWidget::grabMouse`,
-/// qwidget.cpp:12650-12686). Returns whether the platform window now grabs; false for a widget
+/// `QWindow::setMouseGrabEnabled` for the window `widget` is in (the widget,
+/// ). Returns whether the platform window now grabs; false for a widget
 /// in no window or a window that cannot grab (hidden, or a backend without grabs).
 pub(crate) fn native_mouse_grab<W: crate::widget::Widget + ?Sized>(widget: &W, grab: bool) -> bool {
     match window_id_of(widget) {
@@ -430,14 +429,14 @@ fn with_platform_window(window_id: ObjectId, f: impl FnOnce(&dyn PlatformWindow)
     true
 }
 
-/// `QWidget::raise` on a window (`QPlatformWindow::raise`): puts window `window_id` above the
+/// the widget on a window (`QPlatformWindow::raise`): puts window `window_id` above the
 /// other top-level windows. Returns false for an unknown window or one whose platform window is
 /// borrowed.
 pub(crate) fn raise_window(window_id: ObjectId) -> bool {
     with_platform_window(window_id, |pw| pw.raise())
 }
 
-/// `QWidget::activateWindow` on a window: asks the window system to activate window `window_id`
+/// the widget on a window: asks the window system to activate window `window_id`
 /// (`QPlatformWindow::requestActivateWindow`), only while it is visible. Returns whether the
 /// request was handed to the platform window; that says nothing about whether the window system
 /// granted it.
@@ -553,7 +552,7 @@ impl RenderState {
     }
 
     /// The cursor a pointer over `target` asks for, as `qt_qpa_set_cursor` finds it
-    /// (qwidget.cpp:5038-5078, qapplication.cpp:2168-2175): start at the nearest enabled widget,
+    /// : start at the nearest enabled widget,
     /// climb to the first one with a cursor of its own (or the window). That widget's cursor
     /// shows when it is enabled; a disabled one clears the window's cursor. `Some(None)` is "no
     /// widget cursor"; `None` is a widget of the chain that is borrowed and could not be read.
@@ -639,8 +638,8 @@ impl RenderState {
     }
 
     /// After a geometry change to `rect`, moves the window to `screenForGeometry(rect)`
-    /// (`qwindow.cpp:1894-1910`). On a different screen the window takes that screen's ratio
-    /// (`QWindowPrivate::updateDevicePixelRatio`, `qwindow.cpp:1436`) and `screenChanged` is
+    /// . On a different screen the window takes that screen's ratio
+    /// (`QWindowPrivate::updateDevicePixelRatio`) and `screenChanged` is
     /// emitted. On the same screen nothing changes, so a DPI change already received is kept.
     fn track_screen(&self, rect: Rect) {
         let next = screen_for_geometry(rect, self.current_screen());
@@ -890,8 +889,8 @@ fn tree_has_dirty(widget: &WidgetRef) -> bool {
     children.iter().any(tree_has_dirty)
 }
 
-/// `QWidget::update` for a widget inside a `Window`: marks the window dirty and queues its one
-/// deferred render (`UpdateLater`, qwidgetrepaintmanager.cpp:356-363), so it needs no
+/// the widget for a widget inside a `Window`: marks the window dirty and queues its one
+/// deferred render (`UpdateLater`), so it needs no
 /// `UpdateRequest` event and no QObject registration. Never paints. With no event loop on this
 /// thread the window stays dirty until the next render. Returns false when this thread has no
 /// render state for `window_id`.
@@ -937,7 +936,7 @@ fn qt_rect_centre(r: Rect) -> Point {
     Point::new(mid(r.x, r.width), mid(r.y, r.height))
 }
 
-/// `QWindowPrivate::screenForGeometry` (`qwindow.cpp:1894-1910`): `current` if it holds the
+/// `QWindowPrivate::screenForGeometry`: `current` if it holds the
 /// rect's centre, else the first screen that does, else the last screen the rect intersects,
 /// else `current`.
 fn screen_for_geometry(
@@ -961,7 +960,7 @@ fn screen_for_geometry(
 }
 
 /// What a desktop rect on `screen` maps to native pixels with: the screen's top-left, which is
-/// the same point in logical and native coordinates (`qhighdpiscaling.cpp:713-721`), and its
+/// the same point in logical and native coordinates, and its
 /// ratio.
 fn screen_mapping(screen: &dyn ferrokit_platform::screen::PlatformScreen) -> (Point, f32) {
     (screen.geometry().top_left(), screen.device_pixel_ratio())
@@ -990,7 +989,7 @@ fn native_mask(mask: &Region, dpr: f32) -> Region {
     }
 }
 
-/// `QWidgetPrivate::setMask_sys` for a window's root widget: gives the window's platform window
+/// widget internals for a window's root widget: gives the window's platform window
 /// `mask` (widget coordinates, empty for none). False when the window is gone or its platform
 /// window is busy (a native call that led here is still running); the root widget then keeps the
 /// mask stale for the next render (`WidgetBase::set_mask`).
@@ -1024,7 +1023,7 @@ pub struct Window {
     resize_cb: ResizeCallback,
     render_state: std::rc::Rc<RenderState>,
     core: WindowCore,
-    /// Per-axis explicit minimum (`QWidget::setMinimumSize`, `qwidget.cpp:3971`). An axis with an
+    /// Per-axis explicit minimum (the widget). An axis with an
     /// explicit minimum keeps it; the other axis follows the root layout.
     explicit_min: (bool, bool),
 }
@@ -1037,9 +1036,8 @@ impl Window {
             platform()
         };
         // QWindowPrivate::create picks the screen for the requested geometry before the native
-        // window exists, starting from the primary screen (`qwindow.cpp:566-568`), and the
+        // window exists, starting from the primary screen, and the
         // Windows plugin creates it at `toNativePixels(geometry, window)` on that screen
-        // (`qwindowsintegration.cpp:299-300`).
         let (origin, placement_dpr) =
             screen_mapping(&*screen_for_geometry(geometry, p.primary_screen()));
         let native_rect =
@@ -1199,7 +1197,6 @@ impl Window {
 
     /// The screen top-left and ratio a move of this window to `rect` maps with:
     /// `QWindow::setGeometry` uses `screenForGeometry(rect)` from the window's current screen
-    /// (`qwindow.cpp:1867-1870`).
     pub fn native_mapping_for(&self, rect: Rect) -> (Point, f32) {
         let current = self.render_state.current_screen();
         screen_mapping(&*screen_for_geometry(rect, current))
@@ -1211,7 +1208,7 @@ impl Window {
     }
 
     /// `rect` with its size brought inside the window's minimum and maximum, as
-    /// `QWidgetPrivate::setGeometry_sys` does for every programmatic geometry (qwidget.cpp:7299-7305;
+    /// widget internals does for every programmatic geometry (
     /// minimum wins). The system's tracking limits do not do this: Windows applies them to a
     /// `WS_POPUP` window (a layered popup) only while the user drags an edge. The position is unchanged.
     fn bounded_rect(&self, rect: Rect) -> Rect {
@@ -1297,7 +1294,7 @@ impl Window {
         self.core.hide();
     }
 
-    /// `QWidget::raise` on the window: puts it above the other top-level windows. It does not
+    /// the widget on the window: puts it above the other top-level windows. It does not
     /// activate the window; see [`Window::activate_window`].
     pub fn raise(&self) {
         raise_window(self.object_data.id());
@@ -1307,7 +1304,7 @@ impl Window {
     /// stacking order. It does not activate, move or resize either window. Returns whether the
     /// window ended up directly below `sibling`.
     ///
-    /// This is a ferrokit extension, modelled on `QWidget::stackUnder`, which only reorders the
+    /// This is a ferrokit extension, modelled on the widget, which only reorders the
     /// child widgets of one parent; Qt has no call that orders one top-level window against
     /// another (`QWindow` has only `raise` and `lower`).
     ///
@@ -1338,7 +1335,7 @@ impl Window {
         platform_window.stack_under(handle)
     }
 
-    /// `QWidget::activateWindow`: asks the window system to make this window the active one.
+    /// the widget: asks the window system to make this window the active one.
     /// Nothing happens while the window is hidden. The window system decides: on Windows the
     /// foreground lock lets only the foreground process take the foreground, so for a background
     /// process this call can do no more than flash the window's taskbar button, as Qt documents.
@@ -1348,7 +1345,7 @@ impl Window {
         request_window_activation(self.object_data.id());
     }
 
-    /// `QWidget::close`: sends a `Close` event to the window widget and the window event handler;
+    /// the widget: sends a `Close` event to the window widget and the window event handler;
     /// if neither ignores it the window is hidden. Returns whether the window was closed.
     pub fn close(&mut self) -> bool {
         self.core.close(false)
@@ -1359,13 +1356,13 @@ impl Window {
         self.core.visible.get()
     }
 
-    /// The handler a `QWidget` subclass would express by overriding the window-level event
+    /// The handler a a widget subclass would express by overriding the window-level event
     /// handlers. It receives, with the window's coordinates and `accept`/`ignore`:
     /// - `Close` (ignore it to refuse the close), `Show`, `Hide` and `Move`, after the root widget;
     /// - `WindowActivate` / `WindowDeactivate`, after the root widget, when the window becomes or
     ///   stops being `Application::active_window()`;
     /// - `MouseButtonRelease` and `MouseButtonDblClick` that no widget handled. A double click the
-    ///   handler ignores falls back to the press handler, as `QWidget::mouseDoubleClickEvent` does.
+    ///   handler ignores falls back to the press handler, as the widget does.
     pub fn set_window_event_handler<F: Fn(&mut Event) + 'static>(&mut self, handler: F) {
         *self.core.event_cb.borrow_mut() = Some(Box::new(handler));
     }
@@ -1385,7 +1382,7 @@ impl Window {
         self.platform_window.borrow_mut().set_click_through(enabled);
     }
 
-    /// `QWidget::setMask(const QRegion &)` on the window: the window is clipped to `region`
+    /// the widget on the window: the window is clipped to `region`
     /// (window coordinates, device-independent pixels; `QWindowsWindow::setMask` is a window
     /// region, `SetWindowRgn`) and the content outside it is not painted. Empty removes the mask.
     /// The same as [`Widget::set_mask`] on the root widget.
@@ -1393,12 +1390,12 @@ impl Window {
         self.root_widget.borrow().set_mask(region);
     }
 
-    /// `QWidget::clearMask` on the window.
+    /// the widget on the window.
     pub fn clear_mask(&mut self) {
         self.root_widget.borrow().clear_mask();
     }
 
-    /// `QWidget::mask` of the window: empty when it has none.
+    /// the widget of the window: empty when it has none.
     pub fn mask(&self) -> Region {
         self.root_widget.borrow().mask()
     }
@@ -1418,7 +1415,7 @@ impl Window {
         Ok(window)
     }
 
-    /// `QWindow::setTransientParent` (`QWidgetPrivate::create`, qwidget.cpp:1298-1315): `parent`
+    /// `QWindow::setTransientParent` (widget internals): `parent`
     /// owns this window. On Windows the system keeps it above `parent`, hides, minimizes and
     /// shows it with `parent`, and gives it no taskbar button (`QWindowsWindow::updateTransientParent`).
     /// A window with a transient parent is a secondary window: closing it never ends the
@@ -1446,12 +1443,12 @@ impl Window {
         crate::application::Application::transient_parent_of(self.object_data.id())
     }
 
-    /// Sets or clears a window flag (`QWidget::setWindowFlag`, qwidget.cpp:10641-10648).
+    /// Sets or clears a window flag (the widget).
     pub fn set_window_flag(&mut self, flag: WindowFlags, on: bool) {
         self.platform_window.borrow_mut().set_window_flag(flag, on);
     }
 
-    /// Sets window flags (`QWidget::setWindowFlags`, qwidget.cpp:10623-10627).
+    /// Sets window flags (the widget).
     pub fn set_window_flags(&mut self, flags: WindowFlags) {
         let mut pw = self.platform_window.borrow_mut();
         let cur = pw.flags();
@@ -1466,7 +1463,7 @@ impl Window {
         }
     }
 
-    /// Current window flags (`QWidget::windowFlags`).
+    /// Current window flags (the widget).
     pub fn window_flags(&self) -> WindowFlags {
         self.platform_window.borrow().flags()
     }
@@ -1475,7 +1472,7 @@ impl Window {
         self.platform_window.borrow_mut().set_opacity(opacity);
         self.render_and_present();
     }
-    /// `QWidget::setStyleSheet` on a top-level window: the sheet
+    /// the widget on a top-level window: the sheet
     /// applies to this window's widget tree only (the root widget is the window widget here).
     /// The application's sheet is [`Application::set_style_sheet`].
     pub fn set_style_sheet(&mut self, qss: &str) {
@@ -1487,11 +1484,11 @@ impl Window {
         self.platform_window.borrow().opacity()
     }
 
-    /// `QWidget::setMinimumSize` (`qwidget.cpp:3942-3973`): each axis is kept in `0..=WINDOW_SIZE_MAX`
+    /// the widget: each axis is kept in `0..=WINDOW_SIZE_MAX`
     /// and `WINDOW_SIZE_MAX` is read as 0 (`:3947-3950`, so `set_fixed_size(WINDOW_SIZE_MAX,
     /// WINDOW_SIZE_MAX)` unlocks a window), an unchanged minimum is a no-op, and the axes that are
     /// set become explicit (`:3971`). Unlike `QWindow::setMinimumSize`, which resizes a window that
-    /// is outside the new bounds at once (`qwindow.cpp:649-655`), it does not:
+    /// is outside the new bounds at once, it does not:
     /// the next render of a visible window with a root layout does (`sync_top_level_minimum`).
     pub fn set_minimum_size(&mut self, min_w: i32, min_h: i32) {
         let (min_w, min_h) = clamp_size_limit(min_w, min_h);
@@ -1510,7 +1507,7 @@ impl Window {
         self.platform_window.borrow().minimum_size()
     }
 
-    /// `QWidget::setMaximumSize` (`qwidget.cpp:4065-4087`) with the same contract as
+    /// the widget with the same contract as
     /// [`set_minimum_size`](Self::set_minimum_size): kept in `0..=WINDOW_SIZE_MAX`, an unchanged
     /// maximum is a no-op, `WINDOW_SIZE_MAX` on an axis is no maximum (and removes one), and the
     /// window is not resized now.
@@ -1528,7 +1525,7 @@ impl Window {
         self.platform_window.borrow().maximum_size()
     }
 
-    /// `QWidget::setFixedSize` (`qwidget.cpp:4155-4170`): the minimum and the maximum become `w x
+    /// the widget: the minimum and the maximum become `w x
     /// h`, and unless that changed nothing the window is resized to it (not when both are
     /// `WINDOW_SIZE_MAX`, which removes the limits).
     pub fn set_fixed_size(&mut self, w: i32, h: i32) {
@@ -1545,12 +1542,12 @@ impl Window {
         }
     }
 
-    /// Top-level bounds from the root layout's size constraint (`qlayout.cpp:1006-1095`, applied
+    /// Top-level bounds from the root layout's size constraint (applied
     /// through `setMinimumSize` / `setMaximumSize` at `:1096-1122`). With the default constraint an
     /// axis without an explicit minimum takes the root layout's minimum size and an explicit axis
     /// keeps its value. The bounds go to the platform window, which hands them to the window
     /// system; a layout without a maximum leaves the window's own maximum in place. Returns the
-    /// size the window must take when it is outside the bounds (`qwidget.cpp:4013-4016`,
+    /// size the window must take when it is outside the bounds (
     /// `:4073-4076`); the same rule as `set_geometry` (`SizeLimits::bound_size`), so a window this
     /// returns is not changed again by the `set_geometry` that applies it.
     fn sync_top_level_minimum(&mut self) -> Option<Size> {
@@ -1570,7 +1567,7 @@ impl Window {
         let (target_w, target_h) = min.map_or((cur_w, cur_h), |m| (m.width, m.height));
         if (target_w, target_h) != (cur_w, cur_h) {
             // Written straight to the platform: the explicit flags belong to the caller
-            // (`qlayout.cpp:1126-1129` restores them after the layout's own `setMinimumSize`).
+            // ( restores them after the layout's own `setMinimumSize`).
             self.platform_window
                 .borrow_mut()
                 .set_minimum_size(target_w, target_h);
@@ -1611,7 +1608,7 @@ impl Window {
     }
 
     /// `QWindow::setCursor`: the cursor of the window itself, shown wherever no widget has a cursor
-    /// of its own (`QWidget::setCursor`) and no application override cursor is set.
+    /// of its own (the widget) and no application override cursor is set.
     pub fn set_cursor(&mut self, shape: ferrokit_platform::cursor::CursorShape) {
         self.render_state.window_cursor.set(Some(shape));
         if !self.render_state.refresh_cursor(true) {
@@ -1759,7 +1756,7 @@ impl Window {
             state.request_render();
         }
         // After the pending-render block: it borrows `self.render_state`, and the grow needs `&mut self`.
-        // Qt activates the root layout on show (`qlayout.cpp:546-548` activates a visible parent only).
+        // Qt activates the root layout on show ( activates a visible parent only).
         if !was_rendering
             && self.is_visible()
             && let Some(size) = self.sync_top_level_minimum()
@@ -1903,7 +1900,7 @@ impl QObject for Window {
         let g = self.geometry();
         let round = |v: f32| v.round() as i32;
         match (name, &value) {
-            // `QWidget::setWindowOpacity` bounds the level to 0..=1 (qwidget.cpp:12480).
+            // the widget bounds the level to 0..=1.
             ("windowOpacity", Variant::F64(v)) => self.set_opacity(v.clamp(0.0, 1.0) as f32),
             ("pos", Variant::Point(x, y)) => {
                 self.set_geometry(Rect::new(*x, *y, g.width, g.height))
@@ -2028,7 +2025,7 @@ pub fn propagate_dpi_change_recursive(widget_ref: &WidgetRef, old_dpr: f32, new_
     }
 }
 
-/// Delivers a paint request to `widget` (`QWidget::event(Paint)`, qwidget.cpp:9186-9190): the
+/// Delivers a paint request to `widget` (the widget): the
 /// filters see the `Paint` event first, and a filter that consumes it skips `paint_event`.
 /// `dirty` is the widget-local region being repainted.
 pub fn deliver_paint_event(
@@ -2100,8 +2097,8 @@ fn device_rect(transform: &ferrokit_gui::tiny_skia::Transform, rect: Rect) -> Re
 }
 
 /// Paints `widget_ref` and its subtree. A child with a mask is painted only inside it, as
-/// `QWidgetPrivate::drawWidget` limits the region to paint to the widget's mask
-/// (qwidget.cpp:5403, 5823). The painter has no region clip, so the widget is painted once,
+/// widget internals limits the region to paint to the widget's mask
+/// (5823). The painter has no region clip, so the widget is painted once,
 /// clipped to the mask's bounding box, and the pixels of that box outside the mask are put back
 /// from a copy taken before. A window's root is not handled here; its mask is a window region and
 /// the area outside it is cleared once after painting (`do_render_and_present`).
@@ -2177,14 +2174,14 @@ fn render_widget_unmasked(widget_ref: &WidgetRef, painter: &mut Painter, dirty_i
 
     painter.save();
     painter.translate(geom.x as f32, geom.y as f32);
-    // Each widget paints only inside its own geometry, as `QWidgetPrivate::clipRect` intersects
-    // the widget rect with every ancestor (qwidget.cpp:1904-1922). The clip is intersected, so a
+    // Each widget paints only inside its own geometry, as widget internals intersects
+    // the widget rect with every ancestor. The clip is intersected, so a
     // child also stays inside its parent's clip.
     painter.clip_to_rect(RectF::new(0.0, 0.0, geom.width as f32, geom.height as f32));
 
     let dbg_w = ferrokit_platform::resize_debug::start();
-    // `QWidget::event(Paint)` delivers the paint request through the filters before
-    // `paintEvent` (qwidget.cpp:9186-9190).
+    // the widget delivers the paint request through the filters before
+    // `paintEvent`.
     deliver_paint_event(&mut **widget, painter, child_dirty);
     if let Some(t0) = dbg_w {
         let us = t0.elapsed().as_micros();
@@ -2229,7 +2226,7 @@ fn render_widget_unmasked(widget_ref: &WidgetRef, painter: &mut Painter, dirty_i
 }
 
 /// The client origin of window `window_id` in desktop coordinates (`QWindow::geometry().topLeft()`),
-/// for `QWidget::mapToGlobal`.
+/// for the widget.
 pub(crate) fn window_client_origin(window_id: ObjectId) -> Option<Point> {
     let state = RENDER_STATES
         .try_with(|m| m.borrow().get(&window_id).cloned())
@@ -2238,7 +2235,7 @@ pub(crate) fn window_client_origin(window_id: ObjectId) -> Option<Point> {
     Some(state.geometry.get().top_left())
 }
 
-/// The root widget of every live window on this thread: where `QApplication::allWidgets` starts
+/// The root widget of every live window on this thread: where the widget application starts
 /// for a style-sheet change that concerns the whole application.
 pub(crate) fn window_roots() -> Vec<WidgetRef> {
     RENDER_STATES
@@ -2365,8 +2362,8 @@ fn do_render_and_present(
         ));
         render_widget_recursive(root_widget, &mut painter, dirty);
     }
-    // Qt does not paint outside the mask of the widget being drawn (`QWidgetPrivate::drawWidget`,
-    // qwidget.cpp:5403): the window's content outside its mask stays clear.
+    // Qt does not paint outside the mask of the widget being drawn (widget internals,
+    // ): the window's content outside its mask stays clear.
     if !root_mask.is_empty() {
         for r in Region::from_rect(dirty).subtracted(&root_mask).rects() {
             backing_store.clear_rect(native_rect(*r, dpr));
@@ -2381,7 +2378,7 @@ fn do_render_and_present(
     Some(dirty)
 }
 
-/// The press a double click is measured against (`qguiapplication.cpp:2401-2426`: the statics
+/// The press a double click is measured against (the statics
 /// `lastPressTimestamp`, `lastPressWindow`, `mousePressButton`, `globalPressPosition`).
 struct PressRecord {
     window: ObjectId,
@@ -2394,7 +2391,7 @@ struct PressRecord {
 /// with presses in another.
 static PENDING_PRESS: std::sync::Mutex<Option<PressRecord>> = std::sync::Mutex::new(None);
 
-/// Qt's press rule (`qguiapplication.cpp:2419-2426`): every press updates the record, and a press
+/// Qt's press rule: every press updates the record, and a press
 /// is a double click when it lands within the interval of the last press, with the same button, in
 /// the same window. Qt has no distance check on presses; the move rule cancels instead.
 fn press_is_double(
@@ -2419,7 +2416,7 @@ fn press_is_double(
     double
 }
 
-/// Qt's move rule (`qguiapplication.cpp:2407-2414`): a pointer that moved more than the double
+/// Qt's move rule: a pointer that moved more than the double
 /// click distance from the last press on either axis cancels the pending press. The test is
 /// strict, so a move of exactly the distance keeps it.
 fn move_cancels_press(global_pos: Point) {
@@ -2441,7 +2438,7 @@ fn clear_pending_press() {
 }
 
 /// `QGuiApplicationPrivate::processMouseEvent` bookkeeping for a press or release
-/// (qguiapplication.cpp:2445-2455): the pointer position and the pressed buttons that
+/// : the pointer position and the pressed buttons that
 /// `QCursor::pos` falls back to and `QGuiApplication::mouseButtons` reports.
 fn note_mouse_state(button: ferrokit_platform::MouseButton, down: bool, global_pos: Point) {
     use ferrokit_core::event::MouseButtons;
@@ -2462,10 +2459,9 @@ fn note_mouse_state(button: ferrokit_platform::MouseButton, down: bool, global_p
 }
 
 impl WindowEventHandler {
-    /// `QWidgetWindow` delivers a double click as a MouseButtonDblClick event, and falls back to
-    /// the press handler when nothing accepts it (`QWidget::mouseDoubleClickEvent`). A press the
+    /// the window wrapper delivers a double click as a MouseButtonDblClick event, and falls back to
+    /// the press handler when nothing accepts it (the widget). A press the
     /// detector promotes goes through here too, so it is never delivered as a press
-    /// (`qwidgetwindow.cpp:570`).
     fn deliver_double_click(&mut self, pos: Point, button: ferrokit_platform::MouseButton) {
         let root = self.core.root();
         let btn = match button {
@@ -2605,8 +2601,8 @@ struct WindowEventHandler {
     resize_cb: ResizeCallback,
     render: std::rc::Rc<RenderState>,
     native_double_clicks: bool,
-    /// The last minimized state reported by the platform (`QWidget::event` WindowStateChange
-    /// compares `oldState() & WindowMinimized` with `isMinimized()`, qwidget.cpp:9293-9294).
+    /// The last minimized state reported by the platform (the widget WindowStateChange
+    /// compares `oldState & WindowMinimized` with `isMinimized`).
     minimized: bool,
 }
 
@@ -2631,7 +2627,7 @@ impl WindowSystemEventHandler for WindowEventHandler {
                 }
                 ferrokit_platform::window::set_last_cursor_position(global_pos);
                 // A ferrokit addition, not Qt: `QGuiApplicationPrivate::processMouseEvent` assigns
-                // `mouse_buttons` for non-move events only (qguiapplication.cpp:2420-2431, Qt
+                // `mouse_buttons` for non-move events only (Qt
                 // 6.12.0). Here a move says which buttons the system reports, so a release that
                 // went elsewhere (a native dialog took it) heals at the next move over the window.
                 ferrokit_platform::window::set_app_mouse_buttons(buttons);
@@ -2721,9 +2717,9 @@ impl WindowSystemEventHandler for WindowEventHandler {
                     }
                 }
                 if button == ferrokit_platform::MouseButton::Right {
-                    // qwidgetwindow.cpp:639-640 sends the context menu after a right-button release,
+                    // sends the context menu after a right-button release,
                     // as a ContextMenu event to the widget under the cursor. Qt 6 has no acceptance
-                    // gate on that release (qwidgetwindow.cpp:696-702), so the window callback runs
+                    // gate on that release, so the window callback runs
                     // only when no widget accepted the menu event.
                     let mut menu = Event::new_spontaneous(EventKind::ContextMenu {
                         x: pos.x,
@@ -2751,7 +2747,6 @@ impl WindowSystemEventHandler for WindowEventHandler {
                 modifiers,
                 ..
             } => {
-                // qguiapplication.cpp:2605
                 ferrokit_platform::window::set_last_cursor_position(global_pos);
                 let mut ev = Event::new_spontaneous(EventKind::Wheel {
                     x: pos.x,
@@ -2964,8 +2959,8 @@ impl WindowSystemEventHandler for WindowEventHandler {
                 let _ = self.handle_drop(pos, formats, data, drop_action);
             }
             WindowSystemEvent::Minimize { minimized }
-                // Qt acts only when the minimized bit flips (`QWidget::event` WindowStateChange,
-                // qwidget.cpp:9292-9311). Minimize sends a spontaneous Hide first and then hides the
+                // Qt acts only when the minimized bit flips (the widget WindowStateChange,
+                // ). Minimize sends a spontaneous Hide first and then hides the
                 // children; restore shows the children first and then sends a spontaneous Show.
                 // `visible` is untouched, so `isVisible()` stays true while minimized.
                 if minimized != self.minimized => {

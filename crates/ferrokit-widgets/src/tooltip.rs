@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Tool tips: `QToolTip` and the application-level protocol that wakes one up.
+//! Tool tips: `the tooltip controller` and the application-level protocol that wakes one up.
 //!
 //! Qt shows a tool tip in two steps, and ferrokit keeps them apart as Qt does.
 //!
-//! 1. `QApplication::notify` (qapplication.cpp:2712-2737): a spontaneous mouse move with no button
+//! 1. the widget application: a spontaneous mouse move with no button
 //!    down remembers the widget under the cursor and starts the *wake-up* timer, 700 ms
-//!    (`SH_ToolTip_WakeUpDelay`, qcommonstyle.cpp:5348), or 20 ms while the *fall-asleep* timer
+//!    (`SH_ToolTip_WakeUpDelay`), or 20 ms while the *fall-asleep* timer
 //!    (2000 ms, `SH_ToolTip_FallAsleepDelay`) is still running, so moving to the next widget after
 //!    a tip was shown does not wait again. User input, window activation and `Leave` stop the
-//!    timers (qapplication.cpp:2622-2637).
-//! 2. When the wake-up timer fires (`QApplication::event`, qapplication.cpp:1710-1740) and the
+//!    timers.
+//! 2. When the wake-up timer fires (the widget application) and the
 //!    widget's window is the active window (or has `WA_AlwaysShowToolTips`), a `QHelpEvent`
 //!    `ToolTip` is sent to the widget. It bubbles to the parents until one handles and accepts it
-//!    (qapplication.cpp:2940-2962). `QWidget::event` answers by `QToolTip::showText` with the
-//!    widget's own `toolTip`, or ignores the event when there is none (qwidget.cpp:9381-9386). An
+//!    . the widget answers by the tooltip controller with the
+//!    widget's own `toolTip`, or ignores the event when there is none. An
 //!    accepted tip starts the fall-asleep timer.
 //!
-//! `QToolTip::showText` (qtooltip.cpp) puts the text in a top-level, non-activating window
+//! the tooltip controller puts the text in a top-level, non-activating window
 //! (`Qt::ToolTip`), positioned by [`place_tip`] and removed by an expire timer, by user input or
 //! shortly after the cursor leaves.
 //!
@@ -37,22 +37,22 @@ use ferrokit_gui::text::Font;
 use ferrokit_platform::window::WindowFlags;
 use std::cell::{Cell, RefCell};
 
-/// `SH_ToolTip_WakeUpDelay` (qcommonstyle.cpp:5348-5350).
+/// `SH_ToolTip_WakeUpDelay`.
 pub const WAKE_UP_DELAY_MS: u64 = 700;
-/// `SH_ToolTip_FallAsleepDelay` (qcommonstyle.cpp:5351-5353).
+/// `SH_ToolTip_FallAsleepDelay`.
 pub const FALL_ASLEEP_DELAY_MS: u64 = 2000;
-/// The wake-up delay while the fall-asleep timer still runs (qapplication.cpp:2731).
+/// The wake-up delay while the fall-asleep timer still runs.
 pub const QUICK_WAKE_UP_DELAY_MS: u64 = 20;
-/// `QTipLabel::hideTip` waits this long before hiding (qtooltip.cpp:176-180).
+/// `QTipLabel::hideTip` waits this long before hiding.
 pub const HIDE_DELAY_MS: u64 = 300;
-/// `QPlatformCursor::size` default (qplatformcursor.cpp:100-103), 16x16. The tip itself uses
+/// `QPlatformCursor::size` default, 16x16. The tip itself uses
 /// [`cursor_size`]; this is the Qt value the hand-derived `place_tip` tests are written against.
 pub const CURSOR_SIZE: Size = Size {
     width: 16,
     height: 16,
 };
 
-/// `QHighDpi::fromNativePixels(cursor->size(), screen)` (qtooltip.cpp:325-326): the platform
+/// `QHighDpi::fromNativePixels(cursor->size, screen)`: the platform
 /// cursor's native size on the screen with `screen_dpr`, in device-independent pixels (rounded).
 pub fn cursor_size(screen_dpr: f64, primary_dpr: f64) -> Size {
     let (w, h) = ferrokit_platform::integration::platform()
@@ -65,7 +65,7 @@ pub fn cursor_size(screen_dpr: f64, primary_dpr: f64) -> Size {
     )
 }
 
-/// `QTipLabel::restartExpireTimer` (qtooltip.cpp:117-126): how long a tip stays, in ms. `msec > 0`
+/// `QTipLabel::restartExpireTimer`: how long a tip stays, in ms. `msec > 0`
 /// is the caller's duration; otherwise `10000 + 40 * max(0, length - 100)`, the length being the
 /// text's UTF-16 length like `QString::size`.
 pub fn expire_time_ms(text: &str, msec: i32) -> u64 {
@@ -76,7 +76,7 @@ pub fn expire_time_ms(text: &str, msec: i32) -> u64 {
     10_000 + 40 * (length - 100).max(0) as u64
 }
 
-/// `QTipLabel::placeTip` (qtooltip.cpp:296-370): where the top-left corner of a tip of `tip_size`
+/// `QTipLabel::placeTip`: where the top-left corner of a tip of `tip_size`
 /// goes for a cursor at the global position `pos` on a screen covering `screen`.
 ///
 /// The tip sits right of and below the cursor (`2`, cursor height; beside the cursor when the
@@ -114,7 +114,7 @@ pub fn place_tip(pos: Point, tip_size: Size, cursor_size: Size, screen: Rect) ->
 }
 
 /// The screen a tip for `pos` is placed on: the one containing the point, else the primary one
-/// (`QTipLabel::getTipScreen`, qtooltip.cpp:268-273); with its device pixel ratio.
+/// (`QTipLabel::getTipScreen`); with its device pixel ratio.
 fn tip_screen(pos: Point) -> (Rect, f64) {
     let platform = ferrokit_platform::integration::platform();
     let screens = platform.screens();
@@ -209,7 +209,7 @@ thread_local! {
     static CONTROLLER: Controller = Controller::new();
 }
 
-/// What `QApplication::notify` does with a *spontaneous* mouse move (qapplication.cpp:2712-2737):
+/// What the widget application does with a *spontaneous* mouse move:
 /// remember the widget under the cursor and (re)start the wake-up timer. Only a move with no
 /// button down starts it.
 pub(crate) fn mouse_moved(target: &WidgetRef, pos: Point, global_pos: Point) {
@@ -226,15 +226,15 @@ pub(crate) fn mouse_moved(target: &WidgetRef, pos: Point, global_pos: Point) {
     });
 }
 
-/// `QEvent::Leave` (qapplication.cpp:2635 and `QTipLabel::eventFilter`, qtooltip.cpp:233-237): the
+/// `QEvent::Leave` ( and `QTipLabel::eventFilter`): the
 /// pending wake-up is cancelled and a visible tip is hidden after [`HIDE_DELAY_MS`].
 pub(crate) fn leave() {
     CONTROLLER.with(|c| stop_timer(&c.wake_up));
     hide_tip();
 }
 
-/// Events after which a tip goes away at once and tool tips fall asleep (qapplication.cpp:
-/// 2622-2637, `QTipLabel::eventFilter`, qtooltip.cpp:238-282): wheel, focus changes and mouse
+/// Events after which a tip goes away at once and tool tips fall asleep (
+/// 2622-2637, `QTipLabel::eventFilter`): wheel, focus changes and mouse
 /// buttons; key events too, which end the fall-asleep state but hide a tip only on macOS.
 pub(crate) fn user_input(kind: &EventKind) {
     let hides_tip = match kind {
@@ -269,7 +269,7 @@ pub(crate) fn user_input(kind: &EventKind) {
     }
 }
 
-/// `QApplication::event(QEvent::Timer)` for the wake-up timer (qapplication.cpp:1710-1738).
+/// the widget application for the wake-up timer.
 fn wake_up_fired() {
     let (widget, pos, global_pos) = CONTROLLER.with(|c| {
         (
@@ -290,7 +290,7 @@ fn wake_up_fired() {
     }
 }
 
-/// `QWidget::window()`: the widget with no parent.
+/// the widget: the widget with no parent.
 fn top_level(widget: &WidgetRef) -> WidgetRef {
     let mut current = widget.clone();
     loop {
@@ -302,11 +302,11 @@ fn top_level(widget: &WidgetRef) -> WidgetRef {
     }
 }
 
-/// `QApplication::notify` for `ToolTip` (qapplication.cpp:2940-2962): the help event goes to the
+/// the widget application for `ToolTip`: the help event goes to the
 /// widget first and, while it is not handled and accepted, to each parent in the parent's
 /// coordinates, up to the window widget. Returns whether the last receiver accepted it.
 ///
-/// A widget whose `event` does not handle the event gets `QWidget::event`'s answer
+/// A widget whose `event` does not handle the event gets the widget's answer
 /// ([`default_tool_tip_event`]).
 pub(crate) fn send_tool_tip(target: &WidgetRef, pos: Point, global_pos: Point) -> bool {
     let mut widget = target.clone();
@@ -318,7 +318,7 @@ pub(crate) fn send_tool_tip(target: &WidgetRef, pos: Point, global_pos: Point) -
             global_x: global_pos.x,
             global_y: global_pos.y,
         });
-        // `QApplication::notify` runs the application and object event filters before the
+        // the widget application runs the application and object event filters before the
         // receiver's `event()`. A widget that is already borrowed cannot run `event()`, but its
         // filters still see the event when it is only shared-borrowed.
         let handled = match widget.try_borrow_mut() {
@@ -348,7 +348,7 @@ pub(crate) fn send_tool_tip(target: &WidgetRef, pos: Point, global_pos: Point) -
     }
 }
 
-/// `QWidget::event(ToolTip)` (qwidget.cpp:9381-9386): show the widget's own tool tip, or ignore
+/// the widget: show the widget's own tool tip, or ignore
 /// the event when it has none. Returns whether the event ends up accepted.
 fn default_tool_tip_event(widget: &WidgetRef, global_pos: Point, event: &mut Event) -> bool {
     // A widget that is mutably borrowed cannot answer: it shows no tip and the event moves on.
@@ -552,7 +552,7 @@ fn tip_is_visible(c: &Controller) -> bool {
 }
 
 /// The tip's label: `QPalette::ToolTipBase` and `ToolTipText` of the inactive group, since tool
-/// tips are not active windows (qtooltip.cpp:64-65). Appearance beyond that is the style's.
+/// tips are not active windows. Appearance beyond that is the style's.
 fn new_tip_label(text: &str) -> Label {
     let palette = ToolTip::palette();
     let mut label = Label::new(text);
@@ -562,7 +562,7 @@ fn new_tip_label(text: &str) -> Label {
     label.set_color(palette.color(ColorGroup::Inactive, ColorRole::ToolTipText));
     label.set_font(ToolTip::font());
     label.set_type_name("QToolTip");
-    // `QTipLabel` margin: `1 + PM_ToolTipLabelFrameWidth` (qtooltip.cpp:107). Windows gives 2.
+    // `QTipLabel` margin: `1 + PM_ToolTipLabelFrameWidth`. Windows gives 2.
     label.set_margin(2);
     label
 }
@@ -622,11 +622,11 @@ fn finish_place(
     }
 }
 
-/// `QToolTip`.
+/// `the tooltip controller`.
 pub struct ToolTip;
 
 impl ToolTip {
-    /// `QToolTip::showText(pos, text, w, QRect(), msecDisplayTime)` (qtooltip.cpp:404-460): shows
+    /// the tooltip controller: shows
     /// `text` next to the global position `pos`. An empty `text` hides the tip. While a tip is
     /// showing, a different text or widget replaces it in place; the same text for the same widget
     /// leaves it where it is.
@@ -637,7 +637,7 @@ impl ToolTip {
         Self::show_text_rect(pos, text, widget, None, msec_display_time);
     }
 
-    /// `QToolTip::showText(pos, text, w, rect, msecDisplayTime)` (qtooltip.cpp:414).
+    /// the tooltip controller.
     pub fn show_text_rect(
         pos: Point,
         text: &str,
@@ -667,7 +667,7 @@ impl ToolTip {
         }
     }
 
-    /// Returns the active tooltip palette (`QToolTip::palette`).
+    /// Returns the active tooltip palette (the tooltip controller).
     pub fn palette() -> Palette {
         CONTROLLER.with(|c| {
             c.custom_palette
@@ -677,7 +677,7 @@ impl ToolTip {
         })
     }
 
-    /// Sets the active tooltip palette (`QToolTip::setPalette`).
+    /// Sets the active tooltip palette (the tooltip controller).
     pub fn set_palette(palette: Palette) {
         CONTROLLER.with(|c| {
             *c.custom_palette.borrow_mut() = Some(palette.clone());
@@ -694,7 +694,7 @@ impl ToolTip {
         });
     }
 
-    /// Returns the active tooltip font (`QToolTip::font`).
+    /// Returns the active tooltip font (the tooltip controller).
     pub fn font() -> Font {
         CONTROLLER.with(|c| {
             c.custom_font
@@ -704,7 +704,7 @@ impl ToolTip {
         })
     }
 
-    /// Sets the active tooltip font (`QToolTip::setFont`).
+    /// Sets the active tooltip font (the tooltip controller).
     pub fn set_font(font: Font) {
         CONTROLLER.with(|c| {
             *c.custom_font.borrow_mut() = Some(font.clone());
@@ -718,17 +718,17 @@ impl ToolTip {
         });
     }
 
-    /// `QToolTip::hideText`: the same as `showText` with an empty text.
+    /// the tooltip controller: the same as `showText` with an empty text.
     pub fn hide_text() {
         Self::show_text(Point::new(0, 0), "", None, -1);
     }
 
-    /// `QToolTip::isVisible`.
+    /// the tooltip controller.
     pub fn is_visible() -> bool {
         CONTROLLER.with(tip_is_visible)
     }
 
-    /// `QToolTip::text`: the text of the visible tip, or an empty string.
+    /// the tooltip controller: the text of the visible tip, or an empty string.
     pub fn text() -> String {
         CONTROLLER.with(|c| {
             let Ok(slot) = c.tip.try_borrow() else {
@@ -751,7 +751,7 @@ impl ToolTip {
         })
     }
 
-    /// Shows or moves the tip: `reuseTip` + `placeTip` (qtooltip.cpp:128-142, 296-370) for a tip
+    /// Shows or moves the tip: `reuseTip` + `placeTip` (296-370) for a tip
     /// that is up, `QTipLabel`'s constructor and `showNormal` for a new one.
     fn place(
         pos: Point,
@@ -808,20 +808,20 @@ impl ToolTip {
                 .as_any_mut()
                 .downcast_mut::<Label>()
                 .expect("the tip's root widget is a Label");
-            // `QTipLabel::updateSize` (qtooltip.cpp:152): rich text word-wraps.
+            // `QTipLabel::updateSize`: rich text word-wraps.
             let rich = might_be_rich_text(text);
             label.set_rich(rich);
             label.set_word_wrap(rich);
             label.set_text(text);
             let mut size = label.size_hint();
-            // qtooltip.cpp:155-157: a plain tip wider than the screen wraps to it.
+            // : a plain tip wider than the screen wraps to it.
             if !label.word_wrap() && size.width > screen.width {
                 label.set_word_wrap(true);
                 size = label.size_hint();
             }
             size
         };
-        // `QTipLabel::updateSize` adds one pixel of width (qtooltip.cpp:159).
+        // `QTipLabel::updateSize` adds one pixel of width.
         let size = Size::new(size.width + 1, size.height);
         let primary_dpr = ferrokit_platform::integration::platform()
             .primary_screen()

@@ -83,7 +83,7 @@ fn collect_tab_chain(
     Ok(())
 }
 
-/// `QWidget::focusNextChild` from `from`: the widget after it in the Tab chain, wrapping around.
+/// the widget from `from`: the widget after it in the Tab chain, wrapping around.
 fn next_in_tab_chain(
     root: &WidgetRef,
     from: ObjectId,
@@ -158,7 +158,7 @@ impl FocusState {
     }
 
     /// `id` is being disabled: if it is the focus widget, the focus moves on now, as
-    /// `setEnabled_helper` does before it disables the children (qwidget.cpp:3439-3445):
+    /// `setEnabled_helper` does before it disables the children:
     /// `focusNextChild()` (which can pick a child about to be disabled), or `clearFocus()` when the
     /// parent is disabled. Only the state changes here; `move_lost_focus` sends the events.
     /// Returns whether `id` had focus.
@@ -167,7 +167,7 @@ impl FocusState {
     }
 
     /// `lose` for a focus widget `id` that stops being shown because its ancestor `anchor` (or
-    /// itself) was hidden: `focusNextChild()` runs from `anchor` (`hide_helper`, qwidget.cpp:8276-8283).
+    /// itself) was hidden: `focusNextChild` runs from `anchor` (`hide_helper`).
     pub(crate) fn lose_via(
         self: &Rc<Self>,
         id: ObjectId,
@@ -204,7 +204,7 @@ impl FocusState {
     }
 }
 
-/// `QWidget::setFocus` updating `focus_child` of every ancestor (qwidget.cpp `setFocus`), so
+/// the widget updating `focus_child` of every ancestor ( `setFocus`), so
 /// `focus_widget_of` can name the widget that last had focus below a container.
 fn record_focus_child(widget: &WidgetRef) {
     let weak = Rc::downgrade(widget);
@@ -216,7 +216,7 @@ fn record_focus_child(widget: &WidgetRef) {
     }
 }
 
-/// `QWidget::focusWidget()` of `container`: the descendant that last had focus, if it is still
+/// the widget of `container`: the descendant that last had focus, if it is still
 /// below `container`.
 fn focus_widget_of(container: &WidgetRef) -> Option<WidgetRef> {
     let child = container
@@ -231,15 +231,15 @@ fn focus_widget_of(container: &WidgetRef) -> Option<WidgetRef> {
 }
 
 /// The window focus a stack page switch takes over (`QStackedLayout::setCurrentIndex`,
-/// qstackedlayout.cpp:291-336): the focus widget when it is `page` or below it.
+/// ): the focus widget when it is `page` or below it.
 pub(crate) struct PageFocus {
     state: Rc<FocusState>,
 }
 
-/// Records whether the focus is on `page` or below it (`QWidget::isAncestorOf` counts the widget
+/// Records whether the focus is on `page` or below it (the widget counts the widget
 /// itself). Focus on `page` itself is cleared (`prev->clearFocus()` clears only a widget that has
 /// the focus). Focus on a descendant is left alone: hiding the page moves it with
-/// `focusNextChild()` (`hide_helper`, qwidget.cpp:8226-8238), possibly to a widget outside the
+/// `focusNextChild` (`hide_helper`), possibly to a widget outside the
 /// stack, before it is moved into the new page.
 pub(crate) fn take_page_focus(page: &WidgetRef) -> Option<PageFocus> {
     let mut stack = vec![page.clone()];
@@ -262,7 +262,7 @@ pub(crate) fn take_page_focus(page: &WidgetRef) -> Option<PageFocus> {
 }
 
 /// After `next` was shown, moves the focus taken from the old page into it
-/// (qstackedlayout.cpp:316-336): `next`'s focus widget, else its first Tab-focusable descendant,
+/// : `next`'s focus widget, else its first Tab-focusable descendant,
 /// else `next` itself.
 pub(crate) fn give_page_focus(focus: PageFocus, next: &WidgetRef) {
     let target = focus_widget_of(next)
@@ -324,7 +324,7 @@ fn send_focus_in(widget: &WidgetRef, reason: FocusReason) {
     new.update();
 }
 
-/// Sends the events of the focus moves `FocusState::lose` made (qwidget.cpp:3442-3446): the
+/// Sends the events of the focus moves `FocusState::lose` made: the
 /// disabled widget's `FocusOut`, then the next widget's `FocusIn`. The widgets are borrowed while
 /// they are disabled, so the events wait until here.
 fn move_lost_focus(state: &Rc<FocusState>, root: &WidgetRef) {
@@ -483,7 +483,7 @@ impl FocusManager {
 
     /// Handles mouse click on a hit widget, setting focus if click focus is accepted.
     pub fn handle_mouse_click(&mut self, root: &WidgetRef, hit_widget: &WidgetRef) -> bool {
-        // `giveFocusAccordingToFocusPolicy` (qapplication.cpp): from the clicked widget up to its
+        // `giveFocusAccordingToFocusPolicy`: from the clicked widget up to its
         // window, the first enabled widget that accepts click focus takes it.
         let mut current = Some(Rc::clone(hit_widget));
         while let Some(widget) = current {

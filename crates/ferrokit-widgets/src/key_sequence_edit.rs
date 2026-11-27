@@ -121,7 +121,7 @@ pub mod qt_key {
     pub const UNKNOWN: u32 = 0x01ff_ffff;
 }
 
-/// Key-name table used for parsing and formatting (portable text of `qkeysequence.cpp`).
+/// Key-name table used for parsing and formatting (portable text of).
 /// The first entry for a key is its canonical name; later entries are accepted aliases.
 const KEY_NAMES: &[(u32, &str)] = &[
     (qt_key::SPACE, "Space"),
@@ -1249,7 +1249,7 @@ impl Widget for KeySequenceEdit {
         } else {
             self.palette.color(group, ColorRole::Mid)
         };
-        // Frame and clear cross are anti-aliased (`qfusionstyle.cpp:538-552`); the cross has no Qt vector counterpart (doubt).
+        // Frame and clear cross are anti-aliased; the cross has no Qt vector counterpart (doubt).
         painter.set_render_hint(RenderHint::Antialiasing, true);
         painter.set_pen(Pen::new(
             border,

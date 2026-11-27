@@ -17,7 +17,7 @@ use ferrokit_gui::text::font::Font;
 
 use crate::widget::{WidgetRef, WidgetWeak};
 
-/// Closes a top-level window (`QWidget::close`); returns false when the window refuses.
+/// Closes a top-level window (the widget); returns false when the window refuses.
 type TopLevelCloser = Rc<dyn Fn() -> bool>;
 
 thread_local! {
@@ -56,7 +56,7 @@ pub(crate) struct FocusTicket {
     new: Option<ObjectId>,
 }
 
-/// The entry `QApplication::focusWidget` reports: among the entries of the active window (or of no
+/// The entry the widget application reports: among the entries of the active window (or of no
 /// window, or all when no window is active), the one updated last.
 fn visible_focus(entries: &[FocusEntry], active: Option<ObjectId>) -> Option<&FocusEntry> {
     entries
@@ -86,7 +86,7 @@ fn max_device_pixel_ratio() -> f32 {
         .fold(1.0, f32::max)
 }
 
-/// Full widget application singleton equivalent to Qt's `QApplication`.
+/// Full widget application singleton equivalent to Qt's the widget application.
 ///
 /// Inherits and encapsulates `GuiApplication` and `CoreApplication`, adding:
 /// - Top-level window registry & management (`topLevelWindows`)
@@ -108,7 +108,7 @@ impl Application {
     /// Initializes a new `Application` instance.
     pub fn new(args: Vec<String>) -> Self {
         let gui_app = GuiApplication::new(args);
-        // Window veto for the application object's Quit (`QApplication::event(Quit)`).
+        // Window veto for the application object's Quit (the widget application).
         ferrokit_core::application::set_quit_gate(Self::quit_gate);
 
         // `QGuiApplication::devicePixelRatio()`: the highest ratio of any screen. Qt's Windows font
@@ -133,9 +133,9 @@ impl Application {
             focus_changed,
         }
     }
-    /// Sets the application-wide style sheet (`QApplication::setStyleSheet`).
+    /// Sets the application-wide style sheet (the widget application).
     ///
-    /// Like `QStyleSheetStyle::repolish(qApp)`, it tells every widget of every window about the
+    /// Like stylesheet resolution, it tells every widget of every window about the
     /// change (`StyleChange`), so existing widgets repaint and relayout.
     pub fn set_style_sheet(qss: &str) {
         let style = if qss.trim().is_empty() {
@@ -150,7 +150,7 @@ impl Application {
             if let Ok(widget) = root.try_borrow() {
                 widget.widget_base().style_changed();
                 // The root is only shared-borrowed here, so its own `event()` cannot run; its
-                // filters still see the StyleChange (qwidget.cpp:2724-2725).
+                // filters still see the StyleChange.
                 filters_consume(
                     widget.object_data(),
                     &mut Event::new(EventKind::StyleChange),
@@ -195,16 +195,16 @@ impl Application {
         GuiApplication::exit(return_code);
     }
 
-    /// Tells the application to quit cleanly (`QCoreApplication::quit`, qcoreapplication.cpp:2138-2147).
+    /// Tells the application to quit cleanly (`QCoreApplication::quit`).
     ///
     /// The Quit is an event to the application object, where the window veto (`quit_gate`) runs
-    /// before exit (qapplication.cpp:1675-1697). `exit` is not gated.
+    /// before exit. `exit` is not gated.
     pub fn quit() {
         GuiApplication::quit();
     }
 
-    /// The window veto for the application object's Quit (`QApplication::event(Quit)`,
-    /// qapplication.cpp:1679-1697): closes the visible top-level windows and accepts the quit only
+    /// The window veto for the application object's Quit (the widget application,
+    /// ): closes the visible top-level windows and accepts the quit only
     /// when none refused and none remains visible. A Quit re-entered from a window's close handler
     /// is refused, and the outer call decides.
     fn quit_gate() -> bool {
@@ -218,7 +218,7 @@ impl Application {
 
     /// Closes the visible top-level windows one by one, restarting the scan after each close since
     /// closing can change the list (`QApplicationPrivate::tryCloseAllWidgetWindows`,
-    /// qapplication.cpp:1591-1617). Stops at the first refusal and returns false.
+    /// ). Stops at the first refusal and returns false.
     fn try_close_all_top_level_windows() -> bool {
         let mut attempted: Vec<ObjectId> = Vec::new();
         loop {
@@ -246,7 +246,7 @@ impl Application {
     }
 
     /// Registers a top-level window with the application, with the function that closes it
-    /// (`QWidget::close`, returning false when the window refuses). `quit` closes through it.
+    /// (the widget, returning false when the window refuses). `quit` closes through it.
     pub fn register_window(window_id: ObjectId, close: TopLevelCloser) {
         let _ = TOP_LEVEL_WINDOWS.try_with(|wins| {
             let mut list = wins.borrow_mut();
@@ -257,7 +257,7 @@ impl Application {
     }
 
     /// Unregisters a top-level window when it is destroyed. Destroying a window is not closing it:
-    /// Qt's `~QWindow` neither emits `lastWindowClosed` nor quits (`qwindow.cpp:175-208`).
+    /// Qt's `~QWindow` neither emits `lastWindowClosed` nor quits.
     pub fn unregister_window(window_id: ObjectId) {
         let removed = TOP_LEVEL_WINDOWS
             .try_with(|wins| {
@@ -349,10 +349,10 @@ impl Application {
             .unwrap_or(false)
     }
 
-    /// `QGuiApplicationPrivate::maybeLastWindowClosed` (qguiapplication.cpp:3933-3943), run after a
+    /// `QGuiApplicationPrivate::maybeLastWindowClosed`, run after a
     /// visible window has closed: when no visible top-level window is left, emits `lastWindowClosed`.
     /// If `quitOnLastWindowClosed` is set, the application quits. `quit` does nothing outside `exec`,
-    /// as `canQuitAutomatically` requires (qcoreapplication.cpp:2074-2089).
+    /// as `canQuitAutomatically` requires.
     pub(crate) fn maybe_last_window_closed() {
         if !Self::any_primary_window_visible() {
             GuiApplication::emit_last_window_closed();
@@ -403,7 +403,7 @@ impl Application {
 
     // --- Focus Management ---
 
-    /// Returns the widget that has the keyboard focus (`QApplication::focusWidget`), if any: the
+    /// Returns the widget that has the keyboard focus (the widget application), if any: the
     /// focus widget of the active window.
     ///
     /// Window focus managers keep it up to date; it holds the widget weakly, so it is `None` once
@@ -558,7 +558,7 @@ impl Application {
         GuiApplication::set_font(font);
     }
 
-    /// `QGuiApplication::styleHints` (`QApplication` inherits it). `color_scheme()`,
+    /// `QGuiApplication::styleHints` (the widget application inherits it). `color_scheme`,
     /// `set_color_scheme()` and `color_scheme_changed()` of the returned value are the
     /// application's `QStyleHints` colour scheme.
     pub fn style_hints() -> ferrokit_gui::application::StyleHints {
@@ -571,7 +571,7 @@ impl Application {
         ferrokit_gui::application::GuiApplication::style_hints().mouse_double_click_interval_ms
     }
 
-    /// `QApplication::setDoubleClickInterval` writes the style hint (`qapplication.cpp:3486-3488`).
+    /// the widget application writes the style hint.
     pub fn set_double_click_interval(ms: u32) {
         let mut hints = ferrokit_gui::application::GuiApplication::style_hints();
         hints.mouse_double_click_interval_ms = ms;
@@ -586,19 +586,19 @@ impl Application {
         *ferrokit_core::poison::write_unpoisoned(&GLOBAL_CURSOR_FLASH_TIME_MS) = ms;
     }
 
-    /// `QGuiApplication::mouseButtons` (qguiapplication.cpp:1974): the buttons the application has
+    /// `QGuiApplication::mouseButtons`: the buttons the application has
     /// seen pressed and not yet released, as of the last mouse event.
     pub fn mouse_buttons() -> ferrokit_core::event::MouseButtons {
         ferrokit_platform::window::app_mouse_buttons()
     }
 
-    /// `QGuiApplication::overrideCursor` (qguiapplication.cpp:4344-4348): the active override
+    /// `QGuiApplication::overrideCursor`: the active override
     /// cursor, `None` when none was set.
     pub fn override_cursor() -> Option<ferrokit_platform::cursor::CursorShape> {
         OVERRIDE_CURSORS.with(|s| s.borrow().last().copied())
     }
 
-    /// `QGuiApplication::setOverrideCursor` (qguiapplication.cpp:4449-4456): pushes `shape` on the
+    /// `QGuiApplication::setOverrideCursor`: pushes `shape` on the
     /// override stack; it shows in all the application's windows until `restore_override_cursor`
     /// or another `set_override_cursor`. A backend with override cursors (Windows) shows it
     /// itself; any other applies it to every window, as Qt does for plugins without them.
@@ -607,7 +607,7 @@ impl Application {
         Self::apply_override_cursor(Some(shape));
     }
 
-    /// `QGuiApplication::changeOverrideCursor` (qguiapplication.cpp:4358-4365): replaces the active
+    /// `QGuiApplication::changeOverrideCursor`: replaces the active
     /// override cursor; nothing happens while none is set.
     pub fn change_override_cursor(shape: ferrokit_platform::cursor::CursorShape) {
         let had = OVERRIDE_CURSORS.with(|s| s.borrow_mut().pop().is_some());
@@ -616,7 +616,7 @@ impl Application {
         }
     }
 
-    /// `QGuiApplication::restoreOverrideCursor` (qguiapplication.cpp:4470-4487): pops the active
+    /// `QGuiApplication::restoreOverrideCursor`: pops the active
     /// override cursor, which shows the one below it, or the widgets' cursors again when it was
     /// the last. Nothing happens while none is set.
     pub fn restore_override_cursor() {

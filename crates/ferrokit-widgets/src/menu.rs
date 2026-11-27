@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Popup menus with keyboard navigation and cascading sub-menus (`QMenu`).
+//! Popup menus with keyboard navigation and cascading sub-menus (a menu).
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -44,12 +44,12 @@ fn native_style() -> ferrokit_platform::NativeStyle {
 
 /// Width and height of the check indicator box: the base style's `PM_IndicatorWidth` /
 /// `PM_IndicatorHeight`. A styled menu with checkable items reserves this plus [`CHECK_GAP`]
-/// before the text (`QStyleSheetStyle::sizeFromContents`, `CT_MenuItem`), and draws the text this
+/// before the text (stylesheet resolution, `CT_MenuItem`), and draws the text this
 /// far from the item's padding edge (`drawControl`, `CE_MenuItem`: `textRectOffset`).
 ///
 /// `windows11` 16 (`QWindows11Style::pixelMetric`), `Fusion` 14 (`QFusionStyle::pixelMetric`),
 /// `windowsvista` 13 (the theme's check box size at 96 dpi, queried from uxtheme by Qt),
-/// `macos` 18 + 1 (`CheckBoxWidth` + 1 in `qmacstyle_mac.mm`, the default control size).
+/// `macos` 18 + 1 (`CheckBoxWidth` + 1 in, the default control size).
 /// All but `macos` were confirmed against PySide6's menu widths.
 fn check_indicator() -> i32 {
     use ferrokit_platform::NativeStyle;
@@ -61,16 +61,16 @@ fn check_indicator() -> i32 {
     }
 }
 
-/// Box model and palette of a style-sheet-driven menu (`QMenu`, `QMenu::item`,
-/// `QMenu::separator` rules). Without it a menu keeps its built-in look.
+/// Box model and palette of a style-sheet-driven menu (a menu, the menu,
+/// the menu rules). Without it a menu keeps its built-in look.
 ///
 /// Geometry follows `QStyleSheetStyle`: a row is as tall as the *menu font* (`row_font`,
 /// not the item's `font-size`) plus the item padding, a menu is as wide as the widest text
 /// in `row_font` plus left/right padding and 20 px for the check column when any item is
-/// checkable, and the first row starts below the 1 px frame and the `QMenu` padding.
+/// checkable, and the first row starts below the 1 px frame and the a menu padding.
 #[derive(Clone, Debug)]
 pub struct MenuStyle {
-    /// Font the item text is drawn with (the `QMenu::item` `font-size`).
+    /// Font the item text is drawn with (the the menu `font-size`).
     pub font: Font,
     /// The menu's own font, which sizes rows and text widths.
     pub row_font: Font,
@@ -84,9 +84,9 @@ pub struct MenuStyle {
     pub radius: f32,
     /// `QMenu { padding }` above the first and below the last row.
     pub padding_v: i32,
-    /// `QMenu::item { padding }` as top, right, bottom, left.
+    /// the menu as top, right, bottom, left.
     pub item_padding: [i32; 4],
-    /// `QMenu::separator { margin }` as vertical, horizontal; the line itself is 1 px.
+    /// the menu as vertical, horizontal; the line itself is 1 px.
     pub separator_margin: [i32; 2],
 }
 
@@ -118,8 +118,8 @@ impl MenuOutcome {
 }
 
 /// What input handlers decided while the menu was borrowed, emitted once the borrow is released,
-/// in Qt's order: every `aboutToHide`, deepest menu first (`QMenuPrivate::hideUpToMenuBar`), then
-/// the chosen action's `triggered` signals (`QMenuPrivate::activateAction`).
+/// in Qt's order: every `aboutToHide`, deepest menu first (menu internals), then
+/// the chosen action's `triggered` signals (menu internals).
 #[derive(Default)]
 struct Announcements {
     hides: Vec<Signal<()>>,
@@ -179,7 +179,7 @@ fn exec_popup_platform(menu: &MenuRef, pos: Point) -> Option<ActionRef> {
         std::mem::take(&mut m.pending)
     };
     pending.activation = chosen;
-    // `QMenu::exec` triggers the chosen action (`QMenuPrivate::activateAction`) after the
+    // the menu triggers the chosen action (menu internals) after the
     // menu is hidden, then returns it.
     let chosen = pending
         .activation
@@ -623,7 +623,7 @@ fn exec_popup_platform(menu: &MenuRef, pos: Point) -> Option<ActionRef> {
     chosen_action
 }
 
-/// Popup menu (`QMenu`).
+/// Popup menu (a menu).
 ///
 /// A menu paints and routes events for its open sub-menu itself, so a whole cascade
 /// behaves as one widget. Sub-menu geometry is relative to the parent menu's origin.
@@ -680,8 +680,8 @@ impl Menu {
         base.clear_dirty();
         base.set_focus_policy(FocusPolicy::StrongFocus);
         base.set_size_policy(QSizePolicy::new(Policy::Fixed, Policy::Fixed));
-        // QMenuPrivate::init: setMouseTracking(SH_Menu_MouseTracking), true in the common and
-        // Windows styles (qmenu.cpp:172, qcommonstyle.cpp:5411, qwindowsstyle.cpp:463).
+        // menu internals: setMouseTracking(SH_Menu_MouseTracking), true in the common and
+        // Windows styles.
         base.set_mouse_tracking(true);
         base.set_geometry(Rect::new(0, 0, MIN_WIDTH, 2 * V_PADDING));
         let triggered = Signal::with_owner(&base.object_data);
@@ -725,7 +725,7 @@ impl Menu {
     pub fn new_ref(title: impl Into<String>) -> MenuRef {
         Rc::new(RefCell::new(Self::new(title)))
     }
-    /// Returns whether the menu is visible (`QWidget::isVisible`).
+    /// Returns whether the menu is visible (the widget).
     pub fn is_visible(&self) -> bool {
         self.base.is_visible()
     }
@@ -794,7 +794,7 @@ impl Menu {
 
     pub fn set_font(&mut self, font: Font) {
         self.font = font;
-        // FontChange (qwidget.cpp:4894-4895) precedes the update work (qwidget.cpp:9502).
+        // FontChange precedes the update work.
         notify_borrowed(self, &mut Event::new(EventKind::FontChange));
         self.update();
     }
@@ -819,9 +819,9 @@ impl Menu {
             .map_or(V_PADDING, |s| FRAME + s.padding_v)
     }
 
-    /// `QMenu` rules for one sub-control and pseudo-state list, resolved like Qt's
-    /// `QStyleSheetStyle::renderRule`: every matching rule cascades and the more specific one
-    /// wins, so `QMenu::item:selected` without a `color` keeps the `QMenu::item` colour.
+    /// a menu rules for one sub-control and pseudo-state list, resolved like Qt's
+    /// stylesheet resolution: every matching rule cascades and the more specific one
+    /// wins, so the menu without a `color` keeps the the menu colour.
     fn qss(&self, sub_control: Option<&'static str>, states: &[&'static str]) -> ResolvedStyle {
         let props = self.base.properties.borrow();
         self.base.resolve_style(&WidgetStyleContext {
@@ -834,7 +834,7 @@ impl Menu {
     }
 
     /// The base for a menu with no explicit `MenuStyle`: the `set_dark_mode` colours with the
-    /// unstyled metrics, so a `QMenu` rule alone still yields a complete styled menu.
+    /// unstyled metrics, so a a menu rule alone still yields a complete styled menu.
     fn hard_style(&self) -> MenuStyle {
         MenuStyle {
             font: self.font.clone(),
@@ -854,7 +854,7 @@ impl Menu {
     }
 
     /// The style the menu is laid out with: the explicit `MenuStyle` (or `hard_style`) with every
-    /// `QMenu` rule from the sheets above it applied on top. `None` when there is neither, which
+    /// a menu rule from the sheets above it applied on top. `None` when there is neither, which
     /// keeps the unstyled path.
     fn effective_style(&self) -> Option<MenuStyle> {
         let menu = self.qss(None, &[]);
@@ -962,7 +962,7 @@ impl Menu {
     }
 
     /// Returns the action that represents `menu` inside a menu bar or parent menu
-    /// (`QMenu::menuAction`), creating it on first use.
+    /// (the menu), creating it on first use.
     ///
     /// The owner of the returned action keeps it alive; the menu holds only a weak link.
     pub fn menu_action(menu: &MenuRef) -> ActionRef {
@@ -991,7 +991,7 @@ impl Menu {
         action
     }
 
-    /// Creates an action with `text` and appends it (`QMenu::addAction(text)`).
+    /// Creates an action with `text` and appends it (the menu).
     pub fn add_new_action(&mut self, text: impl Into<String>) -> ActionRef {
         self.add_action(Action::new_ref(text))
     }
@@ -1107,7 +1107,7 @@ impl Menu {
 
     /// Computes the geometry `popup(pos)` would use, keeping the menu inside the popup bounds.
     ///
-    /// Like `QMenu::popup`, a menu overflowing the bottom edge opens upwards from `pos`
+    /// Like the menu, a menu overflowing the bottom edge opens upwards from `pos`
     /// when there is room, and a menu overflowing the right edge is shifted left.
     pub fn popup_geometry(&self, pos: Point) -> Rect {
         let size = self.size_hint();
@@ -1130,7 +1130,7 @@ impl Menu {
         Rect::new(x, y, size.width, size.height)
     }
 
-    /// Shows the menu at `pos` (`QMenu::popup`). `about_to_show` is emitted with the menu not
+    /// Shows the menu at `pos` (the menu). `about_to_show` is emitted with the menu not
     /// borrowed, so a slot may fill it.
     pub fn popup(menu: &MenuRef, pos: Point) {
         Self::popup_at(menu, pos, None);
@@ -1178,7 +1178,7 @@ impl Menu {
         }
     }
 
-    /// Runs the menu modally (`QMenu::exec`): pops it up at `pos`, feeds it `events`
+    /// Runs the menu modally (the menu): pops it up at `pos`, feeds it `events`
     /// until it closes, and returns the triggered action.
     ///
     /// `events` may be any (possibly blocking) event source, e.g. a platform event pump.
@@ -1201,7 +1201,7 @@ impl Menu {
         menu.borrow().last_triggered.clone()
     }
 
-    /// Pops the menu up and runs it modally (`QMenu::exec`); `about_to_show`, `about_to_hide` and
+    /// Pops the menu up and runs it modally (the menu); `about_to_show`, `about_to_hide` and
     /// the chosen action's signals are emitted with the menu not borrowed.
     pub fn exec_popup(menu: &MenuRef, pos: Point) -> Option<ActionRef> {
         exec_popup_platform(menu, pos)
@@ -1212,7 +1212,7 @@ impl Menu {
     fn popup_window_origin(&self, pos: Point, size: Size) -> (Point, Rect) {
         use ferrokit_platform::platform;
 
-        // `popupGeometry(QGuiApplication::screenAt(p))` (qmenu.cpp:2382, 292-308): the work area of
+        // `popupGeometry(QGuiApplication::screenAt(p))` (292-308): the work area of
         // the screen whose geometry contains the point; without one, the primary screen's.
         let s_geom = platform()
             .screens()
@@ -1241,7 +1241,7 @@ impl Menu {
     }
 
     /// Pops up the menu as a top-level transparent frameless layered window and runs
-    /// modally until an action is selected or dismissed (mirrors `QMenu::exec`).
+    /// modally until an action is selected or dismissed (mirrors the menu).
     ///
     /// Borrows `menu` only in short scopes around state updates and painting, never across
     /// `GetMessageW` or `DispatchMessageW`, so timers and window callbacks running on the same
@@ -1802,7 +1802,7 @@ impl Menu {
         self.pending.hides.extend(hides);
     }
 
-    /// Keyboard handling (`QMenu::keyPressEvent`); the deepest open sub-menu gets the key first.
+    /// Keyboard handling (the menu); the deepest open sub-menu gets the key first.
     pub(crate) fn handle_key(&mut self, key: u32, modifiers: u32) -> MenuOutcome {
         let key = crate::key_sequence_edit::normalize_key(key, modifiers).0;
         let modifiers = keys::normalize_modifiers(modifiers);
@@ -1887,7 +1887,7 @@ impl Menu {
     /// True when the pointer moved from `from` to `pos` heading for the open submenu, i.e. `pos`
     /// lies inside the wedge spanned by `from` and the submenu's near edge.
     ///
-    /// Mirrors Qt's `QMenuSloppyState` (qmenu.cpp): the submenu is not abandoned while the
+    /// Mirrors Qt's `QMenuSloppyState`: the submenu is not abandoned while the
     /// pointer crosses neighbouring items on its way to it. The decision depends on the direction
     /// of travel, so moving straight along the parent menu, or away from the submenu, selects the
     /// item under the pointer as usual (a plain bounding rectangle would swallow every row that
@@ -1907,7 +1907,7 @@ impl Menu {
 
         // `side` is +1 when the submenu opens to the right, -1 when it opens to the left; all
         // x distances below are measured towards the submenu.
-        // Qt uses the inclusive QRect::right() (last pixel), i.e. exclusive right() - 1 (qmenu.cpp:2523-2535).
+        // Qt uses the inclusive QRect::right (last pixel), i.e. exclusive right - 1.
         let (side, edge_x) = if sg.x >= (item.right() - 1) - SUBMENU_OVERLAP - 4 {
             (1i64, sg.x)
         } else {
@@ -1930,7 +1930,7 @@ impl Menu {
             self.last_mouse_pos = None;
             return outcome;
         }
-        // Parity with Qt QMenu::mouseMoveEvent (qmenu.cpp:3511):
+        // Parity with Qt QMenu::mouseMoveEvent:
         // When mouse is inside this menu, clear active hover selection on open submenus
         if let Some((_, submenu)) = &self.open_submenu
             && let Ok(mut sub) = submenu.try_borrow_mut()
@@ -2111,7 +2111,7 @@ impl Menu {
                 if action.is_exclusive_in_group() {
                     painter.set_brush(Brush::Color(check_color));
                     painter.set_pen(None);
-                    // `qfusionstyle.cpp:1395, 1404`: radio indicator is anti-aliased.
+                    // 1404`: radio indicator is anti-aliased.
                     painter.set_render_hint(RenderHint::Antialiasing, true);
                     painter.draw_ellipse(RectF::new(10.0, mid_y - 4.0, 8.0, 8.0));
                 } else {
@@ -2246,7 +2246,7 @@ impl Menu {
 
     fn handle_event(&mut self, event: &mut Event) -> bool {
         self.settle();
-        // `QWidget::changeEvent(EnabledChange)` repaints; the menu's dirty area is its own.
+        // the widget repaints; the menu's dirty area is its own.
         if matches!(event.kind, EventKind::EnabledChange) {
             self.update();
             return false;
@@ -2354,7 +2354,7 @@ impl Widget for Menu {
                 self.about_to_hide.emit(&());
             }
             self.base.set_visible(false);
-            // `QMenu::hideEvent` clears the current action, which closes the open sub-menu.
+            // the menu clears the current action, which closes the open sub-menu.
             self.closed.set(true);
             if let Some((_, submenu)) = &self.open_submenu {
                 hide_shared(submenu);
@@ -2577,7 +2577,7 @@ fn paint_common_check_mark(painter: &mut Painter, rect: Rect, color: Color, anti
 
 /// `QMacStyle` `PE_IndicatorArrowRight`: a stroked chevron (round caps and joins, anti-aliased) of
 /// half-size `min(w, h) / 2`, the "down" chevron rotated by -90 degrees about the square's centre
-/// shifted by (1, 2) px (`qmacstyle_mac.mm`). Qt strokes it with the palette's text colour.
+/// shifted by (1, 2) px. Qt strokes it with the palette's text colour.
 fn paint_macos_arrow(painter: &mut Painter, rect: Rect, color: Color) {
     painter.set_render_hint(RenderHint::Antialiasing, true);
     let half = 0.5 * rect.width.min(rect.height) as f32;
@@ -2672,7 +2672,7 @@ fn paint_fusion_arrow(painter: &mut Painter, rect: Rect, color: Color) {
     pb.line_to(x, y + h);
     pb.line_to(x + w, y + h / 2.0);
     pb.close();
-    // `qt_fusion_draw_arrow` is anti-aliased (`qfusionstyle.cpp:392-405`).
+    // `qt_fusion_draw_arrow` is anti-aliased.
     painter.set_render_hint(RenderHint::Antialiasing, true);
     if let Some(path) = pb.finish() {
         let mut tint = color;

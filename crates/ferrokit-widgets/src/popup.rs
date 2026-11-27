@@ -3,7 +3,7 @@ use crate::widget::WidgetRef;
 use ferrokit_core::object::ObjectId;
 use ferrokit_gui::geometry::primitives::Point;
 
-/// Manages mouse grabbing and popup auto-dismissal (`QWidget::grabMouse` & Popups).
+/// Manages mouse grabbing and popup auto-dismissal (the widget & Popups).
 pub struct PopupManager {
     active_popup: Option<WidgetRef>,
     mouse_grabber: Option<ObjectId>,

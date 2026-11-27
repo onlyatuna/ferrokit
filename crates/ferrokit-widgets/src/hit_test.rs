@@ -14,12 +14,12 @@ pub struct EventTreeDispatcher {
     focus_manager: FocusManager,
     popup_manager: PopupManager,
     /// `qt_button_down`: the widget that took the press grab. It receives moves and the release
-    /// while a button is held (qwidgetwindow.cpp:666-668).
+    /// while a button is held.
     press_grab: Option<(ObjectId, WidgetRef)>,
     /// One bit per button held down (`1 << (button - 1)`); the grab ends with the last button.
     held_buttons: u32,
     last_dpr: f32,
-    /// `QWidgetWindow::m_dragTarget`: the widget that accepted the current drag (`DragEnter` /
+    /// window wrapper dispatch: the widget that accepted the current drag (`DragEnter` /
     /// `DragMove`), and the formats offered when the drag entered.
     drag_target: Option<(ObjectId, WidgetWeak)>,
     drag_formats: Vec<String>,
@@ -75,7 +75,7 @@ impl EventTreeDispatcher {
 
     pub fn handle_mouse_leave(&mut self) {
         if let Some((_old_id, old_widget)) = self.last_hovered.take() {
-            // Leaving the window leaves the whole chain (qapplication.cpp:2082-2101 with no new receiver).
+            // Leaving the window leaves the whole chain ( with no new receiver).
             for w in ancestors(&old_widget) {
                 let mut leave_ev = Event::new_spontaneous(EventKind::Leave);
                 let _ = notify_widget(&w, &mut leave_ev);
@@ -96,9 +96,9 @@ impl EventTreeDispatcher {
     }
 
     /// A spontaneous mouse move from the window system. Besides what `dispatch_event` does for a
-    /// `MouseMove`, it is what `QApplication::notify` sees as a mouse move with a global position
+    /// `MouseMove`, it is what the widget application sees as a mouse move with a global position
     /// and button state: with no button down it starts the tool tip wake-up for the widget under
-    /// the cursor (qapplication.cpp:2712-2737).
+    /// the cursor.
     pub fn dispatch_mouse_move(
         &mut self,
         root: &WidgetRef,
@@ -136,7 +136,7 @@ impl EventTreeDispatcher {
                     self.press_grab = None;
                 } else {
                     if let Some((_, grab)) = self.press_grab.clone() {
-                        // Qt pickMouseReceiver (qapplication.cpp:2255-2283): with a button held, the
+                        // Qt pickMouseReceiver: with a button held, the
                         // press target gets the move wherever the cursor is now.
                         return deliver_with_propagation(&path_to(&grab, win_pos), |pos| {
                             EventKind::MouseMove { x: pos.x, y: pos.y }
@@ -146,7 +146,7 @@ impl EventTreeDispatcher {
 
                 if buttons.is_empty() {
                     if let Some(path) = grab_path(root, win_pos) {
-                        // `QWidget::grabMouse`: the grabber gets the move wherever the cursor is.
+                        // the widget: the grabber gets the move wherever the cursor is.
                         return deliver_tracking_move(&path);
                     }
                 } else if self.press_grab.is_none()
@@ -162,14 +162,14 @@ impl EventTreeDispatcher {
                 match path.last().map(|s| (s.widget.clone(), s.pos)) {
                     Some((target, local_pos)) => {
                         if buttons.is_empty() {
-                            // Enter/Leave are not sent while a button is down (qapplication.cpp:2316).
+                            // Enter/Leave are not sent while a button is down.
                             self.update_hover(&target, win_pos);
                         }
                         if let Some(global_pos) = tool_tip_global_pos {
                             crate::tooltip::mouse_moved(&target, local_pos, global_pos);
                         }
                         if buttons.is_empty() {
-                            // Buttonless move: QApplication::notify walks the chain (qapplication.cpp:2738-2766).
+                            // Buttonless move: QApplication::notify walks the chain.
                             return deliver_tracking_move(&path);
                         }
                         let mut local_event = Event::new_spontaneous(EventKind::MouseMove {
@@ -292,7 +292,7 @@ impl EventTreeDispatcher {
             EventKind::MouseButtonRelease { x, y, button } => {
                 let win_pos = Point::new(*x, *y);
                 self.held_buttons &= !button_bit(*button);
-                // The grab ends with the last button released (qapplication.cpp:2322-2323).
+                // The grab ends with the last button released.
                 let grab = if self.held_buttons == 0 {
                     self.press_grab.take()
                 } else {
@@ -378,14 +378,14 @@ impl EventTreeDispatcher {
                 notify_widget(root, event)
             }
             EventKind::KeyPress { key, modifiers, .. } => {
-                // `QWidget::event` (qwidget.cpp, KeyPress): Tab, Shift+Tab and Backtab move the focus
+                // the widget (KeyPress): Tab, Shift+Tab and Backtab move the focus
                 // before `keyPressEvent`, unless Ctrl or Alt is held. 0x09 is the Win32 VK_TAB.
                 use crate::action::keys;
                 let mods = keys::normalize_modifiers(*modifiers);
                 if mods & (keys::MOD_CTRL | keys::MOD_ALT) == 0 {
                     let tab = *key == 0x09 || *key == keys::TAB;
                     let backtab = *key == keys::BACKTAB || (tab && mods & keys::MOD_SHIFT != 0);
-                    // A focus widget can keep the key for itself (`QWidget::event` is
+                    // A focus widget can keep the key for itself (the widget is
                     // overridable in Qt).
                     let kept = (tab || backtab)
                         && self
@@ -502,7 +502,7 @@ impl EventTreeDispatcher {
         }
     }
 
-    /// `qt_button_down` bookkeeping for a press (qwidgetwindow.cpp:666-668): the grab is taken on
+    /// `qt_button_down` bookkeeping for a press: the grab is taken on
     /// the initial press, when no other button is down. Pressing a button that is already marked
     /// held means its release went missing, so that press takes the grab again.
     fn note_press(&mut self, button: u32, target: Option<&HitStep>) {
@@ -513,7 +513,7 @@ impl EventTreeDispatcher {
         self.held_buttons |= bit;
     }
 
-    /// Enter/Leave as `QApplicationPrivate::dispatchEnterLeave` (qapplication.cpp:2037-2123):
+    /// Enter/Leave as `QApplicationPrivate::dispatchEnterLeave`:
     /// Leave innermost-first over the old chain, up to but excluding the common ancestor; Enter
     /// outermost-first from below the common ancestor down to `target`.
     fn update_hover(&mut self, target: &WidgetRef, win_pos: Point) {
@@ -553,7 +553,7 @@ impl EventTreeDispatcher {
         self.last_hovered = Some((target_id, target.clone()));
     }
 
-    /// `QWidgetWindow::handleDragEnterEvent` / `handleDragMoveEvent`: walks from the innermost hit
+    /// window wrapper dispatch / `handleDragMoveEvent`: walks from the innermost hit
     /// widget up to the root, visiting enabled widgets that accept drops (`WA_AcceptDrops`, or any
     /// enabled widget when no widget in the path has `WA_AcceptDrops` set so existing direct
     /// `DragEnter` / `DragMove` handlers keep working). When the accepting widget changes, the
@@ -581,7 +581,7 @@ impl EventTreeDispatcher {
             // reports back to the drag source.
             let mut action = drop_action;
             if is_enter || prev_id != Some(cand_id) {
-                // `QWidget::dragEnterEvent` ignores the event, so the widget (or a filter) has to
+                // the widget ignores the event, so the widget (or a filter) has to
                 // handle and accept `DragEnter` itself.
                 let mut enter = Event::new_spontaneous(EventKind::DragEnter {
                     pos_x: step.pos.x,
@@ -603,7 +603,7 @@ impl EventTreeDispatcher {
                     return Some(action);
                 }
             }
-            // `QDragMoveEvent` starts accepted and `QWidget::dragMoveEvent` is a no-op, so a
+            // `QDragMoveEvent` starts accepted and the widget is a no-op, so a
             // target that only implements `DragEnter` and `Drop` keeps the drag unless it (or a
             // filter) explicitly ignores the move; whether `event` reported handling is moot.
             let mut mv = Event::new_spontaneous(EventKind::DragMove {
@@ -629,14 +629,14 @@ impl EventTreeDispatcher {
         None
     }
 
-    /// Whether a live widget currently holds the drag (`QWidgetWindow::m_dragTarget`).
+    /// Whether a live widget currently holds the drag (window wrapper dispatch).
     pub fn has_drag_target(&self) -> bool {
         self.drag_target
             .as_ref()
             .is_some_and(|(_, w)| w.upgrade().is_some())
     }
 
-    /// `QWidgetWindow::handleDropEvent`: `Drop` goes only to the widget that accepted the drag
+    /// window wrapper dispatch: `Drop` goes only to the widget that accepted the drag
     /// (`m_dragTarget`), in its own coordinates, and only while it is still alive, visible and
     /// enabled. A widget that never received `DragEnter` is never handed a `Drop`, and a refused
     /// `Drop` is not offered to anyone else. Returns the accepted drop action.
@@ -706,7 +706,7 @@ pub struct HitStep {
     pub widget: WidgetRef,
     /// The cursor position in this widget's own coordinates.
     pub pos: Point,
-    /// `QWidget::isEnabled`: false when this widget or any ancestor is disabled.
+    /// the widget: false when this widget or any ancestor is disabled.
     pub enabled: bool,
 }
 
@@ -757,7 +757,7 @@ pub fn hit_path(root: &WidgetRef, pos: Point) -> Vec<HitStep> {
                     geom,
                     b.is_enabled(),
                     base.is_transparent_for_mouse_events(),
-                    // `QWidgetPrivate::pointInsideRectAndMask`: a masked widget is hit only
+                    // widget internals: a masked widget is hit only
                     // inside its mask (unless `WA_MouseNoMask`).
                     !base.mask_accepts(Point::new(pos.x - geom.x, pos.y - geom.y)),
                 )
@@ -827,10 +827,10 @@ fn button_bit(button: u32) -> u32 {
     1u32.checked_shl(button.wrapping_sub(1)).unwrap_or(0)
 }
 
-/// `QApplication::notify` for mouse, wheel and context-menu events (qapplication.cpp:2689-2762):
+/// the widget application for mouse, wheel and context-menu events:
 /// the innermost widget gets the event first; while it is not handled and accepted, the event goes
 /// to the parent (in the parent's coordinates), up to and including the window's root widget.
-/// A disabled widget does not handle mouse events (`QWidget::event`, qwidget.cpp:8978-8998), so
+/// A disabled widget does not handle mouse events (the widget), so
 /// they pass through it. Returns whether some widget handled and accepted the event.
 fn deliver_with_propagation(path: &[HitStep], make_kind: impl Fn(Point) -> EventKind) -> bool {
     for step in path.iter().rev() {
@@ -854,12 +854,12 @@ fn deliver_with_propagation(path: &[HitStep], make_kind: impl Fn(Point) -> Event
     false
 }
 
-/// The buttonless MouseMove walk of `QApplication::notify` (qapplication.cpp:2738-2766), innermost
+/// The buttonless MouseMove walk of the widget application, innermost
 /// first. A widget without mouse tracking throws the move away, but the application event filters
 /// still see it (`sendThroughApplicationEventFilters`, 2751-2756; the widget and its own filters
 /// do not), and the walk ends there: `res = true` with the still-accepted copy. A tracking widget
 /// that does not accept the move (the default
-/// `QWidget::mouseMoveEvent` ignores it, qwidget.cpp:9567-9570; widget.rs `EmptyWidget` returns false)
+/// the widget ignores it,; widget.rs `EmptyWidget` returns false)
 /// passes it to its parent. The walk stops at the window root, which is `path[0]` (`isWindow`,
 /// 2759). `WA_NoMousePropagation` has no ferrokit equivalent. Disabled widgets are skipped after the
 /// tracking check, as in `deliver_with_propagation`.
@@ -902,7 +902,7 @@ fn deliver_tracking_move(path: &[HitStep]) -> bool {
 
 /// A double click propagates like `deliver_with_propagation`, except that a widget which does not
 /// handle `MouseButtonDblClick` is given the press instead: the default
-/// `QWidget::mouseDoubleClickEvent` calls `mousePressEvent` (qwidget.cpp:9636). The OS reports the
+/// the widget calls `mousePressEvent`. The OS reports the
 /// second press of a double click only as the double click, so without this a button would lose
 /// the second click.
 fn deliver_double_click(path: &[HitStep], button: u32) -> bool {
@@ -942,8 +942,8 @@ fn deliver_double_click(path: &[HitStep], button: u32) -> bool {
     false
 }
 
-/// `QApplication::notify` for one widget: application filters, the `WA_UnderMouse` toggle of
-/// `Enter` / `Leave` (qapplication.cpp:3246-3254, after the application filters and before the
+/// the widget application for one widget: application filters, the `WA_UnderMouse` toggle of
+/// `Enter` / `Leave` (after the application filters and before the
 /// object filters), the widget's own filters, then `event()`. A widget whose handler is running
 /// cannot take `event()`: it still sees the filters (and the `WA_UnderMouse` toggle, which is
 /// applied first on this path), but the event is not delivered to it.
@@ -965,8 +965,8 @@ pub(crate) fn notify_widget(widget: &WidgetRef, event: &mut Event) -> bool {
     }
 }
 
-/// The path to the widget holding `QWidget::grabMouse`, when it is part of `root`'s tree: it gets
-/// the mouse events instead of the widget under the cursor (qwidgetwindow.cpp `handleMouseEvent`).
+/// The path to the widget holding the widget, when it is part of `root`'s tree: it gets
+/// the mouse events instead of the widget under the cursor ( `handleMouseEvent`).
 fn grab_path(root: &WidgetRef, win_pos: Point) -> Option<Vec<HitStep>> {
     let id = crate::widget::mouse_grabber_id()?;
     let grabber = find_widget_by_id(root, id)?;
