@@ -5,8 +5,8 @@
 //! polygon primitives, and configurable winding/even-odd fill rules.
 
 use super::qpath_geom::{
-    P, Rc, curves_for_arc, find_ellipse_coords, fuzzy_compare, is_valid_angle, is_valid_coord,
-    point_eq, rect_has_valid_coords,
+    P, Rc, curves_for_arc, find_ellipse_coords, is_valid_angle, is_valid_coord, point_eq,
+    rect_has_valid_coords,
 };
 use crate::geometry::primitives::{PointF, RectF};
 use tiny_skia::{FillRule as SkiaFillRule, Path, PathBuilder};
@@ -45,24 +45,6 @@ pub enum PathElement {
         to: PointF,
     },
     Close,
-}
-
-/// `QPainterPath::ElementType`. [`PainterPath`] keeps `Close` and quadratic segments as such; Qt's
-/// own element list has neither, and the algorithms transcribed from Qt work on that list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PathElementType {
-    MoveTo,
-    LineTo,
-    CurveTo,
-    CurveToData,
-}
-
-/// `QPainterPath::Element`, in Qt's `qreal` (`f64`) precision.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct PathElementPoint {
-    pub kind: PathElementType,
-    pub x: f64,
-    pub y: f64,
 }
 
 /// QPainterPath equivalent: provides container and manipulation for vector paths.
@@ -446,150 +428,6 @@ impl PainterPath {
             return;
         }
         self.line_to(p.x, p.y);
-    }
-
-    /// The path as Qt's `QPainterPath` would hold it: only move, line and cubic elements, a
-    /// `Close` being the line back to the subpath's start (`QPainterPathPrivate::close`), a
-    /// quadratic segment its cubic equivalent (`QPainterPath::quadTo`), and a segment that
-    /// follows a close starting with a move to the closing point (`maybeMoveTo`). This is what
-    /// `QPainterPathStroker` consumes.
-    pub(crate) fn qt_elements(&self) -> Vec<PathElementPoint> {
-        use PathElementType::{CurveTo, CurveToData, LineTo, MoveTo};
-        let el = |kind, x: f64, y: f64| PathElementPoint { kind, x, y };
-        let mut out: Vec<PathElementPoint> = Vec::with_capacity(self.elements.len() + 1);
-        let mut require_move_to = false;
-        let mut c_start = 0usize;
-
-        fn last_p(out: &[PathElementPoint]) -> P {
-            let l = out[out.len() - 1];
-            P::new(l.x, l.y)
-        }
-        // `ensureData`, then `maybeMoveTo`
-        fn prepare(out: &mut Vec<PathElementPoint>, require_move_to: &mut bool) {
-            if out.is_empty() {
-                out.push(PathElementPoint {
-                    kind: PathElementType::MoveTo,
-                    x: 0.0,
-                    y: 0.0,
-                });
-            }
-            if *require_move_to {
-                let l = out[out.len() - 1];
-                out.push(PathElementPoint {
-                    kind: PathElementType::MoveTo,
-                    ..l
-                });
-                *require_move_to = false;
-            }
-        }
-
-        for e in &self.elements {
-            match *e {
-                PathElement::MoveTo(p) => {
-                    if out.is_empty() {
-                        out.push(el(MoveTo, 0.0, 0.0));
-                    }
-                    require_move_to = false;
-                    let n = out.len();
-                    if out[n - 1].kind == MoveTo {
-                        out[n - 1].x = f64::from(p.x);
-                        out[n - 1].y = f64::from(p.y);
-                    } else {
-                        out.push(el(MoveTo, f64::from(p.x), f64::from(p.y)));
-                    }
-                    c_start = out.len() - 1;
-                }
-                PathElement::LineTo(p) => {
-                    prepare(&mut out, &mut require_move_to);
-                    let q = P::new(f64::from(p.x), f64::from(p.y));
-                    if point_eq(q, last_p(&out)) {
-                        continue;
-                    }
-                    out.push(el(LineTo, q.x, q.y));
-                }
-                PathElement::QuadTo { ctrl, to } => {
-                    let c = P::new(f64::from(ctrl.x), f64::from(ctrl.y));
-                    let t = P::new(f64::from(to.x), f64::from(to.y));
-                    if out.is_empty() {
-                        out.push(el(MoveTo, 0.0, 0.0));
-                    }
-                    let prev = last_p(&out);
-                    if point_eq(prev, c) && point_eq(c, t) {
-                        continue;
-                    }
-                    let c1 = P::new((prev.x + 2.0 * c.x) / 3.0, (prev.y + 2.0 * c.y) / 3.0);
-                    let c2 = P::new((t.x + 2.0 * c.x) / 3.0, (t.y + 2.0 * c.y) / 3.0);
-                    prepare(&mut out, &mut require_move_to);
-                    out.push(el(CurveTo, c1.x, c1.y));
-                    out.push(el(CurveToData, c2.x, c2.y));
-                    out.push(el(CurveToData, t.x, t.y));
-                }
-                PathElement::CubicTo { ctrl1, ctrl2, to } => {
-                    let c1 = P::new(f64::from(ctrl1.x), f64::from(ctrl1.y));
-                    let c2 = P::new(f64::from(ctrl2.x), f64::from(ctrl2.y));
-                    let t = P::new(f64::from(to.x), f64::from(to.y));
-                    if out.is_empty() {
-                        out.push(el(MoveTo, 0.0, 0.0));
-                    }
-                    if point_eq(last_p(&out), c1) && point_eq(c1, c2) && point_eq(c2, t) {
-                        continue;
-                    }
-                    prepare(&mut out, &mut require_move_to);
-                    out.push(el(CurveTo, c1.x, c1.y));
-                    out.push(el(CurveToData, c2.x, c2.y));
-                    out.push(el(CurveToData, t.x, t.y));
-                }
-                PathElement::Close => {
-                    // `QPainterPath::closeSubpath` does nothing on an empty path.
-                    if out.len() <= 1 && out.first().is_none_or(|f| f.kind == MoveTo) {
-                        continue;
-                    }
-                    require_move_to = true;
-                    let first = out[c_start];
-                    let n = out.len();
-                    if first.x != out[n - 1].x || first.y != out[n - 1].y {
-                        if fuzzy_compare(first.x, out[n - 1].x)
-                            && fuzzy_compare(first.y, out[n - 1].y)
-                        {
-                            out[n - 1].x = first.x;
-                            out[n - 1].y = first.y;
-                        } else {
-                            out.push(el(LineTo, first.x, first.y));
-                        }
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    /// A path of move, line and cubic elements in Qt's element layout (a cubic is its
-    /// `CurveTo` and two `CurveToData` elements), narrowed to `f32`.
-    pub(crate) fn from_qt_elements(elements: &[PathElementPoint]) -> Self {
-        let mut path = Self::new();
-        let mut i = 0;
-        while i < elements.len() {
-            let e = elements[i];
-            match e.kind {
-                PathElementType::MoveTo => path.move_to(e.x as f32, e.y as f32),
-                PathElementType::LineTo => path.line_to(e.x as f32, e.y as f32),
-                PathElementType::CurveTo => {
-                    let (c2, end) = (elements[i + 1], elements[i + 2]);
-                    path.cubic_to(
-                        e.x as f32,
-                        e.y as f32,
-                        c2.x as f32,
-                        c2.y as f32,
-                        end.x as f32,
-                        end.y as f32,
-                    );
-                    i += 2;
-                }
-                PathElementType::CurveToData => {}
-            }
-            i += 1;
-        }
-        path
     }
 }
 

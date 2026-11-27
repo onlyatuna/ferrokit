@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! The font families Qt's DirectWrite font database knows, built the way it builds them
-//! (`QWindowsDirectWriteFontDatabase::populateFontDatabase` and `populateFamily`,
-//! qwindowsdirectwritefontdatabase.cpp, with `qt_registerFont` of qfontdatabase.cpp).
+//! The font families the DirectWrite font database knows, built the way it builds them
+//! (`DirectWrite system font collection enumeration` and `family population`,
+//! DirectWrite font database, with `style registration` of font database).
 //!
 //! DirectWrite's system font collection in the typographic family model holds one family per
-//! typographic family name ("Segoe UI") with every face of it (Light, Semibold, ...). Qt registers
+//! typographic family name ("Segoe UI") with every face of it (Light, Semibold, ...). the catalog registers
 //! each family under the names of its fonts: the typographic family name, the family name of the
 //! font in the default locale and in English, and the GDI-compatible (`WIN32`) family name, which
 //! is how "Segoe UI Semibold", "Arial Narrow" or "Calibri Light" become families of their own.
 //! Each name's faces are registered with the style name, weight, slant and stretch DirectWrite
 //! reports, and the writing systems the face's `OS/2` table claims. A request for a family name is
-//! answered from that registry by `QtFontStyle` distance (`bestStyle`).
+//! answered from that registry by `font style key` distance (`nearest style matching`).
 //!
-//! Not modelled: the raster ("bitmap") fonts Qt adds through GDI (`populateBitmapFonts`), and
+//! Not modelled: the raster ("bitmap") fonts the catalog adds through GDI (`GDI bitmap font enumeration`), and
 //! fonts that DirectWrite does not read from a local file.
 
 use crate::text::directwrite_face::{factory6, serialized};
@@ -26,7 +26,7 @@ use windows::Win32::Globalization::GetUserDefaultLocaleName;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::core::{BOOL, Interface, PCWSTR};
 
-/// `QFont::Style`.
+/// `font slant style`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StyleKind {
     Normal,
@@ -42,28 +42,28 @@ struct FaceHandle {
     font: u32,
 }
 
-/// A style of a family (`QtFontStyle`): the key Qt matches a request against and the face.
+/// A style of a family (`font style key`): the key the catalog matches a request against and the face.
 #[derive(Clone, Debug)]
 pub(crate) struct CatalogStyle {
     pub style_name: String,
-    /// `QFont::Weight`, the DirectWrite weight (1..=999).
+    /// `CSS font weight`, the DirectWrite weight (1..=999).
     pub weight: u16,
     pub kind: StyleKind,
-    /// `QFont::Stretch` (100 unstretched, 0 for a stretch Qt has no name for).
+    /// `CSS font stretch` (100 unstretched, 0 for a stretch the catalog has no name for).
     pub stretch: u16,
     handle: FaceHandle,
 }
 
-/// A family of the registry (`QtFontFamily`).
+/// A family of the registry (`font family record`).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CatalogFamily {
     pub name: String,
     pub styles: Vec<CatalogStyle>,
-    /// `QFontDatabase::WritingSystem` bits the family supports.
+    /// `writing-system bitmask` bits the family supports.
     pub writing_systems: u64,
     pub color: bool,
     pub fixed_pitch: bool,
-    /// `QtFontFamily::populated`: a font was registered under the name.
+    /// `family populated flag`: a font was registered under the name.
     pub populated: bool,
 }
 
@@ -78,7 +78,7 @@ pub(crate) struct FaceSource {
 }
 
 /// Everything the fallback family list of a script item depends on besides the registry itself
-/// (`fallbacksForFamily(family, style, hint, script)` as `font_database::windows_fallback_families`
+/// (`fallback family list(family, style, hint, script)` as `font_database::windows_fallback_families`
 /// builds it): the style hint, whether the slant asked for is italic, whether the primary family
 /// is a symbol font, whether the item is an emoji item, and the item script's writing system.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -92,7 +92,7 @@ pub(crate) struct FallbackListKey {
 
 /// The fallback family list of a [`FallbackListKey`]: the `head` (the emoji, style hint, user
 /// language, emoji and symbol families that exist), then the families that support the writing
-/// system of the key (`tail`, `QPlatformFontDatabase::fallbacksForFamily`'s own list).
+/// system of the key (`tail`, `platform fallback family list`'s own list).
 ///
 /// The tail needs every family of the registry populated, which costs the face of every font
 /// of the system to be opened. A caller walks the list in order and mostly stops inside the head,
@@ -150,7 +150,7 @@ impl FallbackList {
 pub(crate) struct Catalog {
     collection: IDWriteFontCollection2,
     locales: Locales,
-    /// The family of the collection that owns a name (`m_populatedFonts`).
+    /// The family of the collection that owns a name (`owning collection family map`).
     owners: HashMap<String, u32>,
     /// Whether populating a family registers only names that no other family of the collection
     /// mentions, so that the registry a family ends with does not depend on the order the
@@ -164,14 +164,14 @@ pub(crate) struct Catalog {
     /// same faces again. `build` also requires that every collection family has a name (so
     /// that `populate` never falls back to the name it was called for) and that the font list
     /// `populate` reads is as long as the one `build` read. When it is `false`, every list is
-    /// built the way Qt builds it, populating every family before it is used. That `populate`
+    /// built the way the catalog builds it, populating every family before it is used. That `populate`
     /// registers only names `build` collected is what
     /// `population_order_does_not_change_a_registered_family` checks on the system's fonts.
     independent: bool,
     /// The families registered so far, sorted by name, case insensitively
-    /// (`QFontDatabasePrivate::family`); a family's styles appear when it is populated.
+    /// (`sorted case-insensitive family table`); a family's styles appear when it is populated.
     registry: Mutex<Registry>,
-    /// The fallback lists built so far (`QFontDatabasePrivate::fallbacksCache`). A list's head
+    /// The fallback lists built so far (`cached fallback lists`). A list's head
     /// is fixed when it is built and its tail (the registry once every family is populated)
     /// when it is first needed; nothing outside this catalog enters the registry (application
     /// fonts are registered with the font database only), so a list never goes stale. Never held
@@ -215,7 +215,7 @@ impl Catalog {
 
     /// The style of the family `name` a request of `weight` that is `italic` or not gets: the
     /// family is populated the first time it is asked for, then the style with the least distance
-    /// wins (`bestStyle`, the first one at a tie, in registration order).
+    /// wins (`nearest style matching`, the first one at a tie, in registration order).
     fn pick_style(&self, name: &str, weight: u16, italic: bool) -> Option<CatalogStyle> {
         let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
         self.ensure_populated(&mut registry, name);
@@ -258,7 +258,7 @@ impl Catalog {
         .unwrap_or(false)
     }
 
-    /// `QPlatformFontDatabase::fallbacksForFamily`'s own list: every family that supports
+    /// `platform fallback family list`'s own list: every family that supports
     /// `writing_system` (any for 0), those with a style of the requested slant first
     /// (`Preferred`), the others after them (`Other`), each in the order of the database. Every
     /// family is populated first, as the loop of that function does.
@@ -378,7 +378,7 @@ impl Catalog {
 }
 
 /// Whether the writing system bits `systems` include `writing_system`, or for Chinese and
-/// Japanese any of the three up to Japanese (`familySupportsWritingSystem`).
+/// Japanese any of the three up to Japanese (`writing-system support check`).
 fn supports_writing_system(systems: u64, writing_system: usize) -> bool {
     let last = if (ws::SIMPLIFIED_CHINESE..=ws::JAPANESE).contains(&writing_system) {
         ws::JAPANESE
@@ -388,7 +388,7 @@ fn supports_writing_system(systems: u64, writing_system: usize) -> bool {
     (writing_system..=last).any(|system| systems & (1 << system) != 0)
 }
 
-/// `qt_writing_system_for_script`: the first writing system of `script`, `Any` (0) for the
+/// `writing-system mapping for Unicode script`: the first writing system of `script`, `Any` (0) for the
 /// scripts none is for.
 pub(crate) fn writing_system_for_script(script: Script) -> usize {
     SCRIPT_FOR_WRITING_SYSTEM
@@ -397,12 +397,12 @@ pub(crate) fn writing_system_for_script(script: Script) -> usize {
         .unwrap_or(ws::ANY)
 }
 
-/// `QFontDatabase::writingSystems(family).contains(Symbol)` for the bits of a family.
+/// `symbol writing-system bit` for the bits of a family.
 pub(crate) fn supports_symbol(systems: u64) -> bool {
     systems & (1 << ws::SYMBOL) != 0
 }
 
-/// `bestStyle` for a request of `weight` that is `italic` or not, whatever the stretch.
+/// `nearest style matching` for a request of `weight` that is `italic` or not, whatever the stretch.
 fn best_style(family: &CatalogFamily, weight: u16, italic: bool) -> Option<&CatalogStyle> {
     let mut best: Option<(&CatalogStyle, i32)> = None;
     for style in &family.styles {
@@ -419,7 +419,7 @@ fn best_style(family: &CatalogFamily, weight: u16, italic: bool) -> Option<&Cata
     best.map(|(style, _)| style)
 }
 
-/// `GetMatchingFonts(REGULAR, NORMAL, NORMAL)` of the family, the list Qt registers a family from.
+/// `GetMatchingFonts(REGULAR, NORMAL, NORMAL)` of the family, the list the catalog registers a family from.
 fn matching_fonts(family: &IDWriteFontFamily2) -> Option<IDWriteFontList> {
     let family: &IDWriteFontFamily = family;
     // SAFETY: `family` is a live family; the arguments are plain enum values.
@@ -518,13 +518,13 @@ fn informational(
     Some(locales.both(&names))
 }
 
-/// The two locales Qt registers names for.
+/// The two locales the catalog registers names for.
 struct Locales {
     default: Option<Vec<u16>>,
     english: Vec<u16>,
 }
 
-/// The language of the system as a HarfBuzz language (Qt passes `QLocale().bcp47Name()`; the
+/// The language of the system as a HarfBuzz language (the catalog passes `QLocale().bcp47Name()`; the
 /// Windows locale name of the user gives the same OpenType language tags, e.g. `zh-TW`).
 pub(crate) fn system_language() -> Option<rustybuzz::Language> {
     static LANGUAGE: LazyLock<Option<rustybuzz::Language>> = LazyLock::new(|| {
@@ -557,7 +557,7 @@ impl Locales {
     }
 }
 
-/// `QFont::Stretch` for a DirectWrite stretch.
+/// `CSS font stretch` for a DirectWrite stretch.
 fn stretch_of(stretch: DWRITE_FONT_STRETCH) -> u16 {
     match stretch {
         DWRITE_FONT_STRETCH_ULTRA_CONDENSED => 50,
@@ -613,7 +613,7 @@ impl Registry {
             .ok()
     }
 
-    /// `QFontDatabasePrivate::family(name, EnsureCreated)`.
+    /// `family lookup or insertion`.
     fn family_index(&mut self, name: &str) -> usize {
         let key = name.to_lowercase();
         match self
@@ -634,7 +634,7 @@ impl Registry {
         }
     }
 
-    /// `qt_registerFont`: a style with the same key and style name keeps its place and gets the
+    /// `style registration`: a style with the same key and style name keeps its place and gets the
     /// new face.
     fn register(&mut self, registration: Registration) {
         let index = self.family_index(&registration.family);
@@ -662,8 +662,8 @@ impl Registry {
     }
 }
 
-/// `populateFontDatabase` followed by `populateFamily` of every family, in the order Qt's
-/// fallback search does it (`QPlatformFontDatabase::fallbacksForFamily`).
+/// `system font collection enumeration` followed by `family population` of every family, in the order Qt's
+/// fallback search does it (`platform fallback family list`).
 fn build() -> Option<Catalog> {
     let factory = factory6()?;
     serialized(|| {
@@ -673,7 +673,7 @@ fn build() -> Option<Catalog> {
                 .ok()?;
         let locales = Locales::new();
         let mut registry = Registry::default();
-        // The family of the collection that owns a name (`m_populatedFonts`).
+        // The family of the collection that owns a name (`owning collection family map`).
         let mut owners: HashMap<String, u32> = HashMap::new();
         let mut registered: HashSet<String> = HashSet::new();
         // Whether populating one family can change nothing another family's registration
@@ -749,7 +749,7 @@ fn build() -> Option<Catalog> {
     })
 }
 
-/// `populateFamily(familyName)`: registers the fonts of the owning typographic family under all
+/// `family population`: registers the fonts of the owning typographic family under all
 /// their names.
 fn populate(
     registry: &mut Registry,
@@ -861,7 +861,7 @@ fn populate(
     }
 }
 
-/// `QFontDatabase::WritingSystem` indices.
+/// `writing-system bitmask` indices.
 mod ws {
     pub const ANY: usize = 0;
     pub const LATIN: usize = 1;
@@ -956,7 +956,7 @@ const SCRIPT_FOR_WRITING_SYSTEM: [Script; ws::COUNT] = [
     Script::Nko,
 ];
 
-/// `QPlatformFontDatabase::writingSystemsFromTrueTypeBits` for the `OS/2` unicode and code page
+/// `OpenType OS/2 Unicode/codepage writing-system bitmask` for the `OS/2` unicode and code page
 /// ranges.
 fn writing_systems_from_bits(unicode_range: [u32; 4], code_page_range: [u32; 2]) -> u64 {
     let mut systems = 0u64;
@@ -1061,7 +1061,7 @@ fn face_writing_systems(face: &IDWriteFontFace) -> u64 {
     systems
 }
 
-/// A catalog that populated every family in the order of the registry, the way Qt's loop does
+/// A catalog that populated every family in the order of the registry, the way the loop does
 /// before it lists anything, and lists every fallback list that way (`independent` off): the
 /// reference the deferred population is compared with.
 #[cfg(test)]
