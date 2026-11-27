@@ -21,17 +21,17 @@ pub type WindowEdge = WindowEdges;
 pub trait PlatformWindow: 'static {
     fn show(&self);
     fn hide(&self);
-    /// Whether this window is the active window (`QPlatformWindow::isActive`, which on Windows is
-    /// the foreground-window check in `qwindowswindow.cpp:1904-1910`). Required, with no default:
+    /// Whether this window is the active window (the platform abstraction, which on Windows is
+    /// the foreground-window check in). Required, with no default:
     /// the answer is platform state that a backend must report, not a value to assume. A hidden
     /// window is never active, and a `WindowFlags::TOOLTIP` window never becomes active by being
     /// shown.
     fn is_active(&self) -> bool;
-    /// `QPlatformWindow::raise`: puts the window above its sibling top-level windows in the
+    /// the platform abstraction: puts the window above its sibling top-level windows in the
     /// window system's stacking order (the topmost band stays above the others). It does not
     /// activate the window or give it the keyboard focus; that is
     /// [`request_activate_window`](Self::request_activate_window). A backend that does not
-    /// implement it does nothing, as `QPlatformWindow::raise` does by default.
+    /// implement it does nothing, as the platform abstraction does by default.
     fn raise(&self) {}
     /// Places this top-level window immediately below the top-level window `sibling` (its
     /// [`native_handle`](Self::native_handle)) in the window system's stacking order, without
@@ -40,9 +40,9 @@ pub trait PlatformWindow: 'static {
     /// a different stacking band, or the window system keeps the two in another order (a
     /// window owned by `sibling` on Windows).
     ///
-    /// This is a ferrokit extension, modelled on `QWidget::stackUnder` (qwidget.cpp), which only
+    /// This is a ferrokit extension, modelled on `a widget::stackUnder`, which only
     /// reorders sibling child widgets. Qt has no call that orders one top-level window against
-    /// another: `QWindow` offers only `raise` and `lower`.
+    /// another: a window offers only `raise` and `lower`.
     ///
     /// A window stays in its own stacking band: the call never changes whether either window is
     /// topmost / floating. A window that [`set_stays_on_top`](Self::set_stays_on_top) put in the
@@ -67,11 +67,11 @@ pub trait PlatformWindow: 'static {
     /// - Wayland: a client cannot order its windows, so nothing happens and the result is `false`.
     ///
     /// A backend that does not implement it does nothing and returns `false`, as
-    /// `QPlatformWindow::raise` does nothing by default.
+    /// the platform abstraction does nothing by default.
     fn stack_under(&self, _sibling: isize) -> bool {
         false
     }
-    /// `QPlatformWindow::requestActivateWindow`: asks the window system to make this window the
+    /// the platform abstraction: asks the window system to make this window the
     /// active one. It is a request: the window becomes active ([`is_active`](Self::is_active))
     /// only if the window system grants it, which may happen after this call returns. A hidden
     /// window and a `WindowFlags::TOOLTIP` window, which never takes activation, are not asked.
@@ -79,15 +79,15 @@ pub trait PlatformWindow: 'static {
     /// On Windows this is `SetForegroundWindow` and nothing more (no `AttachThreadInput` or
     /// input-injection tricks), so the system's foreground lock applies: a process that is not the
     /// foreground process, and has not received the last input event, cannot take the foreground,
-    /// and the window's taskbar button flashes instead. That is the behaviour `QWidget::activateWindow`
+    /// and the window's taskbar button flashes instead. That is the behaviour `a widget::activateWindow`
     /// documents. A minimized window is not restored. A backend that does not implement it does
-    /// nothing, as `QPlatformWindow::requestActivateWindow` does by default.
+    /// nothing, as the platform abstraction does by default.
     fn request_activate_window(&self) {}
     fn geometry(&self) -> Rect;
     fn set_geometry(&mut self, rect: Rect);
     fn set_stays_on_top(&mut self, enabled: bool);
     fn set_click_through(&mut self, enabled: bool);
-    /// Sets or clears a window flag (`QWidget::setWindowFlag`, qwidget.cpp:10641-10648).
+    /// Sets or clears a window flag (`a widget::setWindowFlag`).
     fn set_window_flag(&mut self, flag: WindowFlags, on: bool) {
         if flag.contains(WindowFlags::STAYS_ON_TOP) {
             self.set_stays_on_top(on);
@@ -96,7 +96,7 @@ pub trait PlatformWindow: 'static {
             self.set_click_through(on);
         }
     }
-    /// Current window flags (`QWidget::windowFlags`).
+    /// Current window flags (`a widget::windowFlags`).
     fn flags(&self) -> WindowFlags {
         WindowFlags::NORMAL
     }
@@ -114,21 +114,21 @@ pub trait PlatformWindow: 'static {
     /// `QWindow::unsetCursor`: the window no longer asks for a cursor of its own and shows the
     /// default one (the application override, or the arrow).
     fn unset_cursor(&mut self) {}
-    /// `QPlatformWindow::setMouseGrabEnabled`: while grabbed the window receives every mouse event
+    /// the platform abstraction: while grabbed the window receives every mouse event
     /// of the application, wherever the pointer is. Returns `grab` when it took effect, `false`
     /// when the window cannot grab (a hidden window, or a backend without grabs: Qt's default
-    /// `QPlatformWindow::setMouseGrabEnabled` also returns `false`, qplatformwindow.cpp:443-448).
+    /// the platform abstraction also returns `false`).
     fn set_mouse_grab_enabled(&mut self, _grab: bool) -> bool {
         false
     }
     /// Whether the window holds the mouse grab ([`set_mouse_grab_enabled`](Self::set_mouse_grab_enabled)
-    /// or the automatic grab of a button press; `QWindowsWindow::hasMouseCapture`).
+    /// or the automatic grab of a button press; the Win32 window backend).
     fn has_mouse_grab(&self) -> bool {
         false
     }
     fn set_opacity(&mut self, opacity: f32);
     fn opacity(&self) -> f32;
-    /// `QWindow::setMinimumSize` as `QPlatformWindow::propagateSizeHints` hands it to the window
+    /// `QWindow::setMinimumSize` as the platform abstraction hands it to the window
     /// system: logical pixels, each axis clamped to `0..=WINDOW_SIZE_MAX`; 0 on an axis is no
     /// minimum. A backend that has a window system must pass it on and say so; one that only
     /// stores the value (`GenericWindow`, the X11 and Wayland windows today) does not enforce it.
@@ -140,9 +140,9 @@ pub trait PlatformWindow: 'static {
     fn set_maximum_size(&mut self, max_w: i32, max_h: i32);
     fn maximum_size(&self) -> (i32, i32);
     /// Ratio between this window's physical (native) pixels and its device-independent pixels,
-    /// taken from the screen the window is on (`QPlatformWindow::devicePixelRatio`, which
-    /// `QWindowPrivate::updateDevicePixelRatio` multiplies by the window's screen scale factor,
-    /// `qwindow.cpp:1436-1443`). Required: it differs between windows on different screens.
+    /// taken from the screen the window is on (the platform abstraction, which
+    /// `window internals::updateDevicePixelRatio` multiplies by the window's screen scale factor,
+    /// ). Required: it differs between windows on different screens.
     fn device_pixel_ratio(&self) -> f32;
     fn present(&mut self, pixmap: &mut Pixmap, opacity: f32) -> Result<(), &'static str>;
     fn present_dirty(
@@ -164,8 +164,8 @@ pub trait PlatformWindow: 'static {
     }
     fn set_event_handler(&mut self, handler: Box<dyn WindowSystemEventHandler>);
     /// Whether the native window delivers `MouseDoubleClick` itself. When false, the widget
-    /// window synthesizes double clicks from press pairs, as Qt's `QGuiApplication` does for
-    /// platforms without native double clicks (`qguiapplication.cpp:2419-2426`).
+    /// window synthesizes double clicks from press pairs, as Qt's the application does for
+    /// platforms without native double clicks.
     fn reports_native_double_clicks(&self) -> bool {
         false
     }
@@ -210,17 +210,17 @@ pub trait PlatformWindow: 'static {
     fn resume_backdrop(&mut self) -> bool {
         false
     }
-    /// `QPlatformWindow::setMask` (`qplatformwindow.cpp`): clips the window to `region`, in
+    /// the platform abstraction: clips the window to `region`, in
     /// native pixels of the window's client area (`QWindow::setMask` hands it the region scaled
     /// by `QHighDpi::toNativeLocalRegion`). An empty region removes the mask. Windows applies it
-    /// with `SetWindowRgn` (`QWindowsWindow::setMask`); Cocoa clips the content layer to it (a
+    /// with `SetWindowRgn` (window mask application); Cocoa clips the content layer to it (a
     /// layer mask, which makes the window non-opaque while it is set). A backend without window
-    /// regions ignores it, as `QPlatformWindow::setMask` does by default.
+    /// regions ignores it, as the platform abstraction does by default.
     fn set_mask(&mut self, _region: &ferrokit_gui::geometry::Region) {}
     /// `QWindow::setTransientParent` as the window system sees it: the native handle
     /// (`native_handle`) of the window that owns this top-level window, or `None` to remove the
-    /// owner. On Windows this is the owner (`GWLP_HWNDPARENT`, `QWindowsWindow::updateTransientParent`,
-    /// `qwindowswindow.cpp:1939-1966`): the system hides, minimizes and shows the owned window with
+    /// owner. On Windows this is the owner (`GWLP_HWNDPARENT`, transient parent ownership update,
+    /// ): the system hides, minimizes and shows the owned window with
     /// its owner and keeps it above it, and gives it no taskbar button. Backends without such a
     /// relationship only remember it.
     fn set_transient_parent(&mut self, _parent: Option<isize>) {}

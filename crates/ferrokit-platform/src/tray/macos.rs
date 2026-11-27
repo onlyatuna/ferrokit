@@ -50,7 +50,7 @@ impl CocoaStatusItem {
         let status_bar =
             unsafe { ObjcMsg::send_class_0(status_bar_class, Sel::register("systemStatusBar")) };
 
-        // Qt: statusItemWithLength:NSSquareStatusItemLength (qcocoasystemtrayicon.mm:37). Qt
+        // Qt: statusItemWithLength:NSSquareStatusItemLength. Qt
         // switches to NSVariableStatusItemLength only for icons backed by a native NSImage
         // (QAppleIconEngine, :88-98); pixmap icons keep the square length.
         // SAFETY: `status_bar` is the shared `NSStatusBar` (or nil, a no-op);
@@ -198,7 +198,7 @@ impl CocoaStatusItem {
 
     /// `-[QStatusItemDelegate statusItemMenuBeganTracking:]`: a status item that has a menu never
     /// sends its button action (the menu opens instead), so Qt reports the activation when the
-    /// menu starts tracking (`QCocoaSystemTrayIcon::updateMenu`). Does nothing until a menu
+    /// menu starts tracking (the Cocoa system tray backend). Does nothing until a menu
     /// and an activation handler are both set.
     fn observe_menu_tracking(&mut self) {
         self.remove_menu_observer();
@@ -372,7 +372,7 @@ impl PlatformTrayIcon for CocoaStatusItem {
     fn set_tooltip(&mut self, tooltip: &str) -> Result<(), &'static str> {
         self.tooltip = tooltip.to_string();
 
-        // Qt: m_statusItem.button.toolTip (qcocoasystemtrayicon.mm:195-200); the button title
+        // Qt: m_statusItem.button.toolTip; the button title
         // is never set, so no text appears in the menu bar.
         // SAFETY: `self.status_item` is the item created in `new` and removed only in `Drop`
         // (nil is a no-op); `button` takes no arguments and returns an object.
@@ -387,7 +387,7 @@ impl PlatformTrayIcon for CocoaStatusItem {
 
     fn set_menu(&mut self, menu: Box<dyn PlatformMenu>) {
         // Qt removes the observer of the previous menu before replacing it
-        // (QCocoaSystemTrayIcon::updateMenu).
+        // (the Cocoa platform backend).
         self.remove_menu_observer();
         // [status_item setMenu:ns_menu]; a menu that is not a `CocoaMenu` has no NSMenu, so the
         // status item gets none.
@@ -401,7 +401,7 @@ impl PlatformTrayIcon for CocoaStatusItem {
         self.observe_menu_tracking();
     }
 
-    /// Mirrors `QCocoaSystemTrayIcon::init`/`updateMenu`/`emitActivated` (qcocoasystemtrayicon.mm):
+    /// Mirrors status item initialization, menu updates, and activation:
     /// the status item button sends its action on left, right and other mouse down, and a status
     /// item that has a menu reports through the menu's `NSMenuDidBeginTrackingNotification`
     /// instead; either way the reason comes from `[NSApp currentEvent]`
@@ -572,7 +572,7 @@ const NS_EVENT_OTHER_MOUSE_DRAGGED: isize = 27;
 
 /// `NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskOtherMouseDown`, the
 /// events Qt asks the status item button to send its action on
-/// (`qcocoasystemtrayicon.mm`, `QCocoaSystemTrayIcon::init`).
+/// (the Cocoa system tray backend).
 const NS_EVENT_MASK_ACTIVATION: isize = (1 << NS_EVENT_LEFT_MOUSE_DOWN)
     | (1 << NS_EVENT_RIGHT_MOUSE_DOWN)
     | (1 << NS_EVENT_OTHER_MOUSE_DOWN);
@@ -581,7 +581,7 @@ const NS_EVENT_MASK_ACTIVATION: isize = (1 << NS_EVENT_LEFT_MOUSE_DOWN)
 /// menu because a status item with a menu never sends its button action.
 const NS_MENU_DID_BEGIN_TRACKING: &str = "NSMenuDidBeginTrackingNotification";
 
-/// `QCocoaSystemTrayIcon::emitActivated`'s classification of the event that activated the
+/// status item activation's classification of the event that activated the
 /// status item: click count 2 is a double click, otherwise `cocoaButton2QtButton(event)`
 /// decides. It gives no button for a mouse-move class event (moved, dragged), `Qt::RightButton`
 /// for a right mouse down or up whatever the button number, and else the button number: 1 is

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Desktop services aligned with `QDesktopServices` and `QPlatformServices` (qtbase)
+//! Desktop services aligned with `QDesktopServices` and the platform abstraction (reference behavior)
 use std::path::Path;
 use std::sync::RwLock;
 

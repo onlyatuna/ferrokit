@@ -16,7 +16,7 @@ pub(super) fn query_keyboard_modifiers() -> KeyboardModifiers {
     }
 }
 
-/// `QWindowsMouseHandler::keyStateToMouseButtons`: the `MK_*` flags a mouse message carries in
+/// mouse button state decoding: the `MK_*` flags a mouse message carries in
 /// `wParam` are the buttons held down while it was generated.
 #[cfg(windows)]
 pub(super) fn mouse_buttons_from_mk(wparam: WPARAM) -> ferrokit_core::event::MouseButtons {
@@ -98,7 +98,7 @@ impl LayeredNeeds {
     }
 }
 
-/// `QWindowsWindow::setWindowLayered` + `setWindowOpacity` for a window that is not `LAYERED`:
+/// layered window flag setup + window opacity setup for a window that is not `LAYERED`:
 /// a translucent (`opacity < 1`) or click-through (`WindowTransparentForInput`) window needs
 /// `WS_EX_LAYERED` plus `SetLayeredWindowAttributes(LWA_ALPHA)` with `qRound(255 * opacity)`;
 /// a window that is presented per pixel or has a backdrop keeps the style; any other window drops
@@ -260,8 +260,8 @@ unsafe fn native_window_proc_inner(
                 // An axis whose minimum equals its maximum cannot change size, so it offers no
                 // resize zone: the cursor would promise a resize the tracking limits refuse. The
                 // tracking limits do not do this by themselves; Qt has its own rule for a window
-                // with a native frame (`QWindowsWindow::handleNonClientHitTest`,
-                // qwindowswindow.cpp:3493-3525, QTBUG-32663). This zone is ferrokit' own (Qt's
+                // with a native frame (non-client hit-testing,
+                // ). This zone is ferrokit' own (Qt's
                 // frameless windows resize through `startSystemResize`), so only the criterion
                 // (`SizeLimits::fixed_axes`) is Qt's.
                 let (fixed_w, fixed_h) = get_window_size_limits(hwnd)
@@ -316,7 +316,7 @@ unsafe fn native_window_proc_inner(
                 // The limits are logical; the window's own ratio at this moment (after
                 // `WM_DPICHANGED` it is already the new one) makes them native, and a bound that
                 // is not set leaves the system's value in place
-                // (`QWindowsGeometryHint::applyToMinMaxInfo`, qwindowswindow.cpp:1238-1262).
+                // (the native min/max tracking calculation).
                 let track = limits.native_track(get_window_dpr(hwnd));
                 if let Some(x) = track.min.0 {
                     mmi.ptMinTrackSize.x = x;
@@ -375,7 +375,7 @@ unsafe fn native_window_proc_inner(
         }
         WM_SIZE => {
             // Qt: `SIZE_MINIMIZED` only changes the window state and leaves the geometry alone
-            // (`QWindowsWindow::handleResized`, qwindowswindow.cpp:2370-2377). The 0x0 client size
+            // (resize handling). The 0x0 client size
             // Windows reports while iconic must not reach the geometry or the widget tree.
             if wparam as u32 == SIZE_MINIMIZED {
                 dispatch_window_system_event(
@@ -400,8 +400,8 @@ unsafe fn native_window_proc_inner(
                 (phys_w as u32, phys_h as u32),
             );
             // `fromNativeWindowGeometry` for a top-level window: the position maps against its
-            // screen's native top-left (`qwindowsysteminterface.cpp:298`,
-            // `qhighdpiscaling_p.h:254-260`).
+            // screen's native top-left (
+            // ).
             // SAFETY: RECT is a plain integer struct, so the all-zero value is valid.
             // SAFETY: RECT is a plain integer struct; GetWindowRect writes to valid local RECT.
             let (x, y) = unsafe {
@@ -425,8 +425,8 @@ unsafe fn native_window_proc_inner(
             // Resize, callback, layout, render). No second `EventKind::Resize` is posted to the
             // bound QObject; it used to re-run the callback and a synchronous render.
             handle_geometry_change(Delivery::Default, hwnd, logical_rect);
-            // Qt restores the state after the geometry (`QWindowsWindow::handleResized`,
-            // qwindowswindow.cpp:2385-2395). The widget layer dedupes repeated restores.
+            // Qt restores the state after the geometry (resize handling,
+            // ). The widget layer dedupes repeated restores.
             if wparam as u32 == SIZE_RESTORED || wparam as u32 == SIZE_MAXIMIZED {
                 dispatch_window_system_event(
                     Delivery::Default,
@@ -438,8 +438,8 @@ unsafe fn native_window_proc_inner(
             def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         WM_MOVE => {
-            // Qt ignores a move while iconic: `QWindowsWindow::handleMoved` only runs the geometry
-            // change when `!IsIconic` (qwindowswindow.cpp:2328-2333). Windows reports the iconic
+            // Qt ignores a move while iconic: move handling only runs the geometry
+            // change when `!IsIconic`. Windows reports the iconic
             // position as (-32000, -32000), which must not reach the geometry or the event receiver.
             // SAFETY: `hwnd` is the window this message was dispatched to; IsIconic takes only the
             // handle and validates it.
@@ -534,7 +534,7 @@ unsafe fn native_window_proc_inner(
             let dpi_y = ((wparam as u32) >> 16) & 0xffff;
 
             // Qt sends the screen/DPI change before applying the suggested rect
-            // (qwindowswindow.cpp:2164-2191), so the handler still sees the old geometry and the
+            // , so the handler still sees the old geometry and the
             // resulting WM_MOVE/WM_SIZE are processed with the new ratio already in place.
             dispatch_window_system_event(
                 Delivery::Default,
@@ -580,8 +580,8 @@ unsafe fn native_window_proc_inner(
         WM_SETCURSOR => {
             let hit_test = (lparam & 0xFFFF) as u32;
             if hit_test == HTCLIENT {
-                // The application override cursor beats the window's own (`QWindowsWindow::applyCursor`,
-                // qwindowswindow.cpp:3762-3767).
+                // The application override cursor beats the window's own (window cursor application,
+                // ).
                 let shape = crate::cursor::win32_cursor::Win32Cursor::override_shape()
                     .or_else(|| window_cursor_shape(hwnd))
                     .unwrap_or_else(crate::cursor::win32_cursor::Win32Cursor::current_global_shape);
@@ -619,7 +619,7 @@ unsafe fn native_window_proc_inner(
                     global_pos,
                     button,
                     modifiers,
-                    // `QWindowsContext` stamps mouse messages with `GetMessageTime()` (qwindowscontext.cpp:836).
+                    // the Win32 platform context stamps mouse messages with `GetMessageTime`.
                     // SAFETY: GetMessageTime takes no arguments and reads the time of the message
                     // this thread is currently handling (we are inside its wndproc).
                     // SAFETY: GetMessageTime reads time of current message handled on this thread.
@@ -844,7 +844,7 @@ unsafe fn native_window_proc_inner(
             // `lparam` is the window gaining the capture. Qt 6.12.0's windows plugin has no
             // `WM_CAPTURECHANGED` (nor `WM_CANCELMODE`) handling: a capture change, including the
             // ones the native move/size loop causes, never touches the pressed buttons
-            // (`QGuiApplication::mouseButtons()`); they change with mouse events and at
+            // (application `mouseButtons`); they change with mouse events and at
             // `WM_EXITSIZEMOVE` (`sync_mouse_buttons_after_move_loop`).
             let new_owner = lparam as HWND;
             set_auto_capture_flag(hwnd as isize, false);
@@ -1010,7 +1010,7 @@ unsafe fn native_window_proc_inner(
             def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         windows_sys::Win32::UI::WindowsAndMessaging::WM_IME_ENDCOMPOSITION => {
-            // `QWindowsInputContext::endComposition`: a composition that was running is closed
+            // IME composition termination: a composition that was running is closed
             // with an empty event so a cancelled preedit is cleared.
             let was_composing = IME_COMPOSING
                 .try_with(|c| c.borrow_mut().remove(&(hwnd as isize)))
@@ -1039,7 +1039,7 @@ unsafe fn native_window_proc_inner(
             def_wnd_proc(hwnd, msg, wparam, lparam)
         }
         0x0218 => {
-            // WM_POWERBROADCAST. Qt itself only handles PBT_POWERSETTINGCHANGE (qwindowscontext.cpp,
+            // WM_POWERBROADCAST. Qt itself only handles PBT_POWERSETTINGCHANGE (
             // qWindowsPowerWindowProc); it has no suspend/resume event, so this is a ferrokit extension.
             let power_event = match wparam as u32 {
                 0x0012 | 0x0007 => Some(crate::window_system_interface::PowerEvent::Resume),

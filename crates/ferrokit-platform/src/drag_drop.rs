@@ -445,7 +445,7 @@ pub mod win32_ole {
         }
     }
 
-    /// The effect a drag proposes (`QWindowsOleDropTarget::chosenEffect`): Ctrl+Shift or Alt
+    /// The effect a drag proposes (the Win32 platform backend): Ctrl+Shift or Alt
     /// chooses link, Shift chooses move, Ctrl chooses copy, and no modifier prefers copy, then
     /// move, then link; limited to what the source `allowed`. The caller writes the returned
     /// effect back to `*pdwEffect` only when the callback accepted the event, so `DROPEFFECT_MOVE`

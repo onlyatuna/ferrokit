@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! High-DPI scaling helpers, matching Qt's `QHighDpi` (qhighdpiscaling.cpp).
+//! High-DPI scaling helpers, matching Qt's `QHighDpi`.
 
 use ferrokit_gui::geometry::primitives::{Point, Rect, Size};
 
@@ -89,8 +89,8 @@ pub fn to_native_rect(rect: Rect, dpr: f32) -> Rect {
 
 // Desktop positions map relative to the native top-left of the screen they are on, which is the
 // same point in both systems: `QHighDpi::fromNative`/`toNative` with that screen's factor and
-// origin (`qhighdpiscaling_p.h:150-158, 270-280`, origin from `qhighdpiscaling.cpp:713-721`).
-// Sizes only scale. `qRound` rounds half away from zero, as `f64::round` does.
+// origin (270-280`, origin from).
+// Sizes only scale. round-half-away-from-zero rounds half away from zero, as `f64::round` does.
 
 #[inline]
 fn scale_from(v: i32, origin: i32, factor: f64) -> i32 {

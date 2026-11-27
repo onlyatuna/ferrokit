@@ -35,7 +35,7 @@ pub trait PasteboardBackend: Send + Sync {
 }
 
 /// Prefix Qt gives pasteboard types for MIME types without a system type
-/// (`QMacPasteboardMimeAny`, qmacmime.mm): `com.trolltech.anymime.` + the MIME type with `/`
+/// (`QMacPasteboardMimeAny`): `com.trolltech.anymime.` + the MIME type with `/`
 /// replaced by `--`.
 const ANY_MIME_PREFIX: &str = "com.trolltech.anymime.";
 
@@ -142,7 +142,7 @@ const _: fn() = || {
     assert_send_sync::<ChangeState>();
 };
 
-/// `QCocoaClipboard`: the general pasteboard as a [`PlatformClipboard`].
+/// the Cocoa platform backend: the general pasteboard as a [`PlatformClipboard`].
 ///
 /// AppKit has no pasteboard change notification, so outside changes are detected by comparing
 /// `changeCount` in [`poll_changes`](Self::poll_changes) only.

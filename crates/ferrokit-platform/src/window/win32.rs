@@ -55,7 +55,7 @@ pub(super) fn ensure_native_window_class_registered() {
         let h_instance = GetModuleHandleW(ptr::null());
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-            // Qt registers every window class with CS_DBLCLKS (qwindowswindowclassdescription.cpp:67).
+            // Qt registers every window class with CS_DBLCLKS.
             style: CS_DBLCLKS,
             lpfnWndProc: Some(native_window_proc),
             cbClsExtra: 0,
@@ -325,7 +325,7 @@ impl NativeWindow {
         }
     }
 
-    /// `QWindowsWindow::raise`: `SetWindowPos(HWND_TOP, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)`.
+    /// raising the window: `SetWindowPos(HWND_TOP, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)`.
     /// Reorders the window in the z-order without activating it; a topmost window stays in the
     /// topmost band.
     pub fn raise(&self) {
@@ -413,7 +413,7 @@ impl NativeWindow {
         }
     }
 
-    /// `QWindowsWindow::requestActivateWindow`: `SetForegroundWindow` on a visible window that
+    /// window activation: `SetForegroundWindow` on a visible window that
     /// takes activation. The system's foreground lock is not worked around: when this process may
     /// not take the foreground, Windows flashes the window's taskbar button instead and the window
     /// does not become active.
@@ -508,7 +508,7 @@ impl NativeWindow {
                 SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, new_style as isize);
             }
             self.flags.set(WindowFlags::CLICK_THROUGH, enabled);
-            // `qwindowswindow.cpp:498`: Qt requires `WS_EX_LAYERED` for `WindowTransparentForInput`
+            // : Qt requires `WS_EX_LAYERED` for `WindowTransparentForInput`
             // in combination with `WS_EX_TRANSPARENT`, with layered attributes set so the window is
             // drawn. A `LAYERED` window is managed by its presenter.
             if !self.flags.contains(WindowFlags::LAYERED) {
@@ -539,9 +539,9 @@ impl NativeWindow {
         }
     }
 
-    /// `QWindowsWindow::setOpacity`. A `LAYERED` window's presenter blends the opacity into every
+    /// window opacity update. A `LAYERED` window's presenter blends the opacity into every
     /// present; any other window is made layered by the system while it is translucent
-    /// (`QWindowsWindow::setWindowLayered` / `setWindowOpacity`, `qwindowswindow.cpp:494-530`).
+    /// (layered window flag setup / window opacity setup).
     pub fn set_opacity(&mut self, opacity: f32) {
         let opacity = opacity.clamp(0.0, 1.0);
         let changed = self.opacity != opacity;
@@ -724,7 +724,7 @@ impl NativeWindow {
         // registration goes before the window.
         self.drop_target = None;
         if !self.hwnd.is_null() {
-            // Windows would destroy the windows this one owns with it (QTBUG-35499).
+            // Windows would destroy the windows this one owns with it.
             crate::window::region::release_owned_windows(self.hwnd, NATIVE_WINDOW_CLASS_NAME);
             remove_window_size_limits(self.hwnd);
             // SAFETY: `self.hwnd` is non-null (checked above) and is this window's own handle, created
@@ -788,7 +788,7 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
         self.request_activate_window();
     }
 
-    /// `QWindowsWindow::isActive` (`qwindowswindow.cpp:1904-1910`): the window is the foreground
+    /// window active state check: the window is the foreground
     /// window, or a child of it.
     fn is_active(&self) -> bool {
         if self.hwnd.is_null() {
@@ -838,7 +838,7 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
     }
     fn set_cursor(&mut self, shape: crate::cursor::CursorShape) {
         set_window_cursor_shape(self.hwnd, shape);
-        // An application override cursor stays on top (`QWindowsWindow::applyCursor`).
+        // An application override cursor stays on top (window cursor application).
         if crate::cursor::win32_cursor::Win32Cursor::override_shape().is_none() {
             crate::cursor::win32_cursor::Win32Cursor::apply_shape(shape);
         }
@@ -847,7 +847,7 @@ impl crate::platform_window::PlatformWindow for NativeWindow {
     fn unset_cursor(&mut self) {
         use crate::cursor::win32_cursor::Win32Cursor;
         unset_window_cursor_shape(self.hwnd);
-        // A window without a cursor shows the default (`QWindowsWindow::applyCursor`, null cursor).
+        // A window without a cursor shows the default (window cursor application, null cursor).
         if Win32Cursor::override_shape().is_none() {
             Win32Cursor::apply_shape(Win32Cursor::current_global_shape());
         }

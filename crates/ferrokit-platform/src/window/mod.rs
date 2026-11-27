@@ -82,7 +82,7 @@ bitflags::bitflags! {
         const CLICK_THROUGH          = 1 << 4;
         const CUSTOM_FRAMELESS       = 1 << 5;
         /// `Qt::ToolTip`: a frameless, always-on-top tool window that is shown without taking
-        /// activation (`WS_EX_NOACTIVATE` + `SW_SHOWNOACTIVATE`, `qwindowswindow.cpp:799-815,
+        /// activation (`WS_EX_NOACTIVATE` + `SW_SHOWNOACTIVATE`,,
         /// 1019, 2031-2036`). It never becomes the active window, so showing it does not move
         /// keyboard focus away from the window it annotates.
         const TOOLTIP                = 1 << 6;
@@ -426,7 +426,7 @@ thread_local! {
         const { std::cell::Cell::new(ferrokit_core::event::MouseButtons::NO_BUTTON) };
 }
 
-/// `QGuiApplication::mouseButtons` (qguiapplication.cpp:1974): the buttons the application has
+/// application `mouseButtons`: the buttons the application has
 /// seen pressed and not yet released. UI thread only.
 pub fn app_mouse_buttons() -> ferrokit_core::event::MouseButtons {
     APP_MOUSE_BUTTONS
@@ -435,7 +435,7 @@ pub fn app_mouse_buttons() -> ferrokit_core::event::MouseButtons {
 }
 
 /// Stores the button state of a mouse event (`QGuiApplicationPrivate::mouse_buttons = e->buttons`,
-/// qguiapplication.cpp:2455): the widget window layer calls it for every press and release, so
+/// ): the widget window layer calls it for every press and release, so
 /// backends that do not track buttons themselves (and tests with a fake window) report them too.
 pub fn set_app_mouse_buttons(buttons: ferrokit_core::event::MouseButtons) {
     let _ = APP_MOUSE_BUTTONS.try_with(|b| b.set(buttons));
@@ -455,19 +455,19 @@ pub fn last_cursor_position() -> ferrokit_gui::geometry::primitives::Point {
         .unwrap_or(ferrokit_gui::geometry::primitives::Point { x: 0, y: 0 })
 }
 
-/// Records the global position of a mouse event (qguiapplication.cpp:2445, 2605).
+/// Records the global position of a mouse event (2605).
 pub fn set_last_cursor_position(pos: ferrokit_gui::geometry::primitives::Point) {
     let _ = LAST_CURSOR_POSITION.try_with(|p| p.set(pos));
 }
 
 thread_local! {
-    /// `lastMouseMovePos` in `QWindowsPointerHandler::translateMouseEvent`: the window and native
+    /// `lastMouseMovePos` in mouse event translation: the window and native
     /// global position of the last `WM_MOUSEMOVE`; cleared when the window gets `WM_MOUSELEAVE`.
     static LAST_MOUSE_MOVE: std::cell::Cell<Option<(isize, i32, i32)>> = const { std::cell::Cell::new(None) };
 }
 
 /// Qt discards a buttonless `WM_MOUSEMOVE` at the position of the previous one
-/// (qwindowspointerhandler.cpp:800-809): Windows sends such moves without the mouse moving, e.g.
+/// : Windows sends such moves without the mouse moving, e.g.
 /// when the capture is released or a window appears under the cursor.
 #[cfg(windows)]
 fn is_repeated_buttonless_move(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> bool {
@@ -508,8 +508,8 @@ fn track_button_release(msg: u32) {
         .try_with(|b| b.set(ferrokit_core::event::MouseButtons(b.get().0 & !bit.0)));
 }
 
-/// `ReleaseCapture`, then post `SC_DRAGMOVE` / `SC_SIZE*`: `QWindowsWindow::startSystemMove` /
-/// `startSystemResize` (qwindowswindow.cpp:3303-3313) do exactly this and nothing else. The
+/// `ReleaseCapture`, then post `SC_DRAGMOVE` / `SC_SIZE*`: system move initiation /
+/// `startSystemResize` do exactly this and nothing else. The
 /// native loop swallows the button release; `WM_EXITSIZEMOVE` reconciles the pressed buttons
 /// ([`sync_mouse_buttons_after_move_loop`]).
 #[cfg(windows)]
@@ -525,9 +525,9 @@ fn post_system_command(hwnd: HWND, command: usize) {
 
 #[cfg(windows)]
 thread_local! {
-    /// Windows whose capture is the automatic one of a button press (`QWindowsWindow::AutoMouseCapture`);
+    /// Windows whose capture is the automatic one of a button press (automatic button-press mouse capture);
     /// an explicit `set_mouse_grab_enabled` clears it, so the release of the last button no
-    /// longer lets go (qwindowswindow.cpp:3283).
+    /// longer lets go.
     static AUTO_MOUSE_CAPTURE: std::cell::RefCell<std::collections::HashSet<isize>> =
         std::cell::RefCell::new(std::collections::HashSet::new());
 }
@@ -550,7 +550,7 @@ fn set_auto_capture_flag(hwnd: isize, on: bool) {
     });
 }
 
-/// `QWindowsPointerHandler::handleCaptureRelease` (qwindowspointerhandler.cpp:341-345): a press
+/// mouse capture release: a press
 /// with no capture captures the mouse automatically.
 #[cfg(windows)]
 fn capture_on_press(hwnd: HWND) {
@@ -565,8 +565,8 @@ fn capture_on_press(hwnd: HWND) {
 }
 
 /// Release the automatic capture once the release message reports no button held
-/// (qwindowspointerhandler.cpp:342-349: `!mouseButtons`, which `translateMouseEvent` takes from the
-/// message's key state, not from `QGuiApplication::mouseButtons()`); an explicit grab stays.
+/// (: `!mouseButtons`, which `translateMouseEvent` takes from the
+/// message's key state, not from application `mouseButtons`); an explicit grab stays.
 #[cfg(windows)]
 fn release_capture_when_idle(hwnd: HWND, held: ferrokit_core::event::MouseButtons) {
     let idle = held.is_empty();
@@ -580,7 +580,7 @@ fn release_capture_when_idle(hwnd: HWND, held: ferrokit_core::event::MouseButton
     }
 }
 
-/// `QWindowsWindow::setMouseGrabEnabled` (qwindowswindow.cpp:3269-3292): an explicit grab or
+/// mouse grab control: an explicit grab or
 /// release; it overrides the automatic capture. A hidden window cannot grab.
 #[cfg(windows)]
 fn set_mouse_grab_enabled_native(hwnd: HWND, grab: bool) -> bool {
@@ -607,7 +607,7 @@ fn set_mouse_grab_enabled_native(hwnd: HWND, grab: bool) -> bool {
     }
 }
 
-/// `QWindowsPointerHandler::queryMouseButtons` (qwindowspointerhandler.cpp:226-241): the physical
+/// physical mouse button query: the physical
 /// buttons (`GetAsyncKeyState`), left and right swapped when `SM_SWAPBUTTON` is set, X buttons
 /// included.
 #[cfg(windows)]
@@ -650,12 +650,12 @@ fn query_mouse_buttons() -> ferrokit_core::event::MouseButtons {
     }
 }
 
-/// `QWindowsContext::handleExitSizeMove` (qwindowscontext.cpp:1261-1290). The native move/size
+/// size/move loop exit handling. The native move/size
 /// loop swallows the button release that ends a drag, so the application still believes the
 /// button is down. When the application's buttons differ from the physical ones, every one of
 /// left, right and middle that the application has down but the system does not gets a release
 /// carrying the physical buttons (`QGuiApplicationPrivate::mouse_buttons = e->buttons`,
-/// qguiapplication.cpp:2431, which also takes over buttons the application never saw and drops
+/// , which also takes over buttons the application never saw and drops
 /// stale X buttons): as a normal `WM_*BUTTONUP` when the cursor is inside the client area of the
 /// window (`platWin->geometry()`), and without a mouse event for the window when it is outside
 /// (Qt: `NonClientAreaMouseButtonRelease`, which ferrokit has no counterpart for). A button that
@@ -679,7 +679,7 @@ unsafe fn sync_mouse_buttons_after_move_loop(hwnd: HWND) {
         }
         let mut pt = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
         GetCursorPos(&mut pt);
-        // `QWindowsWindow::geometry()` is the client area in screen coordinates.
+        // window geometry is the client area in screen coordinates.
         let mut client: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
         windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut client);
         let mut origin = windows_sys::Win32::Foundation::POINT {

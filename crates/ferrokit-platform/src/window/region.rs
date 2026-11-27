@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Windows window regions (`QWindowsWindow::setMask`) and owner windows
-//! (`QWindowsWindow::updateTransientParent`).
+//! Windows window regions (window mask application) and owner windows
+//! (transient parent ownership update).
 
 use crate::win32_handles::OwnedRgn;
 use ferrokit_gui::geometry::Region;
@@ -23,7 +23,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 /// `RGNDATAHEADER` is 32 bytes (`dwSize`, `iType`, `nCount`, `nRgnSize`, `rcBound`).
 const HEADER_WORDS: usize = 8;
 
-/// `qRegionToWinRegion`: the GDI region with the rectangles of `region` (`RECT` edges are
+/// GDI region conversion: the GDI region with the rectangles of `region` (`RECT` edges are
 /// exclusive, as `Rect`'s are). An empty region gives an empty GDI region. `None` when GDI
 /// refuses. The caller owns the region.
 pub(crate) fn region_to_hrgn(region: &Region) -> Option<OwnedRgn> {
@@ -106,8 +106,8 @@ pub(crate) fn hrgn_rects(rgn: HRGN) -> Option<Vec<Rect>> {
 }
 
 /// Where the client area starts inside the window rectangle: a window region is in window
-/// coordinates, a mask in client coordinates (`QWindowsWindow::setMask` offsets by the frame
-/// margins, `qwindowswindow.cpp`).
+/// coordinates, a mask in client coordinates (window mask application offsets by the frame
+/// margins).
 fn client_origin_in_window(hwnd: HWND) -> (i32, i32) {
     // SAFETY: RECT and POINT are plain integer structs, so zeroed is valid; `window` and
     // `client` are local out pointers valid for the calls; user32 validates `hwnd` and the calls
@@ -122,7 +122,7 @@ fn client_origin_in_window(hwnd: HWND) -> (i32, i32) {
     }
 }
 
-/// `QWindowsWindow::setMask`: an empty region removes the window region (`SetWindowRgn(NULL)`);
+/// window mask application: an empty region removes the window region (`SetWindowRgn(NULL)`);
 /// otherwise the window is clipped to `region`, given in client coordinates. The system takes the
 /// region over on success. Returns whether the window has the requested region.
 pub(crate) fn set_window_mask(hwnd: HWND, region: &Region) -> bool {
@@ -191,9 +191,9 @@ pub(crate) fn window_mask_rects(hwnd: HWND) -> Option<Vec<Rect>> {
     }
 }
 
-/// `QWindowsWindow::updateTransientParent`: makes `owner` the owner of `hwnd` (a top-level
+/// transient parent ownership update: makes `owner` the owner of `hwnd` (a top-level
 /// window stays top-level, `SetParent` would make it a child). A child-window owner is replaced
-/// by its parent until a top-level window is found (QTSOLBUG-71).
+/// by its parent until a top-level window is found.
 pub(crate) fn set_owner(hwnd: HWND, owner: Option<HWND>) {
     if hwnd.is_null() {
         return;
@@ -257,9 +257,9 @@ unsafe extern "system" fn collect_owned(hwnd: HWND, lparam: LPARAM) -> i32 {
     .unwrap_or(0)
 }
 
-/// `QWindowsWindow::destroyWindow` (`qwindowswindow.cpp:1708-1718`): the windows this one owns
+/// the Win32 window backend: the windows this one owns
 /// stop being owned before it is destroyed, as Windows would destroy them with it
-/// (QTBUG-35499, QTBUG-36666). Only windows of `class` (the ferrokit window class, without its
+/// . Only windows of `class` (the ferrokit window class, without its
 /// terminating NUL) are released.
 pub(crate) fn release_owned_windows(owner: HWND, class: &[u16]) {
     if owner.is_null() {
@@ -355,7 +355,7 @@ mod tests {
         ])
     }
 
-    /// `QWindowsWindow::setMask`: the mask is the window region, given in client coordinates
+    /// window mask application: the mask is the window region, given in client coordinates
     /// whether or not the window has a frame, and an empty mask removes it.
     #[test]
     fn a_mask_is_the_window_region_in_client_coordinates() {
@@ -381,7 +381,7 @@ mod tests {
 
     /// A Tool | Frameless | StaysOnTop window with a transient parent: owned by the parent
     /// (`GW_OWNER`), no taskbar button, topmost; it survives its owner's destruction because the
-    /// owner releases it first (`QWindowsWindow::destroyWindow`).
+    /// owner releases it first (the Win32 window backend).
     #[test]
     fn a_tool_window_is_owned_by_its_transient_parent() {
         let parent = NativeWindow::new("owner", Rect::new(50, 50, 220, 160), WindowFlags::NORMAL)
