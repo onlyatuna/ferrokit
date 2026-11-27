@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! The font families Qt's Linux font database knows, built the way it builds them
-//! (`QFontconfigDatabase::populateFontDatabase` and `populateFromPattern`, qfontconfigdatabase.cpp,
-//! with `qt_registerFont` of qfontdatabase.cpp), and the lookups Qt runs on them
-//! (`QFontDatabasePrivate::match`, `bestFoundry` and `bestStyle`, `findFont`'s fallback pass and
-//! `QFontconfigDatabase::fallbacksForFamily`).
+//! The font families the Linux font database knows, built the way it builds them
+//! (`QFontconfigDatabase::system font collection enumeration` and `pattern registration`, fontconfig database,
+//! with `style registration` of font database), and the lookups the catalog runs on them
+//! (`QFontDatabasePrivate::match`, `foundry matching` and `nearest style matching`, `findFont`'s fallback pass and
+//! `fontconfig fallback family list`).
 //!
-//! Qt registers every font `FcFontList` returns under the names fontconfig gives it: the first
+//! the catalog registers every font `FcFontList` returns under the names fontconfig gives it: the first
 //! `FC_FAMILY` is the family, the others are aliases of it or, when their style name differs, families
 //! of their own ("DejaVu Sans" with the style "Condensed" and a family "DejaVu Sans Condensed"
 //! with the style "Book"). A style is keyed by its slant, weight and stretch (`FC_WIDTH`); a request
@@ -20,7 +20,7 @@
 //! Not modelled: bitmap fonts (`FC_SCALABLE` false: no backend here draws them), foundry
 //! names in a requested family (`"Family [Foundry]"` is read, no other foundry rule), named instances
 //! of variable fonts (registered under their styles, opened as the default instance), and the
-//! application fallback families (`QFontDatabase::addApplicationFallbackFontFamily`).
+//! application fallback families (`application fallback font families`).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,12 +28,12 @@ use std::path::PathBuf;
 use crate::text::font::StyleHint;
 use crate::text::fontconfig_ffi::{self, CharSet, RawFace, SortRequest};
 
-/// `QFontDatabase::WritingSystem` indices the registry needs.
+/// `writing-system bitmask` indices the registry needs.
 mod ws {
     pub const LATIN: usize = 1;
 }
 
-/// `QFont::Style`.
+/// `font slant style`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Slant {
     Normal,
@@ -42,7 +42,7 @@ pub(crate) enum Slant {
 }
 
 impl Slant {
-    /// `FC_SLANT` of the request `fallbacksForFamily` builds.
+    /// `FC_SLANT` of the request `fallback family list` builds.
     fn fc_slant(self) -> i32 {
         match self {
             Slant::Normal => 0,
@@ -60,16 +60,16 @@ impl Slant {
     }
 }
 
-/// What a request asks of a family: `QFontDef`'s style name, weight, slant and stretch.
+/// What a request asks of a family: `font request`'s style name, weight, slant and stretch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Request<'a> {
-    /// `QFontDef::styleName`: a style of this name is taken whatever its key (`bestStyle`); empty
+    /// `requested style name`: a style of this name is taken whatever its key (`nearest style matching`); empty
     /// for none.
     pub style_name: &'a str,
-    /// `QFont::Weight`, 1..=1000.
+    /// `CSS font weight`, 1..=1000.
     pub weight: u16,
     pub slant: Slant,
-    /// `QFont::Stretch`; 0 (any) is matched as 100 (unstretched).
+    /// `CSS font stretch`; 0 (any) is matched as 100 (unstretched).
     pub stretch: u16,
     /// Only families of color fonts are asked for (the emoji script, `match`'s `colorFont` test).
     pub color: bool,
@@ -102,19 +102,19 @@ impl Handle {
     }
 }
 
-/// A style of a foundry (`QtFontStyle`).
+/// A style of a foundry (`font style key`).
 #[derive(Clone, Debug)]
 struct Style {
     name: String,
     weight: u16,
     slant: Slant,
-    /// `QtFontStyle::Key::stretch`, a signed 12 bit field; 0 matches any stretch.
+    /// `CSS font stretch`, a signed 12 bit field; 0 matches any stretch.
     stretch: i32,
     handle: Option<Handle>,
 }
 
 impl Style {
-    /// `QtFontStyle::Key::operator==`.
+    /// `style key equality`.
     fn key_equals(&self, weight: u16, slant: Slant, stretch: i32) -> bool {
         self.slant == slant
             && self.weight == weight
@@ -122,30 +122,30 @@ impl Style {
     }
 }
 
-/// The styles of a family from one foundry (`QtFontFoundry`).
+/// The styles of a family from one foundry (`font foundry`).
 #[derive(Clone, Debug)]
 struct Foundry {
     name: String,
     styles: Vec<Style>,
 }
 
-/// A family (`QtFontFamily`).
+/// A family (`font family record`).
 #[derive(Clone, Debug)]
 pub(crate) struct Family {
     pub name: String,
     /// [`fold`] of the name.
     folded: String,
-    /// [`fold`] of each alias (`QtFontFamily::aliases`, which are only ever compared folded).
+    /// [`fold`] of each alias (`family aliases`, which are only ever compared folded).
     aliases: Vec<String>,
     foundries: Vec<Foundry>,
-    /// `QFontDatabase::WritingSystem` bits.
+    /// `writing-system bitmask` bits.
     pub writing_systems: u64,
     pub fixed_pitch: bool,
     pub color: bool,
 }
 
 impl Family {
-    /// `QtFontFamily::matchesFamilyName` for the [`fold`]ed `name`.
+    /// `family name or alias match` for the [`fold`]ed `name`.
     fn matches_name(&self, folded: &str) -> bool {
         self.folded == folded || self.aliases.iter().any(|alias| alias == folded)
     }
@@ -159,19 +159,19 @@ pub(crate) struct Match {
     style: usize,
 }
 
-/// Case folding for `Qt::CaseInsensitive` comparisons.
+/// Case folding for `case-insensitive` comparisons.
 fn fold(name: &str) -> String {
     name.to_lowercase()
 }
 
-/// `QString::compare(..., Qt::CaseInsensitive)`: by UTF-16 code unit of the folded text.
+/// `UTF-16 case-insensitive comparison`: by UTF-16 code unit of the folded text.
 fn compare_names(a: &str, b: &str) -> std::cmp::Ordering {
     fold(a).encode_utf16().cmp(fold(b).encode_utf16())
 }
 
-/// `weightFromFcWeight`: fontconfig's weights (0 to 215) onto `QFont::Weight`, piecewise linear.
+/// `fontconfig-to-CSS weight mapping`: fontconfig's weights (0 to 215) onto `CSS font weight`, piecewise linear.
 pub(crate) fn weight_from_fc(weight: i32) -> u16 {
-    // (fontconfig weight, Qt weight) at the named weights both sides share.
+    // (fontconfig weight, the catalog weight) at the named weights both sides share.
     const STOPS: [(i32, i32); 10] = [
         (0, 100),
         (40, 200),
@@ -198,12 +198,12 @@ pub(crate) fn weight_from_fc(weight: i32) -> u16 {
     1000
 }
 
-/// `stretchFromFcWidth`: fontconfig's widths are `QFont::Stretch` values, limited to 1..=4000.
+/// `fontconfig-to-CSS stretch mapping`: fontconfig's widths are `CSS font stretch` values, limited to 1..=4000.
 fn stretch_from_fc_width(width: i32) -> i32 {
     width.clamp(1, 4000)
 }
 
-/// The language `fallbacksForFamily` adds for the items of a script (`specialLanguages`), by
+/// The language `fallback family list` adds for the items of a script (`script-to-language table`), by
 /// the ISO 15924 code of the script; `None` for the scripts that have none, which take the
 /// system's language (or no language for an empty family).
 pub(crate) fn special_language(script: &str) -> Option<&'static str> {
@@ -320,15 +320,15 @@ pub(crate) fn special_language(script: &str) -> Option<&'static str> {
     })
 }
 
-/// The fallback families of a request, by what `fallbacksForFamily` is asked
-/// (`QtFontFallbacksCacheKey`); the script is the key of
+/// The fallback families of a request, by what `fallback family list` is asked
+/// (`fallback cache key`); the script is the key of
 /// [`fallback_script_key`](crate::text::glyph_layout::fallback_script_key).
 type FallbackKey = (String, Slant, StyleHint, &'static str);
 
-/// Qt's registry of families.
+/// the registry of families.
 #[derive(Default)]
 pub(crate) struct Registry {
-    /// Sorted by name, case insensitively (`QFontDatabasePrivate::family`).
+    /// Sorted by name, case insensitively (`sorted case-insensitive family table`).
     families: Vec<Family>,
     fallbacks: HashMap<FallbackKey, Vec<String>>,
     charsets: HashMap<String, Option<CharSet>>,
@@ -337,7 +337,7 @@ pub(crate) struct Registry {
 }
 
 impl Registry {
-    /// The registry of `faces`, a fontconfig font list, as `populateFontDatabase` builds it.
+    /// The registry of `faces`, a fontconfig font list, as `system font collection enumeration` builds it.
     pub fn from_fontconfig(faces: &[RawFace]) -> Self {
         let mut registry = Self {
             fontconfig: true,
@@ -397,7 +397,7 @@ impl Registry {
         });
     }
 
-    /// `populateFromPattern`, minus the application font bookkeeping.
+    /// `pattern registration`, minus the application font bookkeeping.
     fn register_face(&mut self, face: &RawFace) {
         if !face.scalable {
             return;
@@ -451,7 +451,7 @@ impl Registry {
         }
     }
 
-    /// `qt_registerFont`: the family is created when missing, its flags are those of the last
+    /// `style registration`: the family is created when missing, its flags are those of the last
     /// registration, the writing systems accumulate, and a style with the same name and key as
     /// an earlier one takes over its font.
     fn register(&mut self, registration: Registration<'_>) {
@@ -480,7 +480,7 @@ impl Registry {
         family.fixed_pitch = registration.fixed_pitch;
         family.color = registration.color;
         family.writing_systems |= registration.writing_systems;
-        // `QtFontFamily::foundry`: a font without a foundry joins the only foundry a family has;
+        // `font family record::foundry`: a font without a foundry joins the only foundry a family has;
         // otherwise the foundry is the one of that name, created when missing.
         let foundry = match registration.foundry {
             None if family.foundries.len() == 1 => 0,
@@ -503,7 +503,7 @@ impl Registry {
             }
         };
         let foundry = &mut family.foundries[foundry];
-        // `QtFontFoundry::style` with every retrieval flag: the style name and the key must match.
+        // `font foundry::style` with every retrieval flag: the style name and the key must match.
         let existing = foundry.styles.iter_mut().find(|s| {
             s.name == registration.style_name
                 && s.key_equals(
@@ -588,7 +588,7 @@ impl Registry {
         &self.families[found.family]
     }
 
-    /// `bestStyle`: the style named as the request's style name, else the style nearest to the
+    /// `nearest style matching`: the style named as the request's style name, else the style nearest to the
     /// request by weight, stretch and slant (the first of equals).
     fn best_style(foundry: &Foundry, request: &Request, stretch: i32) -> usize {
         let mut best = 0;
@@ -617,7 +617,7 @@ impl Registry {
         best
     }
 
-    /// `bestFoundry` for scalable fonts: the foundry of the family whose best style scores
+    /// `foundry matching` for scalable fonts: the foundry of the family whose best style scores
     /// below `score` (the penalty is 0x2000 for a style that is not exactly the one asked for);
     /// returns the winning score and the foundry and style, if any beat `score`.
     fn best_foundry(
@@ -701,7 +701,7 @@ impl Registry {
     /// The family named `requested` ("Family [Foundry]" is read as
     /// `QFontDatabasePrivate::parseFontName` does) with its best style for `request`
     /// (`findFont`'s family name match pass). `load` says whether the font of a match can be
-    /// opened; a family it refuses is put in `blacklist`, as Qt does for a font engine it could
+    /// opened; a family it refuses is put in `blacklist`, as the catalog does for a font engine it could
     /// not create.
     pub fn find_exact(
         &self,
@@ -722,7 +722,7 @@ impl Registry {
         None
     }
 
-    /// The first family `fallbacksForFamily` lists for the missing family `requested` that can
+    /// The first family `fallback family list` lists for the missing family `requested` that can
     /// be loaded, with its best style (`findFont`'s fallback pass, for a request in no
     /// particular script).
     pub fn find_substitute(
@@ -765,7 +765,7 @@ impl Registry {
             .or_else(|| self.find_substitute(requested, request, hint, &mut blacklist, &mut load))
     }
 
-    /// `fallbacksForFamily` (the platform's list, then `QFontDatabase`'s filter): the families
+    /// `fallback family list` (the platform's list, then `QFontDatabase`'s filter): the families
     /// fontconfig sorts for the request, each once and in its order, without `family` itself and
     /// without any that is not in the registry. `script` is the key of
     /// [`fallback_script_key`](crate::text::glyph_layout::fallback_script_key): the ISO 15924
@@ -821,7 +821,7 @@ impl Registry {
     }
 }
 
-/// One call of `qt_registerFont`.
+/// One call of `style registration`.
 struct Registration<'a> {
     family: &'a str,
     style_name: &'a str,
@@ -964,7 +964,7 @@ mod tests {
     }
 
     /// A font registered twice with the same style name and key takes the later font, as
-    /// `qt_registerFont` replaces the handle.
+    /// `style registration` replaces the handle.
     #[test]
     fn the_last_registration_of_a_style_wins() {
         let registry = Registry::from_fontconfig(&[
