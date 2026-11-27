@@ -1,15 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Style-sheet box painting: a rule's background and solid border (`QRenderRule::drawBackground`,
-//! `QRenderRule::drawBorder` -> `qDrawBorder`).
-//!
-//! Qt does not stroke the border with a pen centred on the rectangle edge. `qDrawBorder`
-//! (`gui/painting/qcssutil.cpp:313-369`) fills each edge as a rectangle (or trapezoid) that lies inside
-//! the border box, and draws the rounded corners as 45-degree arcs stroked with a square-capped pen of
-//! the border width. The background of a rounded box is a path through the middle of the border
-//! (`QRenderRule::borderClip`, `widgets/styles/qstylesheetstyle.cpp:1288-1324`), filled anti-aliased.
-//!
-//! Only what the style sheets here use is covered: a uniform width, a solid style, one colour for all four
-//! edges and one circular radius for all four corners.
+//! Style-sheet box painting: background and uniform solid border over CSS border-box geometry.
 
 use crate::geometry::primitives::RectF;
 use crate::paint::brush::Brush;
@@ -24,10 +14,10 @@ pub struct QssBorder {
     pub color: Color,
 }
 
+/// Cubic Bezier control-point factor for a 90-degree circular arc (`4 * (sqrt(2) - 1) / 3`).
 const KAPPA: f32 = 0.552_284_8;
 
-/// `qNormalizeRadii` (`qcssutil.cpp:279-294`) for one radius on all corners: a radius whose two
-/// corners do not fit along a side is dropped (not clamped).
+/// Drops the corner radius to zero if two corners cannot fit along either side.
 fn normalize_radius(rect: RectF, radius: f32) -> f32 {
     let r = radius.max(0.0);
     if 2.0 * r > rect.width || 2.0 * r > rect.height {
@@ -38,8 +28,6 @@ fn normalize_radius(rect: RectF, radius: f32) -> f32 {
 }
 
 /// Draws the background and border of a style-sheet box over `rect` (the border box).
-///
-/// `background` is `QRenderRule::drawBackground`, `border` is `QRenderRule::drawBorder`.
 pub fn draw_qss_box(
     painter: &mut Painter,
     rect: RectF,
@@ -66,8 +54,8 @@ pub fn draw_qss_box(
     painter.restore();
 }
 
-/// `QRenderRule::drawBackground`: a rounded box is filled (anti-aliased) along the middle of the border,
-/// a square one is a plain `fillRect` with the painter's current anti-aliasing (off by default).
+/// Fills the box background: rounded boxes follow the centerline of the border so the background
+/// meets the rounded border cleanly without bleeding past the outer corners.
 fn draw_background(
     painter: &mut Painter,
     rect: RectF,
@@ -115,17 +103,15 @@ enum Edge {
     Right,
 }
 
-/// `QRenderRule::drawBorder` -> `qDrawBorder` for a uniform solid border of one colour.
+/// Draws four inset border edges and, when `radius > 0`, 45-degree corner arc segments.
 fn draw_border(painter: &mut Painter, rect: RectF, border: QssBorder, radius: f32) {
     let bw = border.width;
     let (left, top) = (rect.x, rect.y);
     let (right, bottom) = (rect.x + rect.width, rect.y + rect.height);
-    // `paintsOver` (`qcssutil.cpp:297-311`) for two solid edges of the same colour: only an opaque colour
-    // lets one edge draw over the other, otherwise the corner is split by a mitre (trapezoids).
     let opaque = border.color.alpha() >= 1.0;
-    let dw = if radius > 0.0 || opaque { 0.0 } else { bw };
+    let miter = if radius > 0.0 || opaque { 0.0 } else { bw };
     painter.set_render_hint(RenderHint::Antialiasing, true);
-    // Drawn in increasing order of precedence: bottom, right, left, top.
+
     draw_edge(
         painter,
         border.color,
@@ -134,8 +120,7 @@ fn draw_border(painter: &mut Painter, rect: RectF, border: QssBorder, radius: f3
         bottom - bw,
         right - radius,
         bottom,
-        dw,
-        dw,
+        miter,
     );
     draw_edge(
         painter,
@@ -145,8 +130,7 @@ fn draw_border(painter: &mut Painter, rect: RectF, border: QssBorder, radius: f3
         top + radius,
         right,
         bottom - radius,
-        dw,
-        dw,
+        miter,
     );
     draw_edge(
         painter,
@@ -156,8 +140,7 @@ fn draw_border(painter: &mut Painter, rect: RectF, border: QssBorder, radius: f3
         top + radius,
         left + bw,
         bottom - radius,
-        dw,
-        dw,
+        miter,
     );
     draw_edge(
         painter,
@@ -167,38 +150,59 @@ fn draw_border(painter: &mut Painter, rect: RectF, border: QssBorder, radius: f3
         top,
         right - radius,
         top + bw,
-        dw,
-        dw,
+        miter,
     );
+
     if radius > 0.0 {
-        let (r, pw) = (radius, bw);
-        let h = pw / 2.0;
-        let d = 2.0 * r - pw;
-        let pen = Pen::new(border.color, pw).with_cap(LineCap::Square);
+        let h = bw / 2.0;
+        let d = 2.0 * radius - bw;
+        let pen = Pen::new(border.color, bw).with_cap(LineCap::Square);
         painter.set_brush(Brush::Color(Color::TRANSPARENT));
         painter.set_pen(pen);
         let (x1, x2) = (left + radius, right - radius);
         let (y1, y2) = (top + radius, bottom - radius);
-        let a = |painter: &mut Painter, x: f32, y: f32, start: f32, span: f32| {
+        let arc = |painter: &mut Painter, x: f32, y: f32, start: f32, span: f32| {
             painter.draw_arc(RectF::new(x, y, d, d), start, span);
         };
-        // qDrawRoundedCorners (`qcssutil.cpp:109-141`), `edge` x `r1`/`r2`.
-        // Top
-        a(painter, x1 - r + h, top + h, 135.0, -45.0);
-        a(painter, x2 - r + h, top + h, 45.0, 45.0);
-        // Bottom
-        a(painter, x1 - r + h, bottom - 2.0 * r + h, -90.0, -45.0);
-        a(painter, x2 - r + h, bottom - 2.0 * r + h, -90.0, 45.0);
-        // Left
-        a(painter, left + h, y1 - r + h, 135.0, 45.0);
-        a(painter, left + h, y2 - r + h, 180.0, 45.0);
-        // Right
-        a(painter, right - 2.0 * r + h, y1 - r + h, 45.0, -45.0);
-        a(painter, right - 2.0 * r + h, y2 - r + h, 315.0, 45.0);
+        // Top corners
+        arc(painter, x1 - radius + h, top + h, 135.0, -45.0);
+        arc(painter, x2 - radius + h, top + h, 45.0, 45.0);
+        // Bottom corners
+        arc(
+            painter,
+            x1 - radius + h,
+            bottom - 2.0 * radius + h,
+            -90.0,
+            -45.0,
+        );
+        arc(
+            painter,
+            x2 - radius + h,
+            bottom - 2.0 * radius + h,
+            -90.0,
+            45.0,
+        );
+        // Left corners
+        arc(painter, left + h, y1 - radius + h, 135.0, 45.0);
+        arc(painter, left + h, y2 - radius + h, 180.0, 45.0);
+        // Right corners
+        arc(
+            painter,
+            right - 2.0 * radius + h,
+            y1 - radius + h,
+            45.0,
+            -45.0,
+        );
+        arc(
+            painter,
+            right - 2.0 * radius + h,
+            y2 - radius + h,
+            315.0,
+            45.0,
+        );
     }
 }
 
-/// `qDrawEdge` (`qcssutil.cpp:149-277`), solid style.
 #[allow(clippy::too_many_arguments)]
 fn draw_edge(
     painter: &mut Painter,
@@ -208,24 +212,23 @@ fn draw_edge(
     y1: f32,
     x2: f32,
     y2: f32,
-    dw1: f32,
-    dw2: f32,
+    miter: f32,
 ) {
     painter.set_pen(None);
     painter.set_brush(Brush::Color(color));
-    let width = match edge {
+    let thickness = match edge {
         Edge::Top | Edge::Bottom => y2 - y1,
         Edge::Left | Edge::Right => x2 - x1,
     };
-    if width == 1.0 || (dw1 == 0.0 && dw2 == 0.0) {
+    if thickness == 1.0 || miter == 0.0 {
         painter.draw_rect(RectF::new(x1, y1, x2 - x1, y2 - y1));
         return;
     }
     let quad = match edge {
-        Edge::Top => [(x1, y1), (x1 + dw1, y2), (x2 - dw2, y2), (x2, y1)],
-        Edge::Bottom => [(x1 + dw1, y1), (x1, y2), (x2, y2), (x2 - dw2, y1)],
-        Edge::Left => [(x1, y1), (x1, y2), (x2, y2 - dw2), (x2, y1 + dw1)],
-        Edge::Right => [(x1, y1 + dw1), (x1, y2 - dw2), (x2, y2), (x2, y1)],
+        Edge::Top => [(x1, y1), (x1 + miter, y2), (x2 - miter, y2), (x2, y1)],
+        Edge::Bottom => [(x1 + miter, y1), (x1, y2), (x2, y2), (x2 - miter, y1)],
+        Edge::Left => [(x1, y1), (x1, y2), (x2, y2 - miter), (x2, y1 + miter)],
+        Edge::Right => [(x1, y1 + miter), (x1, y2 - miter), (x2, y2), (x2, y1)],
     };
     let mut pb = PathBuilder::new();
     pb.move_to(quad[0].0, quad[0].1);

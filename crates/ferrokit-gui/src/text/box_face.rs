@@ -1,77 +1,80 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Qt's box font engine (`QFontEngineBox`, qfontengine.cpp:1800-1965): the engine a script item gets
-//! when no font can shape it, which draws every character as an empty box one pixel size wide.
+//! Fallback box-glyph face for scripts with no available font: maps every code point to a
+//! missing-glyph outline box whose width and height equal the integer pixel size.
 
 use crate::text::font::SharedFontData;
 use crate::text::glyph_face::{GlyphFace, GlyphMetrics, LineMetrics};
 use std::sync::LazyLock;
 
-/// The font HarfBuzz shapes the box engine's text with: Qt hands it the engine itself, whose glyph
-/// for every character is 1 and whose advance is the size (`hb_qt_font_get_nominal_glyph`,
-/// `hb_qt_get_glyph_h_advance`), with no layout tables. This is the same as an sfnt with a
-/// many-to-one `cmap` (format 13) from every code point to glyph 1, 1000 units per em, an advance
-/// of 1000 for both glyphs and no `GSUB`, `GPOS` or `GDEF`, so the shaper's clusters, reordering,
-/// dotted circles and zeroed marks come out as they do in Qt.
+/// Minimal OpenType sfnt font for shaping missing-glyph runs: maps all Unicode scalar values via a
+/// `cmap` format 13 subtable to glyph 1 with `units_per_em = 1000` and uniform advance `1000`.
 pub(crate) fn shaping_font() -> SharedFontData {
     static DATA: LazyLock<SharedFontData> =
-        LazyLock::new(|| SharedFontData::from_vec(build_font()));
+        LazyLock::new(|| SharedFontData::from_vec(build_tofu_sfnt()));
     DATA.clone()
 }
 
-fn build_font() -> Vec<u8> {
-    fn u16s(out: &mut Vec<u8>, values: &[u16]) {
-        for v in values {
-            out.extend_from_slice(&v.to_be_bytes());
-        }
+fn push_be_u16(out: &mut Vec<u8>, values: &[u16]) {
+    for &v in values {
+        out.extend_from_slice(&v.to_be_bytes());
     }
-    fn u32s(out: &mut Vec<u8>, values: &[u32]) {
-        for v in values {
-            out.extend_from_slice(&v.to_be_bytes());
-        }
+}
+
+fn push_be_u32(out: &mut Vec<u8>, values: &[u32]) {
+    for &v in values {
+        out.extend_from_slice(&v.to_be_bytes());
     }
-    // cmap: one Windows Unicode full repertoire subtable, format 13, one group.
+}
+
+fn build_tofu_sfnt() -> Vec<u8> {
+    const UPM: u16 = 1000;
+
+    // `cmap`: header (version 0, 1 encoding record) -> platform 3, encoding 10 -> format 13 subtable.
     let mut cmap = Vec::new();
-    u16s(&mut cmap, &[0, 1, 3, 10]);
-    u32s(&mut cmap, &[12]);
-    u16s(&mut cmap, &[13, 0]);
-    u32s(&mut cmap, &[16 + 12, 0, 1, 0, 0x10_FFFF, 1]);
-    // head
+    push_be_u16(&mut cmap, &[0, 1, 3, 10]);
+    push_be_u32(&mut cmap, &[12]);
+    push_be_u16(&mut cmap, &[13, 0]);
+    push_be_u32(&mut cmap, &[28, 0, 1, 0, 0x10_FFFF, 1]);
+
+    // `head`: OpenType font header with 1000 units per em.
     let mut head = Vec::new();
-    u32s(&mut head, &[0x0001_0000, 0x0001_0000, 0, 0x5F0F_3CF5]);
-    u16s(&mut head, &[0, 1000]);
-    head.extend_from_slice(&[0u8; 16]); // created, modified
-    // xMin, yMin, xMax, yMax, macStyle, lowestRecPPEM, fontDirectionHint, indexToLocFormat,
-    // glyphDataFormat.
-    u16s(&mut head, &[0, 0, 1000, 1000, 0, 8, 2, 0, 0]);
-    // hhea
+    push_be_u32(&mut head, &[0x0001_0000, 0x0001_0000, 0, 0x5F0F_3CF5]);
+    push_be_u16(&mut head, &[0, UPM]);
+    head.extend_from_slice(&[0u8; 16]);
+    push_be_u16(&mut head, &[0, 0, UPM, UPM, 0, 8, 2, 0, 0]);
+
+    // `hhea`: horizontal header (ascent 1000, descent 0, 2 hmtx metrics).
     let mut hhea = Vec::new();
-    u32s(&mut hhea, &[0x0001_0000]);
-    // ascender, descender, lineGap, advanceWidthMax, minLeftSideBearing, minRightSideBearing,
-    // xMaxExtent, caretSlopeRise, caretSlopeRun, caretOffset.
-    u16s(&mut hhea, &[1000, 0, 0, 1000, 0, 0, 1000, 1, 0, 0]);
-    hhea.extend_from_slice(&[0u8; 8]); // reserved
-    u16s(&mut hhea, &[0, 2]);
-    // hmtx: two long metrics
+    push_be_u32(&mut hhea, &[0x0001_0000]);
+    push_be_u16(&mut hhea, &[UPM, 0, 0, UPM, 0, 0, UPM, 1, 0, 0]);
+    hhea.extend_from_slice(&[0u8; 8]);
+    push_be_u16(&mut hhea, &[0, 2]);
+
+    // `hmtx`: glyph 0 and glyph 1 both advance 1000 units with 0 lsb.
     let mut hmtx = Vec::new();
-    u16s(&mut hmtx, &[1000, 0, 1000, 0]);
-    // maxp 0.5
+    push_be_u16(&mut hmtx, &[UPM, 0, UPM, 0]);
+
+    // `maxp` version 0.5: 2 glyphs.
     let mut maxp = Vec::new();
-    u32s(&mut maxp, &[0x0000_5000]);
-    u16s(&mut maxp, &[2]);
-    let tables: [(&[u8; 4], &Vec<u8>); 5] = [
+    push_be_u32(&mut maxp, &[0x0000_5000]);
+    push_be_u16(&mut maxp, &[2]);
+
+    let tables: [(&[u8; 4], &[u8]); 5] = [
         (b"cmap", &cmap),
         (b"head", &head),
         (b"hhea", &hhea),
         (b"hmtx", &hmtx),
         (b"maxp", &maxp),
     ];
+
     let mut font = Vec::new();
-    u32s(&mut font, &[0x0001_0000]);
-    u16s(&mut font, &[tables.len() as u16, 64, 2, 16]);
+    push_be_u32(&mut font, &[0x0001_0000]);
+    push_be_u16(&mut font, &[tables.len() as u16, 64, 2, 16]);
+
     let mut offset = 12 + 16 * tables.len();
     for (tag, data) in &tables {
         font.extend_from_slice(*tag);
-        u32s(&mut font, &[0, offset as u32, data.len() as u32]);
+        push_be_u32(&mut font, &[0, offset as u32, data.len() as u32]);
         offset += data.len().div_ceil(4) * 4;
     }
     for (_, data) in &tables {
@@ -81,23 +84,20 @@ fn build_font() -> Vec<u8> {
     font
 }
 
-/// The box engine. Its size is the request's pixel size, which Qt passes as an `int` (the
-/// fraction of a size like 13.5 is dropped).
+/// Fallback glyph face that renders a hollow square outline for every character.
 pub(crate) struct BoxFace;
-/// `QFontEngineBox::_size`.
-fn size_of(px: f32) -> i32 {
+
+fn box_size(px: f32) -> i32 {
     px as i32
 }
 
 impl GlyphFace for BoxFace {
-    /// `QFontEngineBox::glyphIndex`: every character has the glyph 1.
     fn glyph_index(&self, _ch: char) -> u16 {
         1
     }
 
-    /// `QFontEngineBox::boundingBox(glyph_t)`: `glyph_metrics_t(0, -_size, _size, _size, _size, 0)`.
     fn metrics_indexed(&self, _glyph_id: u16, px: f32) -> GlyphMetrics {
-        let size = size_of(px);
+        let size = box_size(px);
         GlyphMetrics {
             xmin: 0,
             ymin: 0,
@@ -108,26 +108,25 @@ impl GlyphFace for BoxFace {
         }
     }
 
-    /// `QFontEngineBox::alphaMapForGlyph`: the outline of a square inset by two pixels at the
-    /// left and top and three at the right and bottom.
     fn rasterize_indexed(&self, glyph_id: u16, px: f32) -> (GlyphMetrics, Vec<u8>) {
         let metrics = self.metrics_indexed(glyph_id, px);
-        let size = size_of(px).max(0) as usize;
+        let size = box_size(px).max(0) as usize;
         let mut bitmap = vec![0u8; size * size];
         if size >= 4 {
-            for i in 2..=size - 3 {
-                bitmap[i + 2 * size] = 255;
-                bitmap[i + (size - 3) * size] = 255;
-                bitmap[2 + i * size] = 255;
-                bitmap[size - 3 + i * size] = 255;
+            let min = 2;
+            let max = size - 3;
+            for i in min..=max {
+                bitmap[min * size + i] = 255;
+                bitmap[max * size + i] = 255;
+                bitmap[i * size + min] = 255;
+                bitmap[i * size + max] = 255;
             }
         }
         (metrics, bitmap)
     }
 
-    /// `QFontEngineBox::ascent`, `descent` and `leading` (15 % of the size, rounded up).
     fn line_metrics(&self, px: f32) -> Option<LineMetrics> {
-        let size = size_of(px) as f32;
+        let size = box_size(px) as f32;
         Some(LineMetrics {
             ascent: size,
             descent: 0.0,
@@ -141,8 +140,6 @@ impl GlyphFace for BoxFace {
 mod tests {
     use super::*;
 
-    /// The font the shaper gets parses, maps every code point to glyph 1 and gives both glyphs
-    /// the advance of the size.
     #[test]
     fn the_shaping_font_maps_everything_to_glyph_one() {
         use rustybuzz::ttf_parser::{Face, GlyphId};
@@ -165,7 +162,6 @@ mod tests {
         assert_eq!((metrics.width, metrics.height), (16, 16));
         assert_eq!(bitmap.len(), 256);
         let on: Vec<usize> = (0..256).filter(|&i| bitmap[i] == 255).collect();
-        // Rows 2 and 13, columns 2 and 13, from 2 to 13 inclusive.
         assert_eq!(on.len(), 4 * 12 - 4);
         assert!(on.contains(&(2 * 16 + 2)) && on.contains(&(13 * 16 + 13)));
         assert!(!on.contains(&(3 * 16 + 3)));
