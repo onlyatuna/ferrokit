@@ -1,27 +1,10 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! `QColor`: an RGB / HSV / HSL / CMYK colour with Qt 6 semantics.
-//!
-//! Mirrors `qtbase/src/gui/painting/qcolor.cpp` and `qcolor.h` at tag **v6.11.2** (the Qt that
-//! PySide6 6.11.2 ships). Like Qt, every component is stored as 16 bits (`[alpha, c1, c2, c3, c4]`
-//! next to the colour specification) and the 8-bit accessors round with `qt_div_257`
-//! (`qdrawhelper_p.h:886-887`). Conversions between specifications (`toRgb`, `toHsv`, `toHsl`,
-//! `toCmyk`) use the same `float` arithmetic and `qRound` as Qt, so `getHslF()` followed by
-//! `fromHslF(..).name()` reproduces Qt's result for every `#rrggbb`.
-//!
-//! Differences from Qt:
-//! * `QColor::ExtendedRgb` (colour components outside `0.0..=1.0`, stored as `qfloat16`) is not
-//!   modelled. A float RGB component outside the range is clamped to it, which is what the 8-bit
-//!   `rgba()`, `name()` and `toRgb()` of an `ExtendedRgb` colour return (Qt stores in-range
-//!   channels as `qfloat16` too, so a channel round-trip such as `green()` can differ by 1 in rare
-//!   rounding cases); a `NaN` component or an alpha outside `0.0..=1.0` makes the colour invalid,
-//!   as in Qt.
-//! * Qt prints a warning when an argument is out of range; this type just returns an invalid colour.
-//! * Colours are `Color` (aliased `QColor`); conversion to the painter's `tiny_skia::Color`
-//!   goes through the 8-bit `rgba()` value.
+//! Colour representation supporting RGB, HSV, HSL, and CMYK models with 16-bit per-channel
+//! storage and W3C CSS/SVG named colour parsing.
 
 use std::fmt;
 
-/// `QColor::Spec` (without `ExtendedRgb`, see the module documentation).
+/// Colour model specification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColorSpec {
     Invalid,
@@ -31,7 +14,7 @@ pub enum ColorSpec {
     Hsl,
 }
 
-/// `QColor::NameFormat`.
+/// Output format for [`Color::name_with`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NameFormat {
     /// `#RRGGBB`.
@@ -40,7 +23,7 @@ pub enum NameFormat {
     HexArgb,
 }
 
-/// `Qt::GlobalColor`, in Qt's enumeration order.
+/// Predefined palette constants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
 pub enum GlobalColor {
@@ -66,7 +49,7 @@ pub enum GlobalColor {
     Transparent,
 }
 
-/// The error of `TryFrom<Color> for tiny_skia::Color`: the colour is invalid.
+/// Error returned when converting an invalid [`Color`] to `tiny_skia::Color`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InvalidColor;
 
@@ -81,8 +64,7 @@ impl std::error::Error for InvalidColor {}
 const USHRT_MAX: u16 = u16::MAX;
 const USHRT_MAX_F: f32 = 65535.0;
 
-/// `qRound(float)`: round half away from zero, truncating to `int`.
-fn q_round(x: f32) -> i32 {
+fn round_half_away(x: f32) -> i32 {
     if x >= 0.0 {
         (x + 0.5) as i32
     } else {
@@ -90,27 +72,23 @@ fn q_round(x: f32) -> i32 {
     }
 }
 
-/// `qRound` stored into a `ushort` (`int` to `ushort` conversion wraps, as in C++).
 fn round16(x: f32) -> u16 {
-    q_round(x) as u16
+    round_half_away(x) as u16
 }
 
-/// `qt_div_257`: a 16-bit component to 8 bits, rounded.
-fn div_257(x: u16) -> u8 {
-    let x = x as u32 + 128;
-    ((x - (x >> 8)) >> 8) as u8
+/// Converts a 16-bit channel (`0..=65535`) to 8-bit (`0..=255`) with rounding.
+fn to_u8(x: u16) -> u8 {
+    ((u32::from(x) + 128) / 257) as u8
 }
 
 fn int_in_range(v: i32) -> bool {
     (0..256).contains(&v)
 }
 
-/// `qColorComponentIsInFloatRange` (false for NaN).
 fn float_in_range(v: f32) -> bool {
     (0.0..=1.0).contains(&v)
 }
 
-/// `qColorHueIsInFloatRange`.
 fn hue_f_in_range(h: f32) -> bool {
     float_in_range(h) || h == -1.0
 }
@@ -119,8 +97,7 @@ fn hue_in_range(h: i32, degrees_limit: bool) -> bool {
     h >= -1 && (!degrees_limit || h < 360)
 }
 
-/// The CSS / SVG 1.0 colour keywords plus `transparent` (`rgbTbl`, `qcolor.cpp:129-281`), as
-/// `(name, 0xAARRGGBB)` sorted by name.
+/// Sorted W3C SVG 1.1 colour keywords plus `transparent`, as `(name, 0xAARRGGBB)`.
 static NAMED_COLORS: &[(&str, u32)] = &[
     ("aliceblue", 0xfff0f8ff),
     ("antiquewhite", 0xfffaebd7),
@@ -272,7 +249,6 @@ static NAMED_COLORS: &[(&str, u32)] = &[
     ("yellowgreen", 0xff9acd32),
 ];
 
-/// `QColor::GlobalColor` constructor table (`qcolor.cpp:841-865`), as `0xAARRGGBB`.
 fn global_rgba(color: GlobalColor) -> u32 {
     match color {
         GlobalColor::Color0 | GlobalColor::White => 0xffff_ffff,
@@ -296,72 +272,64 @@ fn global_rgba(color: GlobalColor) -> u32 {
     }
 }
 
-/// `hex2int`: the value of `s` as hexadecimal, or -1.
-fn hex2int(s: &[u8]) -> i32 {
-    let mut result = 0i32;
-    for &c in s {
-        let h = match c {
-            b'0'..=b'9' => c - b'0',
-            b'a'..=b'f' => c - b'a' + 10,
-            b'A'..=b'F' => c - b'A' + 10,
-            _ => return -1,
+fn parse_hex_slice(s: &[u8]) -> Option<u32> {
+    let mut val = 0u32;
+    for &b in s {
+        let d = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            _ => return None,
         };
-        result = result * 16 + h as i32;
+        val = (val << 4) | u32::from(d);
     }
-    result
+    Some(val)
 }
 
-/// `get_hex_rgb`: `#RGB`, `#RRGGBB`, `#AARRGGBB`, `#RRRGGGBBB` and `#RRRRGGGGBBBB` as 16-bit
-/// `[r, g, b, a]`.
+/// Parses `#RGB`, `#RRGGBB`, `#AARRGGBB`, `#RRRGGGBBB`, or `#RRRRGGGGBBBB` into 16-bit `[r, g, b, a]`.
 fn hex_rgba64(name: &[u8]) -> Option<[u16; 4]> {
-    if name.first() != Some(&b'#') {
-        return None;
-    }
-    let d = &name[1..];
-    let mut a = 65535;
-    let (r, g, b);
-    match d.len() {
-        12 => {
-            r = hex2int(&d[0..4]);
-            g = hex2int(&d[4..8]);
-            b = hex2int(&d[8..12]);
-        }
+    let digits = name.strip_prefix(b"#")?;
+    let mut a = 65535u16;
+    let (r, g, b) = match digits.len() {
+        12 => (
+            parse_hex_slice(&digits[0..4])? as u16,
+            parse_hex_slice(&digits[4..8])? as u16,
+            parse_hex_slice(&digits[8..12])? as u16,
+        ),
         9 => {
-            let (r9, g9, b9) = (hex2int(&d[0..3]), hex2int(&d[3..6]), hex2int(&d[6..9]));
-            if r9 == -1 || g9 == -1 || b9 == -1 {
-                return None;
-            }
-            r = (r9 << 4) | (r9 >> 8);
-            g = (g9 << 4) | (g9 >> 8);
-            b = (b9 << 4) | (b9 >> 8);
+            let r12 = parse_hex_slice(&digits[0..3])?;
+            let g12 = parse_hex_slice(&digits[3..6])?;
+            let b12 = parse_hex_slice(&digits[6..9])?;
+            (
+                ((r12 << 4) | (r12 >> 8)) as u16,
+                ((g12 << 4) | (g12 >> 8)) as u16,
+                ((b12 << 4) | (b12 >> 8)) as u16,
+            )
         }
         8 => {
-            a = hex2int(&d[0..2]) * 0x101;
-            r = hex2int(&d[2..4]) * 0x101;
-            g = hex2int(&d[4..6]) * 0x101;
-            b = hex2int(&d[6..8]) * 0x101;
+            a = (parse_hex_slice(&digits[0..2])? * 0x101) as u16;
+            (
+                (parse_hex_slice(&digits[2..4])? * 0x101) as u16,
+                (parse_hex_slice(&digits[4..6])? * 0x101) as u16,
+                (parse_hex_slice(&digits[6..8])? * 0x101) as u16,
+            )
         }
-        6 => {
-            r = hex2int(&d[0..2]) * 0x101;
-            g = hex2int(&d[2..4]) * 0x101;
-            b = hex2int(&d[4..6]) * 0x101;
-        }
-        3 => {
-            r = hex2int(&d[0..1]) * 0x1111;
-            g = hex2int(&d[1..2]) * 0x1111;
-            b = hex2int(&d[2..3]) * 0x1111;
-        }
+        6 => (
+            (parse_hex_slice(&digits[0..2])? * 0x101) as u16,
+            (parse_hex_slice(&digits[2..4])? * 0x101) as u16,
+            (parse_hex_slice(&digits[4..6])? * 0x101) as u16,
+        ),
+        3 => (
+            (parse_hex_slice(&digits[0..1])? * 0x1111) as u16,
+            (parse_hex_slice(&digits[1..2])? * 0x1111) as u16,
+            (parse_hex_slice(&digits[2..3])? * 0x1111) as u16,
+        ),
         _ => return None,
-    }
-    if [r, g, b, a].iter().any(|v| !(0..=65535).contains(v)) {
-        return None;
-    }
-    Some([r as u16, g as u16, b as u16, a as u16])
+    };
+    Some([r, g, b, a])
 }
 
-/// `get_named_rgb`: blanks and tabs are ignored, the match is ASCII case-insensitive. Qt converts
-/// the string with `QChar::toLatin1`, which maps every non-Latin-1 character to NUL and so ends the
-/// C string there; that is reproduced.
+/// ASCII case-insensitive keyword lookup ignoring spaces and tabs, stopping at NUL / non-Latin-1.
 fn named_rgba(name: &str) -> Option<u32> {
     if name.encode_utf16().count() > 255 {
         return None;
@@ -382,23 +350,17 @@ fn named_rgba(name: &str) -> Option<u32> {
         .map(|i| NAMED_COLORS[i].1)
 }
 
-/// A colour in the RGB, HSV, HSL or CMYK specification, or invalid (`QColor`).
-///
-/// `==` is `QColor::operator==`: the specifications and all 16-bit components must match (hues
-/// compared modulo 36000 for HSV / HSL), so `Color::from_rgb(..)` is never equal to the same colour
-/// in HSV.
+/// A colour in the RGB, HSV, HSL, or CMYK specification, or invalid.
 #[derive(Clone, Copy)]
 pub struct Color {
     spec: ColorSpec,
-    /// `[alpha, red | hue | cyan, green | saturation | magenta, blue | value | lightness | yellow,
-    /// pad | black]`, all 16-bit.
+    /// `[alpha, c1, c2, c3, c4]` in 16-bit storage.
     ct: [u16; 5],
 }
 
 pub type QColor = Color;
 
 impl Default for Color {
-    /// `QColor()`: an invalid colour.
     fn default() -> Self {
         Self {
             spec: ColorSpec::Invalid,
@@ -430,7 +392,7 @@ impl PartialEq for Color {
 impl Eq for Color {}
 
 impl Color {
-    /// `QColor()`: an invalid colour.
+    /// Returns an invalid colour.
     pub const fn invalid() -> Self {
         Self {
             spec: ColorSpec::Invalid,
@@ -438,8 +400,7 @@ impl Color {
         }
     }
 
-    /// `QColor(int r, int g, int b, int a = 255)`. Each argument must be in `0..=255`, otherwise the
-    /// colour is invalid (with alpha 0, unlike [`Color::invalid`]; this is Qt's constructor).
+    /// Constructs an RGB colour from 8-bit `(r, g, b, a)` channels (`0..=255`).
     pub const fn new(r: i32, g: i32, b: i32, a: i32) -> Self {
         if (r | g | b | a) >= 0 && r < 256 && g < 256 && b < 256 && a < 256 {
             Self {
@@ -460,8 +421,7 @@ impl Color {
         }
     }
 
-    /// `QColor::fromRgb(int r, int g, int b, int a = 255)`: invalid unless every argument is in
-    /// `0..=255`.
+    /// Constructs an RGB colour from `(r, g, b, a)` in `0..=255`.
     pub fn from_rgb(r: i32, g: i32, b: i32, a: i32) -> Self {
         if ![r, g, b, a].into_iter().all(int_in_range) {
             return Self::invalid();
@@ -469,7 +429,7 @@ impl Color {
         Self::new(r, g, b, a)
     }
 
-    /// `QColor::fromRgb(QRgb)`: `0xAARRGGBB`, the alpha byte is ignored (the colour is opaque).
+    /// Constructs an opaque RGB colour from `0xAARRGGBB` (alpha byte ignored).
     pub fn from_rgb_u32(rgb: u32) -> Self {
         Self::new(
             ((rgb >> 16) & 0xff) as i32,
@@ -479,7 +439,7 @@ impl Color {
         )
     }
 
-    /// `QColor::fromRgba(QRgb)`: `0xAARRGGBB`.
+    /// Constructs an RGB colour from `0xAARRGGBB`.
     pub fn from_rgba(argb: u32) -> Self {
         Self::new(
             ((argb >> 16) & 0xff) as i32,
@@ -489,7 +449,7 @@ impl Color {
         )
     }
 
-    /// `QColor::fromRgba64`.
+    /// Constructs an RGB colour from 16-bit `(r, g, b, a)` channels.
     pub fn from_rgba64(r: u16, g: u16, b: u16, a: u16) -> Self {
         Self {
             spec: ColorSpec::Rgb,
@@ -497,7 +457,7 @@ impl Color {
         }
     }
 
-    /// `QColor::fromRgbF`; see the module documentation for out-of-range components.
+    /// Constructs an RGB colour from floating-point `(r, g, b, a)` channels.
     pub fn from_rgb_f(r: f32, g: f32, b: f32, a: f32) -> Self {
         if !float_in_range(a) || r.is_nan() || g.is_nan() || b.is_nan() {
             return Self::invalid();
@@ -509,12 +469,12 @@ impl Color {
         }
     }
 
-    /// `QColor::fromHsv(int h, int s, int v, int a = 255)`: `h` in `-1..360`, the rest `0..=255`.
+    /// Constructs an HSV colour (`h` in `-1..360`, `s/v/a` in `0..=255`).
     pub fn from_hsv(h: i32, s: i32, v: i32, a: i32) -> Self {
         Self::hsx_int(ColorSpec::Hsv, h, s, v, a, true)
     }
 
-    /// `QColor::fromHsvF`: all arguments in `0.0..=1.0`, `h` may also be `-1.0` (achromatic).
+    /// Constructs an HSV colour from normalized floats (`h` in `0.0..=1.0` or `-1.0`).
     pub fn from_hsv_f(h: f32, s: f32, v: f32, a: f32) -> Self {
         if !(hue_f_in_range(h) && float_in_range(s) && float_in_range(v) && float_in_range(a)) {
             return Self::invalid();
@@ -535,13 +495,12 @@ impl Color {
         }
     }
 
-    /// `QColor::fromHsl(int h, int s, int l, int a = 255)`: `h` in `-1..360`, the rest `0..=255`.
+    /// Constructs an HSL colour (`h` in `-1..360`, `s/l/a` in `0..=255`).
     pub fn from_hsl(h: i32, s: i32, l: i32, a: i32) -> Self {
         Self::hsx_int(ColorSpec::Hsl, h, s, l, a, true)
     }
 
-    /// `QColor::fromHslF`: all arguments in `0.0..=1.0`, `h` may also be `-1.0` (achromatic). A hue
-    /// that rounds to 360 degrees is stored as 0.
+    /// Constructs an HSL colour from normalized floats (`h` in `0.0..=1.0` or `-1.0`).
     pub fn from_hsl_f(h: f32, s: f32, l: f32, a: f32) -> Self {
         let mut color = Self::set_hsl_f_impl(h, s, l, a);
         if color.ct[1] == 36000 {
@@ -570,7 +529,7 @@ impl Color {
         }
     }
 
-    /// `QColor::fromCmyk(int c, int m, int y, int k, int a = 255)`: every argument `0..=255`.
+    /// Constructs a CMYK colour (`0..=255`).
     pub fn from_cmyk(c: i32, m: i32, y: i32, k: i32, a: i32) -> Self {
         if ![c, m, y, k, a].into_iter().all(int_in_range) {
             return Self::invalid();
@@ -587,7 +546,7 @@ impl Color {
         }
     }
 
-    /// `QColor::fromCmykF`: every argument in `0.0..=1.0`.
+    /// Constructs a CMYK colour from normalized floats (`0.0..=1.0`).
     pub fn from_cmyk_f(c: f32, m: f32, y: f32, k: f32, a: f32) -> Self {
         if ![c, m, y, k, a].into_iter().all(float_in_range) {
             return Self::invalid();
@@ -628,9 +587,8 @@ impl Color {
         }
     }
 
-    /// `QColor::fromString` / `QColor(const QString &)`: `#RGB`, `#RRGGBB`, `#AARRGGBB`,
-    /// `#RRRGGGBBB`, `#RRRRGGGGBBBB`, an SVG colour keyword (case-insensitive, blanks ignored) or
-    /// `transparent`. Anything else gives an invalid colour.
+    /// Parses a hex colour string (`#RGB`, `#RRGGBB`, `#AARRGGBB`, `#RRRGGGBBB`, `#RRRRGGGGBBBB`)
+    /// or W3C SVG colour keyword.
     pub fn from_string(name: &str) -> Self {
         if name.is_empty() {
             return Self::invalid();
@@ -650,37 +608,37 @@ impl Color {
         }
     }
 
-    /// `QColor::isValidColorName`.
+    /// Returns whether `name` parses as a valid colour.
     pub fn is_valid_color_name(name: &str) -> bool {
         Self::from_string(name).is_valid()
     }
 
-    /// `QColor::colorNames`: the keywords [`Color::from_string`] knows, sorted.
+    /// Returns the sorted list of recognized colour keyword names.
     pub fn color_names() -> Vec<&'static str> {
         NAMED_COLORS.iter().map(|(n, _)| *n).collect()
     }
 
-    /// `QColor(Qt::GlobalColor)`.
+    /// Constructs a colour from a [`GlobalColor`].
     pub fn from_global(color: GlobalColor) -> Self {
         Self::from_rgba(global_rgba(color))
     }
 
-    /// `QColor::isValid`.
+    /// Returns `true` if the colour is valid.
     pub fn is_valid(&self) -> bool {
         self.spec != ColorSpec::Invalid
     }
 
-    /// `QColor::spec`.
+    /// Returns the colour's storage specification.
     pub fn spec(&self) -> ColorSpec {
         self.spec
     }
 
-    /// `QColor::name()`: `#rrggbb`. Like Qt, an invalid colour prints as `#000000`.
+    /// Formats the colour as `#rrggbb`.
     pub fn name(&self) -> String {
         self.name_with(NameFormat::HexRgb)
     }
 
-    /// `QColor::name(NameFormat)`.
+    /// Formats the colour using `format`.
     pub fn name_with(&self, format: NameFormat) -> String {
         let argb = self.rgba();
         match format {
@@ -689,10 +647,6 @@ impl Color {
         }
     }
 
-    // --- RGB -------------------------------------------------------------------------------
-
-    /// The components as seen in `target`: `ct` itself when the colour already is in that
-    /// specification (or invalid), otherwise the converted ones.
     fn comps(&self, target: ColorSpec) -> [u16; 5] {
         if self.spec != ColorSpec::Invalid && self.spec != target {
             self.convert_to(target).ct
@@ -701,101 +655,90 @@ impl Color {
         }
     }
 
-    /// `QColor::rgba()`: `0xAARRGGBB`.
+    /// Returns `0xAARRGGBB`.
     pub fn rgba(&self) -> u32 {
         let c = self.comps(ColorSpec::Rgb);
-        u32::from(div_257(c[0])) << 24
-            | u32::from(div_257(c[1])) << 16
-            | u32::from(div_257(c[2])) << 8
-            | u32::from(div_257(c[3]))
+        u32::from(to_u8(c[0])) << 24
+            | u32::from(to_u8(c[1])) << 16
+            | u32::from(to_u8(c[2])) << 8
+            | u32::from(to_u8(c[3]))
     }
 
-    /// `QColor::rgb()`: `0xFFRRGGBB`.
+    /// Returns `0xFFRRGGBB`.
     pub fn rgb(&self) -> u32 {
         self.rgba() | 0xff00_0000
     }
 
-    /// `QColor::rgba64()` as `(r, g, b, a)`.
+    /// Returns 16-bit `(r, g, b, a)`.
     pub fn rgba64(&self) -> (u16, u16, u16, u16) {
         let c = self.comps(ColorSpec::Rgb);
         (c[1], c[2], c[3], c[0])
     }
 
-    /// `QColor::red()`, 0-255.
     pub fn red(&self) -> i32 {
-        i32::from(div_257(self.comps(ColorSpec::Rgb)[1]))
+        i32::from(to_u8(self.comps(ColorSpec::Rgb)[1]))
     }
 
-    /// `QColor::green()`, 0-255.
     pub fn green(&self) -> i32 {
-        i32::from(div_257(self.comps(ColorSpec::Rgb)[2]))
+        i32::from(to_u8(self.comps(ColorSpec::Rgb)[2]))
     }
 
-    /// `QColor::blue()`, 0-255.
     pub fn blue(&self) -> i32 {
-        i32::from(div_257(self.comps(ColorSpec::Rgb)[3]))
+        i32::from(to_u8(self.comps(ColorSpec::Rgb)[3]))
     }
 
-    /// `QColor::alpha()`, 0-255.
     pub fn alpha(&self) -> i32 {
-        i32::from(div_257(self.ct[0]))
+        i32::from(to_u8(self.ct[0]))
     }
 
-    /// `QColor::redF()`.
     pub fn red_f(&self) -> f32 {
         f32::from(self.comps(ColorSpec::Rgb)[1]) / USHRT_MAX_F
     }
 
-    /// `QColor::greenF()`.
     pub fn green_f(&self) -> f32 {
         f32::from(self.comps(ColorSpec::Rgb)[2]) / USHRT_MAX_F
     }
 
-    /// `QColor::blueF()`.
     pub fn blue_f(&self) -> f32 {
         f32::from(self.comps(ColorSpec::Rgb)[3]) / USHRT_MAX_F
     }
 
-    /// `QColor::alphaF()`.
     pub fn alpha_f(&self) -> f32 {
         f32::from(self.ct[0]) / USHRT_MAX_F
     }
 
-    /// `QColor::getRgb`: `(r, g, b, a)`, 0-255.
     pub fn get_rgb(&self) -> (i32, i32, i32, i32) {
         let c = self.comps(ColorSpec::Rgb);
-        let d = |x| i32::from(div_257(x));
-        (d(c[1]), d(c[2]), d(c[3]), d(c[0]))
+        (
+            i32::from(to_u8(c[1])),
+            i32::from(to_u8(c[2])),
+            i32::from(to_u8(c[3])),
+            i32::from(to_u8(c[0])),
+        )
     }
 
-    /// `QColor::getRgbF`: `(r, g, b, a)`.
     pub fn get_rgb_f(&self) -> (f32, f32, f32, f32) {
         let c = self.comps(ColorSpec::Rgb);
         let f = |x| f32::from(x) / USHRT_MAX_F;
         (f(c[1]), f(c[2]), f(c[3]), f(c[0]))
     }
 
-    /// `QColor::setRgb(int, int, int, int)`.
     pub fn set_rgb(&mut self, r: i32, g: i32, b: i32, a: i32) {
         *self = Self::from_rgb(r, g, b, a);
     }
 
-    /// `QColor::setRgbF`.
     pub fn set_rgb_f(&mut self, r: f32, g: f32, b: f32, a: f32) {
         *self = Self::from_rgb_f(r, g, b, a);
     }
 
-    /// `QColor::setRgba(QRgb)`.
     pub fn set_rgba(&mut self, argb: u32) {
         *self = Self::from_rgba(argb);
     }
 
-    /// `QColor::setRgba64`.
     pub fn set_rgba64(&mut self, r: u16, g: u16, b: u16, a: u16) {
         *self = Self::from_rgba64(r, g, b, a);
     }
 
-    /// `QColor::setRed`: the value is clamped to 0-255 (Qt warns); a non-RGB colour becomes RGB.
     pub fn set_red(&mut self, red: i32) {
         let red = red.clamp(0, 255);
         if self.spec != ColorSpec::Rgb {
@@ -806,7 +749,6 @@ impl Color {
         }
     }
 
-    /// `QColor::setGreen`.
     pub fn set_green(&mut self, green: i32) {
         let green = green.clamp(0, 255);
         if self.spec != ColorSpec::Rgb {
@@ -817,7 +759,6 @@ impl Color {
         }
     }
 
-    /// `QColor::setBlue`.
     pub fn set_blue(&mut self, blue: i32) {
         let blue = blue.clamp(0, 255);
         if self.spec != ColorSpec::Rgb {
@@ -828,12 +769,10 @@ impl Color {
         }
     }
 
-    /// `QColor::setAlpha`: clamped to 0-255.
     pub fn set_alpha(&mut self, alpha: i32) {
         self.ct[0] = (alpha.clamp(0, 255) * 0x101) as u16;
     }
 
-    /// `QColor::setRedF`.
     pub fn set_red_f(&mut self, red: f32) {
         if self.spec == ColorSpec::Rgb && float_in_range(red) {
             self.ct[1] = round16(red * USHRT_MAX_F);
@@ -844,7 +783,6 @@ impl Color {
         self.set_rgb_f(red, g, b, a);
     }
 
-    /// `QColor::setGreenF`.
     pub fn set_green_f(&mut self, green: f32) {
         if self.spec == ColorSpec::Rgb && float_in_range(green) {
             self.ct[2] = round16(green * USHRT_MAX_F);
@@ -855,7 +793,6 @@ impl Color {
         self.set_rgb_f(r, green, b, a);
     }
 
-    /// `QColor::setBlueF`.
     pub fn set_blue_f(&mut self, blue: f32) {
         if self.spec == ColorSpec::Rgb && float_in_range(blue) {
             self.ct[3] = round16(blue * USHRT_MAX_F);
@@ -866,7 +803,6 @@ impl Color {
         self.set_rgb_f(r, g, blue, a);
     }
 
-    /// `QColor::setAlphaF`: clamped to `0.0..=1.0` (`NaN` is 0).
     pub fn set_alpha_f(&mut self, alpha: f32) {
         let alpha = if alpha.is_nan() {
             0.0
@@ -876,212 +812,173 @@ impl Color {
         self.ct[0] = round16(alpha * USHRT_MAX_F);
     }
 
-    // --- HSV -------------------------------------------------------------------------------
-
-    /// `QColor::getHsv`: `(h, s, v, a)`, hue `-1` when achromatic.
     pub fn get_hsv(&self) -> (i32, i32, i32, i32) {
         let c = self.comps(ColorSpec::Hsv);
-        let d = |x| i32::from(div_257(x));
         (
             if c[1] == USHRT_MAX {
                 -1
             } else {
                 i32::from(c[1] / 100)
             },
-            d(c[2]),
-            d(c[3]),
-            d(c[0]),
+            i32::from(to_u8(c[2])),
+            i32::from(to_u8(c[3])),
+            i32::from(to_u8(c[0])),
         )
     }
 
-    /// `QColor::getHsvF`: `(h, s, v, a)`, hue `-1.0` when achromatic.
     pub fn get_hsv_f(&self) -> (f32, f32, f32, f32) {
         let c = self.comps(ColorSpec::Hsv);
         let f = |x| f32::from(x) / USHRT_MAX_F;
         (hue_f(c[1]), f(c[2]), f(c[3]), f(c[0]))
     }
 
-    /// `QColor::hsvHue` / `hue`.
     pub fn hsv_hue(&self) -> i32 {
         self.get_hsv().0
     }
 
-    /// `QColor::hsvSaturation` / `saturation`.
     pub fn hsv_saturation(&self) -> i32 {
         self.get_hsv().1
     }
 
-    /// `QColor::value`.
     pub fn value(&self) -> i32 {
         self.get_hsv().2
     }
 
-    /// `QColor::hsvHueF` / `hueF`.
     pub fn hsv_hue_f(&self) -> f32 {
         self.get_hsv_f().0
     }
 
-    /// `QColor::hsvSaturationF` / `saturationF`.
     pub fn hsv_saturation_f(&self) -> f32 {
         self.get_hsv_f().1
     }
 
-    /// `QColor::valueF`.
     pub fn value_f(&self) -> f32 {
         self.get_hsv_f().2
     }
 
-    /// `QColor::setHsv`.
     pub fn set_hsv(&mut self, h: i32, s: i32, v: i32, a: i32) {
         *self = Self::hsx_int(ColorSpec::Hsv, h, s, v, a, false);
     }
 
-    /// `QColor::setHsvF`.
     pub fn set_hsv_f(&mut self, h: f32, s: f32, v: f32, a: f32) {
         *self = Self::from_hsv_f(h, s, v, a);
     }
 
-    // --- HSL -------------------------------------------------------------------------------
-
-    /// `QColor::getHsl`: `(h, s, l, a)`, hue `-1` when achromatic.
     pub fn get_hsl(&self) -> (i32, i32, i32, i32) {
         let c = self.comps(ColorSpec::Hsl);
-        let d = |x| i32::from(div_257(x));
         (
             if c[1] == USHRT_MAX {
                 -1
             } else {
                 i32::from(c[1] / 100)
             },
-            d(c[2]),
-            d(c[3]),
-            d(c[0]),
+            i32::from(to_u8(c[2])),
+            i32::from(to_u8(c[3])),
+            i32::from(to_u8(c[0])),
         )
     }
 
-    /// `QColor::getHslF`: `(h, s, l, a)`, hue `-1.0` when achromatic (the value Python's
-    /// `QColor.getHslF()` also reports).
     pub fn get_hsl_f(&self) -> (f32, f32, f32, f32) {
         let c = self.comps(ColorSpec::Hsl);
         let f = |x| f32::from(x) / USHRT_MAX_F;
         (hue_f(c[1]), f(c[2]), f(c[3]), f(c[0]))
     }
 
-    /// `QColor::hslHue`.
     pub fn hsl_hue(&self) -> i32 {
         self.get_hsl().0
     }
 
-    /// `QColor::hslSaturation`.
     pub fn hsl_saturation(&self) -> i32 {
         self.get_hsl().1
     }
 
-    /// `QColor::lightness`.
     pub fn lightness(&self) -> i32 {
         self.get_hsl().2
     }
 
-    /// `QColor::hslHueF`.
     pub fn hsl_hue_f(&self) -> f32 {
         self.get_hsl_f().0
     }
 
-    /// `QColor::hslSaturationF`.
     pub fn hsl_saturation_f(&self) -> f32 {
         self.get_hsl_f().1
     }
 
-    /// `QColor::lightnessF`.
     pub fn lightness_f(&self) -> f32 {
         self.get_hsl_f().2
     }
 
-    /// `QColor::setHsl`.
     pub fn set_hsl(&mut self, h: i32, s: i32, l: i32, a: i32) {
         *self = Self::hsx_int(ColorSpec::Hsl, h, s, l, a, false);
     }
 
-    /// `QColor::setHslF`. Unlike [`Color::from_hsl_f`] a hue that rounds to 360 degrees is kept.
     pub fn set_hsl_f(&mut self, h: f32, s: f32, l: f32, a: f32) {
         *self = Self::set_hsl_f_impl(h, s, l, a);
     }
 
-    // --- CMYK ------------------------------------------------------------------------------
-
-    /// `QColor::getCmyk`: `(c, m, y, k, a)`.
     pub fn get_cmyk(&self) -> (i32, i32, i32, i32, i32) {
         let c = self.comps(ColorSpec::Cmyk);
-        let d = |x| i32::from(div_257(x));
-        (d(c[1]), d(c[2]), d(c[3]), d(c[4]), d(c[0]))
+        (
+            i32::from(to_u8(c[1])),
+            i32::from(to_u8(c[2])),
+            i32::from(to_u8(c[3])),
+            i32::from(to_u8(c[4])),
+            i32::from(to_u8(c[0])),
+        )
     }
 
-    /// `QColor::getCmykF`: `(c, m, y, k, a)`.
     pub fn get_cmyk_f(&self) -> (f32, f32, f32, f32, f32) {
         let c = self.comps(ColorSpec::Cmyk);
         let f = |x| f32::from(x) / USHRT_MAX_F;
         (f(c[1]), f(c[2]), f(c[3]), f(c[4]), f(c[0]))
     }
 
-    /// `QColor::cyan`.
     pub fn cyan(&self) -> i32 {
         self.get_cmyk().0
     }
 
-    /// `QColor::magenta`.
     pub fn magenta(&self) -> i32 {
         self.get_cmyk().1
     }
 
-    /// `QColor::yellow`.
     pub fn yellow(&self) -> i32 {
         self.get_cmyk().2
     }
 
-    /// `QColor::black`.
     pub fn black(&self) -> i32 {
         self.get_cmyk().3
     }
 
-    /// `QColor::cyanF`.
     pub fn cyan_f(&self) -> f32 {
         self.get_cmyk_f().0
     }
 
-    /// `QColor::magentaF`.
     pub fn magenta_f(&self) -> f32 {
         self.get_cmyk_f().1
     }
 
-    /// `QColor::yellowF`.
     pub fn yellow_f(&self) -> f32 {
         self.get_cmyk_f().2
     }
 
-    /// `QColor::blackF`.
     pub fn black_f(&self) -> f32 {
         self.get_cmyk_f().3
     }
 
-    /// `QColor::setCmyk`.
     pub fn set_cmyk(&mut self, c: i32, m: i32, y: i32, k: i32, a: i32) {
         *self = Self::from_cmyk(c, m, y, k, a);
     }
 
-    /// `QColor::setCmykF`.
     pub fn set_cmyk_f(&mut self, c: f32, m: f32, y: f32, k: f32, a: f32) {
         *self = Self::from_cmyk_f(c, m, y, k, a);
     }
 
-    // --- Conversions -----------------------------------------------------------------------
-
-    /// `QColor::toRgb`.
+    /// Converts this colour to [`ColorSpec::Rgb`].
     pub fn to_rgb(&self) -> Self {
         if !self.is_valid() || self.spec == ColorSpec::Rgb {
             return *self;
         }
         let [alpha, c1, c2, c3, c4] = self.ct;
-        // `QColor color;` starts with all components 0.
         let mut rgb = [0u16; 3];
         match self.spec {
             ColorSpec::Hsv => {
@@ -1096,21 +993,21 @@ impl Color {
                     };
                     let s = f32::from(sat) / USHRT_MAX_F;
                     let v = f32::from(val) / USHRT_MAX_F;
-                    let i = h as i32;
-                    let f = h - i as f32;
+                    let sector = h as i32;
+                    let frac = h - sector as f32;
                     let p = v * (1.0 - s);
                     let to = |x: f32| round16(x * USHRT_MAX_F);
-                    if i & 1 != 0 {
-                        let q = v * (1.0 - (s * f));
-                        match i {
+                    if sector & 1 != 0 {
+                        let q = v * (1.0 - s * frac);
+                        match sector {
                             1 => rgb = [to(q), to(v), to(p)],
                             3 => rgb = [to(p), to(q), to(v)],
                             5 => rgb = [to(v), to(p), to(q)],
                             _ => {}
                         }
                     } else {
-                        let t = v * (1.0 - (s * (1.0 - f)));
-                        match i {
+                        let t = v * (1.0 - s * (1.0 - frac));
+                        match sector {
                             0 => rgb = [to(v), to(t), to(p)],
                             2 => rgb = [to(p), to(v), to(t)],
                             4 => rgb = [to(t), to(p), to(v)],
@@ -1133,35 +1030,30 @@ impl Color {
                     };
                     let s = f32::from(sat) / USHRT_MAX_F;
                     let l = f32::from(light) / USHRT_MAX_F;
-                    let temp2 = if l < 0.5 {
+                    let q = if l < 0.5 {
                         l * (1.0 + s)
                     } else {
-                        l + s - (l * s)
+                        l + s - l * s
                     };
-                    let temp1 = (2.0 * l) - temp2;
-                    let mut temp3 = [h + (1.0 / 3.0), h, h - (1.0 / 3.0)];
-                    for (out, t) in rgb.iter_mut().zip(temp3.iter_mut()) {
-                        if *t < 0.0 {
-                            *t += 1.0;
-                        } else if *t > 1.0 {
-                            *t -= 1.0;
+                    let p = 2.0 * l - q;
+                    for (out, offset) in rgb.iter_mut().zip([1.0 / 3.0, 0.0, -1.0 / 3.0]) {
+                        let mut t = h + offset;
+                        if t < 0.0 {
+                            t += 1.0;
+                        } else if t > 1.0 {
+                            t -= 1.0;
                         }
-                        let sixtemp3 = *t * 6.0;
-                        let x = if sixtemp3 < 1.0 {
-                            temp1 + (temp2 - temp1) * sixtemp3
-                        } else if (*t * 2.0) < 1.0 {
-                            temp2
-                        } else if (*t * 3.0) < 2.0 {
-                            temp1 + (temp2 - temp1) * (2.0 / 3.0 - *t) * 6.0
+                        let ch = if t * 6.0 < 1.0 {
+                            p + (q - p) * (t * 6.0)
+                        } else if t * 2.0 < 1.0 {
+                            q
+                        } else if t * 3.0 < 2.0 {
+                            p + (q - p) * (2.0 / 3.0 - t) * 6.0
                         } else {
-                            temp1
+                            p
                         };
-                        *out = round16(x * USHRT_MAX_F);
-                    }
-                    for v in &mut rgb {
-                        if *v == 1 {
-                            *v = 0;
-                        }
+                        let rounded = round16(ch * USHRT_MAX_F);
+                        *out = if rounded == 1 { 0 } else { rounded };
                     }
                 }
             }
@@ -1184,18 +1076,16 @@ impl Color {
         }
     }
 
-    /// `(min, max)` of the 16-bit channels of an RGB colour.
     fn min_max(&self) -> (u16, u16) {
         let [_, r, g, b, _] = self.ct;
         (r.min(g).min(b), r.max(g).max(b))
     }
 
-    /// The hue of an RGB colour in 1/100 degree (`toHsv` and `toHsl` share it).
     fn rgb_hue(&self, max: u16, chroma: f32) -> u16 {
         let [_, r, g, b, _] = self.ct;
         let (r, g, b) = (f32::from(r), f32::from(g), f32::from(b));
         let hue = if max == self.ct[1] {
-            let mut h = 0.0 + (g - b) / chroma;
+            let mut h = (g - b) / chroma;
             if h < 0.0 {
                 h += 6.0;
             }
@@ -1205,10 +1095,10 @@ impl Color {
         } else {
             4.0 + (r - g) / chroma
         };
-        round16(hue * (60.0 * 100.0))
+        round16(hue * 6000.0)
     }
 
-    /// `QColor::toHsv`.
+    /// Converts this colour to [`ColorSpec::Hsv`].
     pub fn to_hsv(&self) -> Self {
         if !self.is_valid() || self.spec == ColorSpec::Hsv {
             return *self;
@@ -1232,7 +1122,7 @@ impl Color {
         }
     }
 
-    /// `QColor::toHsl`.
+    /// Converts this colour to [`ColorSpec::Hsl`].
     pub fn to_hsl(&self) -> Self {
         if !self.is_valid() || self.spec == ColorSpec::Hsl {
             return *self;
@@ -1259,7 +1149,7 @@ impl Color {
         }
     }
 
-    /// `QColor::toCmyk`.
+    /// Converts this colour to [`ColorSpec::Cmyk`].
     pub fn to_cmyk(&self) -> Self {
         if !self.is_valid() || self.spec == ColorSpec::Cmyk {
             return *self;
@@ -1271,17 +1161,15 @@ impl Color {
         let (c, m, y, k) = if r == 0 && g == 0 && b == 0 {
             (0, 0, 0, USHRT_MAX)
         } else {
-            let mut c = 1.0 - f32::from(r) / USHRT_MAX_F;
-            let mut m = 1.0 - f32::from(g) / USHRT_MAX_F;
-            let mut y = 1.0 - f32::from(b) / USHRT_MAX_F;
-            let k = c.min(m.min(y));
-            c = (c - k) / (1.0 - k);
-            m = (m - k) / (1.0 - k);
-            y = (y - k) / (1.0 - k);
+            let c0 = 1.0 - f32::from(r) / USHRT_MAX_F;
+            let m0 = 1.0 - f32::from(g) / USHRT_MAX_F;
+            let y0 = 1.0 - f32::from(b) / USHRT_MAX_F;
+            let k = c0.min(m0).min(y0);
+            let inv = 1.0 - k;
             (
-                round16(c * USHRT_MAX_F),
-                round16(m * USHRT_MAX_F),
-                round16(y * USHRT_MAX_F),
+                round16(((c0 - k) / inv) * USHRT_MAX_F),
+                round16(((m0 - k) / inv) * USHRT_MAX_F),
+                round16(((y0 - k) / inv) * USHRT_MAX_F),
                 round16(k * USHRT_MAX_F),
             )
         };
@@ -1291,7 +1179,7 @@ impl Color {
         }
     }
 
-    /// `QColor::convertTo`.
+    /// Converts this colour to `spec`.
     pub fn convert_to(&self, spec: ColorSpec) -> Self {
         if spec == self.spec {
             return *self;
@@ -1305,9 +1193,7 @@ impl Color {
         }
     }
 
-    /// `QColor::lighter(factor)`: converts to HSV, multiplies the value by `factor / 100` (the
-    /// saturation absorbs an overflow) and converts back to this colour's specification.
-    /// `factor <= 0` returns the colour unchanged; `factor < 100` is `darker(10000 / factor)`.
+    /// Returns a lighter colour by scaling HSV value by `factor / 100`.
     pub fn lighter(&self, factor: i32) -> Self {
         if factor <= 0 {
             return *self;
@@ -1317,10 +1203,8 @@ impl Color {
         }
         let mut hsv = self.to_hsv();
         let mut s = i32::from(hsv.ct[2]);
-        // `v = (factor * v) / 100` is evaluated in `unsigned int`.
         let mut v = (factor as u32).wrapping_mul(u32::from(hsv.ct[3])) / 100;
         if v > u32::from(USHRT_MAX) {
-            // overflow... adjust saturation
             s = (s as u32).wrapping_sub(v - u32::from(USHRT_MAX)) as i32;
             if s < 0 {
                 s = 0;
@@ -1332,9 +1216,7 @@ impl Color {
         hsv.convert_to(self.spec)
     }
 
-    /// `QColor::darker(factor)`: converts to HSV, divides the value by `factor / 100` and converts
-    /// back to this colour's specification. `factor <= 0` returns the colour unchanged;
-    /// `factor < 100` is `lighter(10000 / factor)`.
+    /// Returns a darker colour by dividing HSV value by `factor / 100`.
     pub fn darker(&self, factor: i32) -> Self {
         if factor <= 0 {
             return *self;
@@ -1347,10 +1229,7 @@ impl Color {
         hsv.convert_to(self.spec)
     }
 
-    // --- tiny_skia -------------------------------------------------------------------------
-
-    /// The colour as the painter's `tiny_skia::Color` (through the 8-bit `rgba()` value), or `None`
-    /// when it is invalid.
+    /// Converts this colour to `tiny_skia::Color` via 8-bit `rgba()`, or `None` if invalid.
     pub fn to_tiny_skia(&self) -> Option<tiny_skia::Color> {
         if !self.is_valid() {
             return None;
@@ -1365,7 +1244,6 @@ impl Color {
     }
 }
 
-/// `QColor::hsvHueF` / `hslHueF` of a stored hue.
 fn hue_f(hue: u16) -> f32 {
     if hue == USHRT_MAX {
         -1.0
@@ -1375,10 +1253,6 @@ fn hue_f(hue: u16) -> f32 {
 }
 
 impl From<&str> for Color {
-    /// Follows `QColor::fromString(QAnyStringView)` (the `QColor(QStringView)` / `QString` path),
-    /// not `QColor(const char *)`; see [`Color::from_string`]. The text is UTF-16: a `#` name is
-    /// parsed as hex digits (a non-ASCII character makes it invalid), and a keyword goes through
-    /// `QChar::toLatin1`, so the first non-Latin-1 character becomes NUL and ends the name there.
     fn from(name: &str) -> Self {
         Self::from_string(name)
     }
@@ -1391,7 +1265,6 @@ impl From<GlobalColor> for Color {
 }
 
 impl From<tiny_skia::Color> for Color {
-    /// The 8-bit RGBA value of `color` (components rounded to the nearest 1/255).
     fn from(color: tiny_skia::Color) -> Self {
         let to8 = |c: f32| (c * 255.0).round() as i32;
         Self::new(
