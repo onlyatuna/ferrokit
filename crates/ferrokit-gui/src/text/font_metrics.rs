@@ -96,7 +96,7 @@ thread_local! {
         RefCell::new(LineCache { generation: 0, map: HashMap::new() });
 }
 
-/// `qRound` of a value: halves round up (`QFixed::toInt`), also for negative leadings.
+/// round-half-away-from-zero of a value: halves round up (`QFixed::toInt`), also for negative leadings.
 fn q_round(value: f32) -> f32 {
     (value + 0.5).floor()
 }
@@ -153,7 +153,7 @@ impl FontMetrics {
     /// The face the font resolves to (its in-memory data, else the installed family) gives the
     /// numbers, read from the font's tables the way Qt's engine does:
     /// [`GlyphFace::line_metrics`] and [`GlyphFace::average_char_width`]. `ascent`, `descent` and
-    /// `line_gap` (`leading()`) are those engine values rounded to whole pixels (`qRound`) and
+    /// `line_gap` (`leading`) are those engine values rounded to whole pixels (round-half-away-from-zero) and
     /// `height` is `ascent + descent`, which `QFontMetrics::height` is (`line_gap` is not part of
     /// it; `QFontMetrics::lineSpacing` is [`line_spacing`](Self::line_spacing)). Only a font for
     /// which no face resolves (both the requested family and its platform style-hint substitute,
@@ -222,7 +222,7 @@ impl FontMetrics {
         }
     }
 
-    /// The height of a line of text in `font` (`QTextLine::height`, qtextlayout.cpp:1524:
+    /// The height of a line of text in `font` (`QTextLine::height`,:
     /// [`layout_height`](Self::layout_height) rounded up).
     pub fn line_height(font: &Font) -> f32 {
         Self::layout_height(font).ceil()
@@ -245,8 +245,8 @@ impl FontMetrics {
             .map_or(0.0, |line| Self::engine_line_metrics(line, font).leading)
     }
 
-    /// The distance from one line of a plain text to the next, as `qt_format_text` stacks them
-    /// (qpainter.cpp:7370-7388, what `QLabel` and `QFontMetrics::boundingRect` lay a text out
+    /// The distance from one line of a plain text to the next, as the helper stacks them
+    /// (what `QLabel` and `QFontMetrics::boundingRect` lay a text out
     /// by): the leading is added between lines and the top of each line rounded up
     /// (`height = qCeil(height + leading)`), so a text of `n` lines is
     /// `(n - 1) * line_pitch + line_height` tall.
@@ -257,7 +257,7 @@ impl FontMetrics {
     /// Ascent and descent, in pixels, of one line of `text` when it uses fallback font engines,
     /// else `None` (the line is the primary font's own). Qt's line takes the largest ascent and the
     /// largest descent of the engines its text items use, fallback engines included
-    /// (`QTextEngine::shapeText`, qtextengine.cpp:1479-1480: the item's ascent becomes the larger of
+    /// (`QTextEngine::shapeText`,: the item's ascent becomes the larger of
     /// its own and the actual engine's, descent likewise). The values are the engines' own, as
     /// [`layout_height`](Self::layout_height) takes them.
     pub fn fallback_line_metrics(font: &Font, text: &str) -> Option<(f32, f32)> {
@@ -336,7 +336,7 @@ impl FontMetrics {
 
     /// The engine's height metrics as Qt holds them: the face's own values where the engine has
     /// sub-pixel positions, else rounded to whole pixels with the leading taking up the rounding
-    /// of the line (`QFontEngine::initializeHeightMetrics`).
+    /// of the line (the glyph backend).
     fn engine_line_metrics(line: LineMetrics, font: &Font) -> LineMetrics {
         if crate::text::font_database::font_has_subpixel_positions(font) {
             line
@@ -436,7 +436,7 @@ impl FontMetrics {
     }
 
     /// `QFontMetricsF::horizontalAdvance(text, option)`: the advance of `text` itemized with the
-    /// text direction and tab stop distance of `option` (qfontmetrics.cpp:1416). With the default
+    /// text direction and tab stop distance of `option`. With the default
     /// option it is [`horizontal_advance_exact`](Self::horizontal_advance_exact).
     pub fn horizontal_advance_with_option(
         &self,
@@ -455,7 +455,7 @@ impl FontMetrics {
     }
 
     /// The part of `text` `QFontMetrics::horizontalAdvance` measures: what comes before the first
-    /// U+009C (`s_variableLengthStringSeparator`, qfontmetrics.cpp:1390), which ends the string.
+    /// U+009C (`s_variableLengthStringSeparator`), which ends the string.
     fn before_variable_length_separator(text: &str) -> &str {
         text.split('\u{9c}').next().unwrap_or("")
     }

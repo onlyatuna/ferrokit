@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Linux/Unix glyph backend: `skrifa` hinted outlines rasterized with `ab_glyph_rasterizer`.
 //!
-//! A glyph goes through the steps `QFontEngineFT::loadGlyph` takes it through:
+//! A glyph goes through the steps FreeType glyph backend takes it through:
 //!
 //! * `FT_Set_Char_Size(face, xsize, ysize, 0, 0)` with `ysize = qRound(pixelSize * 64)`
-//!   (`QFreetypeFace::computeSize`);
-//! * `FT_Load_Glyph` with Qt's load flags (`QFontEngineFT::loadFlags`): `FT_LOAD_NO_HINTING` for
+//!   (FreeType symbol charmap);
+//! * `FT_Load_Glyph` with Qt's load flags (FreeType glyph backend): `FT_LOAD_NO_HINTING` for
 //!   [`HintStyle::HintNone`], else `FT_LOAD_TARGET_LIGHT` for [`HintStyle::HintLight`] and
 //!   `FT_LOAD_TARGET_NORMAL` for the other two. FreeType then hints a TrueType glyph in light mode
 //!   with its auto-hinter (the TrueType driver does not hint lightly) and a CFF glyph with the CFF
@@ -363,7 +363,7 @@ enum Hinter {
 type InstanceCache = HashMap<(i64, Hinter), Option<Arc<HintingInstance>>>;
 
 /// A face rendered as Qt's FreeType engine renders it for one hint style, fixed when the face is
-/// built (`QFontEngineFT::default_hint_style`).
+/// built (FreeType glyph backend).
 pub struct SkrifaFace {
     base: OutlineFace,
     data: SharedFontData,
@@ -552,14 +552,14 @@ impl SkrifaFace {
         div_fix(ysize, i64::from(self.units_per_em))
     }
 
-    /// `qRound(pixelSize * 64)`: the 26.6 size `QFreetypeFace::computeSize` sets.
+    /// `qRound(pixelSize * 64)`: the 26.6 size FreeType symbol charmap sets.
     fn ysize(px: f32) -> i64 {
         (f64::from(px) * 64.0 + 0.5).floor() as i64
     }
 
     /// The outline of `glyph_id` at `size` pixels per em drawn through the uniform device scale
     /// `scale`, moved right by `x_offset` 64ths of a device pixel: the glyph slot outline
-    /// `QFontEngineFT::loadGlyph` hands to the rasterizer. `None` where loading fails.
+    /// FreeType glyph backend hands to the rasterizer. `None` where loading fails.
     pub fn freetype_outline(
         &self,
         glyph_id: u16,
@@ -634,9 +634,9 @@ impl SkrifaFace {
         Some(outline)
     }
 
-    /// `QFontEngine::glyphBoundingBoxExceedsLimit` with Qt's default `QT_MAX_GLYPH_SIZE` of 4096:
-    /// a glyph whose control box is beyond 16 times the pixel size (and 256 pixels) is not drawn.
-    fn exceeds_qt_glyph_limit(outline: &GlyphOutline, size: f32, scale: f32) -> bool {
+    /// Returns true if the glyph's control box exceeds the size limit (16x pixel size, capped at
+    /// 4096 pixels).
+    fn exceeds_glyph_size_limit(outline: &GlyphOutline, size: f32, scale: f32) -> bool {
         const LIMIT: f64 = 4096.0;
         let Some(cbox) = control_box(&outline.commands) else {
             return false;
@@ -651,7 +651,7 @@ impl SkrifaFace {
         width * width > max || height * height > max
     }
 
-    /// The advance `QFontEngineFT::recalcAdvances` lays the glyph out with, in 26.6 pixels.
+    /// The advance FreeType glyph backend lays the glyph out with, in 26.6 pixels.
     fn layout_advance_26_6(&self, glyph_id: u16, size: f32) -> i64 {
         let ysize = Self::ysize(size);
         if ysize <= 0 {
@@ -707,7 +707,7 @@ impl SkrifaFace {
         let Some(outline) = self.freetype_outline(glyph_id, size, scale, x_offset) else {
             return (empty, Vec::new());
         };
-        if Self::exceeds_qt_glyph_limit(&outline, size, scale) {
+        if Self::exceeds_glyph_size_limit(&outline, size, scale) {
             return (empty, Vec::new());
         }
         let Some((left, top, width, rows, buffer)) = rasterize_outline(&outline) else {
@@ -743,7 +743,7 @@ impl GlyphFace for SkrifaFace {
                 ..GlyphMetrics::default()
             };
         };
-        if Self::exceeds_qt_glyph_limit(&outline, px, 1.0) {
+        if Self::exceeds_glyph_size_limit(&outline, px, 1.0) {
             return GlyphMetrics {
                 advance_width,
                 ..GlyphMetrics::default()
@@ -777,12 +777,12 @@ impl GlyphFace for SkrifaFace {
         true
     }
 
-    /// `QFontEngineFT::supportsHorizontalSubPixelPositions`: hint style none or light.
+    /// FreeType glyph backend: hint style none or light.
     fn supports_horizontal_subpixel_positions(&self) -> bool {
         matches!(self.hint_style, HintStyle::HintNone | HintStyle::HintLight)
     }
 
-    /// `QFontEngine::subPixelPositionFor` with the four positions per pixel of
+    /// the glyph backend with the four positions per pixel of
     /// `m_subPixelPositionCount`.
     fn subpixel_position(&self, _glyph_id: u16, _size: f32, _scale: f32, x: i64) -> i32 {
         subpixel_bucket_offset(x, 4)

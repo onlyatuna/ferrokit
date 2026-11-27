@@ -71,7 +71,7 @@ fn test_painter_state_default_and_clone() {
     assert!(state.pen.is_some());
     assert_eq!(state.brush, Brush::NoBrush);
     assert_eq!(state.opacity, 1.0);
-    // Qt `QPainter::begin` leaves only TextAntialiasing set (`qpainter.cpp:1847`).
+    // Qt `QPainter::begin` leaves only TextAntialiasing set.
     assert_eq!(state.render_hints, RenderHints::DEFAULT);
     assert!(!state.render_hints.contains(RenderHint::Antialiasing));
     assert!(state.clip_rect.is_none());
@@ -378,8 +378,8 @@ fn g10_4d_draw_pixmap_is_nearest_without_smooth_pixmap_transform() {
 }
 
 // An aliased cosmetic line with a non-flat cap covers both end pixels. Qt's default
-// pen is SquareCap (qpen.cpp:203); QCosmeticStroker::drawLine adds caps unless FlatCap
-// (qcosmeticstroker.cpp:263, CapBegin|CapEnd at :356). PySide6 6.11.2 probe, 1px black on
+// pen is SquareCap; QCosmeticStroker::drawLine adds caps unless FlatCap
+// (CapBegin|CapEnd at:356). PySide6 6.11.2 probe, 1px black on
 // white, Antialiasing off, same result for Square and Round: H (8,36)-(258,36) is black at
 // x=8 and x=258 and white at x=7 and x=259; V (36,8)-(36,258) and D (8,8)-(258,158) likewise.
 // FlatCap: the far end pixel (258) stays white.
@@ -463,7 +463,7 @@ fn g10_4d_aliased_line_includes_endpoint_pixels_like_qt() {
 }
 
 // The endpoint pixel is blended once. Qt draws each pixel of an aliased cosmetic
-// line once (QCosmeticStroker::drawLine, qcosmeticstroker.cpp:263/:356). A menu separator
+// line once (QCosmeticStroker::drawLine, /:356). A menu separator
 // (menu.rs paint_item): white alpha 31 over (22,25,32) from x=9.0 to x=258.0 at y=36.5.
 // PySide6 6.11.2 probe, Antialiasing off: x=8 and x=259 stay (22,25,32); x=9..=258 are all
 // (50,53,59), with x=9 and x=258 identical to the interior.

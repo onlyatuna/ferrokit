@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! `libfontconfig`, loaded at run time, as far as Qt's `QFontconfigDatabase` uses it
-//! (`src/gui/text/unix/qfontconfigdatabase.cpp`): the list of every font file with the properties Qt
+//! `libfontconfig`, loaded at run time, as far as Qt's `fontconfig catalog` uses it
+//! : the list of every font file with the properties Qt
 //! registers (`FcFontList`), the families fontconfig sorts for a pattern (`FcFontSort`, which
 //! `fallbacksForFamily` returns) and the character set of the font that matches a family
 //! (`FcFontMatch`, which `QFontEngineMultiFontConfig::shouldLoadFontEngineForCharacter` asks).
@@ -30,7 +30,7 @@ pub(crate) struct RawFace {
     pub foundry: Option<String>,
     pub scalable: bool,
     pub color: bool,
-    /// `QFontDatabase::WritingSystem` bits of `FC_LANG` and `FC_CAPABILITY`.
+    /// the font database bits of `FC_LANG` and `FC_CAPABILITY`.
     pub writing_systems: u64,
 }
 
@@ -52,7 +52,7 @@ impl CharSet {
     }
 }
 
-/// What `QFontconfigDatabase::fallbacksForFamily` puts in the pattern besides the family.
+/// What fontconfig catalog puts in the pattern besides the family.
 pub(crate) struct SortRequest<'a> {
     pub family: &'a str,
     /// `FC_SLANT`: 0 roman, 100 italic, 110 oblique.
@@ -122,7 +122,7 @@ mod imp {
     const FC_LANG_DIFFERENT_LANG: c_int = 2;
     const FC_CHARSET_DONE: u32 = u32::MAX;
 
-    /// `QFontDatabase::WritingSystem` indices and the language and capability each is asked for
+    /// the font database indices and the language and capability each is asked for
     /// (`languageForWritingSystem`, `capabilityForWritingSystem`), index 0 (Any) first.
     const WRITING_SYSTEMS: [(&str, &str); 34] = [
         ("", ""),

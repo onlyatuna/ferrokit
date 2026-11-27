@@ -172,7 +172,7 @@ impl Icon {
                     Some(base) => {
                         if mode == IconMode::Disabled {
                             // Automatically generate the disabled effect: desaturate each pixel
-                            // with `qGray` and halve its own alpha, so transparent pixels stay
+                            // with grayscale luminance and halve its own alpha, so transparent pixels stay
                             // transparent (a Grayscale8 round trip would make them opaque).
                             let mut disabled_img = base
                                 .converted_to(crate::image::image_format::ImageFormat::Rgba8888);

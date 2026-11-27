@@ -1,33 +1,28 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Windows glyph backend: DirectWrite rasterizes the glyphs, as Qt's
-//! `QWindowsFontEngineDirectWrite` does (qwindowsfontenginedirectwrite.cpp `imageForGlyph` /
-//! `renderGlyphRun`), so text looks like Qt's.
+//! Windows glyph backend: DirectWrite rasterizes the glyphs.
 //!
-//! What is copied from Qt:
-//! * one glyph per `IDWriteGlyphRunAnalysis`, at the origin, em size = the *logical* pixel size and
+//! * One glyph per `IDWriteGlyphRunAnalysis`, at the origin, em size = the *logical* pixel size and
 //!   the device pixel ratio applied as the run's transform;
-//! * the rendering mode Qt derives from its default hinting preference (`determineHinting` /
-//!   `hintingPreferenceToRenderingMode`): at a device pixel ratio other than 1 `NATURAL` up to
-//!   16 px and `NATURAL_SYMMETRIC` above, at ratio 1 (full hinting) `NATURAL_SYMMETRIC` when
-//!   `useSymmetricAntialiasing` (Qt 6.12: over 16 px or no `maxp` instructions, overridden by the
-//!   font's `gasp` table) and `GDI_CLASSIC` otherwise, with grid fit default and ClearType
-//!   antialiasing;
-//! * the layout advance (`recalcAdvances`): the design advance at a ratio other than 1, at ratio 1
+//! * Rendering mode from the default hinting preference: at a device pixel ratio other than 1
+//!   `NATURAL` up to 16 px and `NATURAL_SYMMETRIC` above, at ratio 1 (full hinting)
+//!   `NATURAL_SYMMETRIC` when symmetric antialiasing applies (over 16 px or no `maxp` instructions,
+//!   overridden by the font's `gasp` table) and `GDI_CLASSIC` otherwise, with grid fit default and
+//!   ClearType antialiasing;
+//! * Layout advance: the design advance at a ratio other than 1, at ratio 1
 //!   `GetGdiCompatibleGlyphMetrics` with `needsNaturalMetrics` for the natural modes, converted
 //!   with `DESIGN_TO_LOGICAL` and left unrounded for the shaper to round after kerning;
-//! * the ClearType 3x1 texture is kept as three coverages per pixel for LCD text
-//!   (`alphaRGBMapForGlyph`, [`GlyphFace::rasterize_lcd_scaled`]) and reduced with `qGray` for
-//!   grey-scale text (`alphaMapForGlyph`); a BGR panel swaps red and blue first;
-//! * at a device pixel ratio other than 1 (`supportsHorizontalSubPixelPositions`) the glyph is
-//!   drawn at the sub-pixel offset of its pen through `DWRITE_MATRIX.dx` (bucket count from
-//!   twelve probe offsets, `QTextureGlyphCache::calculateSubPixelPositionCount`), and the painter
-//!   blits it at the floor of the pen position (`QRasterPaintEngine::drawCachedGlyphs`);
-//! * the face itself (`QWindowsDirectWriteFontDatabase::fontEngine`): a request for a weight from
-//!   `DemiBold` up that the face does not have gets `DWRITE_FONT_SIMULATIONS_BOLD`, a request for
-//!   an italic or oblique style that the face does not have gets `DWRITE_FONT_SIMULATIONS_OBLIQUE`
-//!   ([`DirectWriteFace::for_request`]); the bitmaps, advances, bearings and average width of
-//!   such a face are DirectWrite's. The member of a font collection is opened by its real index,
-//!   which [`GlyphFace::face_index`] hands to the shaper.
+//! * The ClearType 3x1 texture is kept as three coverages per pixel for LCD text
+//!   ([`GlyphFace::rasterize_lcd_scaled`]) and reduced to grayscale luminance for grey-scale text;
+//!   a BGR panel swaps red and blue first;
+//! * At a device pixel ratio other than 1, the glyph is drawn at the sub-pixel offset of its pen
+//!   through `DWRITE_MATRIX.dx` (bucket count from twelve probe offsets), and the painter blits it
+//!   at the floor of the pen position;
+//! * The face itself: a request for a weight from `DemiBold` up that the face does not have gets
+//!   `DWRITE_FONT_SIMULATIONS_BOLD`, a request for an italic or oblique style that the face does
+//!   not have gets `DWRITE_FONT_SIMULATIONS_OBLIQUE` ([`DirectWriteFace::for_request`]); the
+//!   bitmaps, advances, bearings and average width of such a face are DirectWrite's. The member of
+//!   a font collection is opened by its real index, which [`GlyphFace::face_index`] hands to the
+//!   shaper.
 //!
 //! Measured against Qt 6.12 (PySide6): single glyphs are bit-identical (A8 and LCD) at every
 //! ratio and size tried, simulated faces and collection members included, and so are the advances
@@ -73,7 +68,7 @@ struct Factory {
 /// `IDWriteFactory` pages only say the state is shared within the process, and the SDK headers
 /// only single out objects that "may not be thread-safe" (`IDWriteTextFormat`,
 /// `IDWriteFontFallbackBuilder`). Skia serializes some DirectWrite calls even on the shared factory
-/// (`maybe_dw_mutex`, SkScalerContext_win_dw.cpp: "In versions 8 and 8.1 of Windows, some calls in
+/// (`maybe_dw_mutex`,: "In versions 8 and 8.1 of Windows, some calls in
 /// DWrite are not thread safe").
 ///
 /// The lock covers this module's calls only. The shared factory is process-wide state, but this
@@ -139,7 +134,7 @@ pub fn is_available() -> bool {
 }
 
 /// The process-wide factory as an `IDWriteFactory6`, which the system font collection in the
-/// typographic family model needs (`QWindowsDirectWriteFontDatabase::populateFontDatabase`).
+/// typographic family model needs (DirectWrite font catalog).
 /// `None` without DirectWrite or before Windows 10 1803.
 pub(crate) fn factory6() -> Option<IDWriteFactory6> {
     let factory = FACTORY.as_ref()?;
@@ -165,7 +160,7 @@ pub struct DirectWriteFace {
     axes: Vec<(u32, f32)>,
     /// `base` maps through a symbol `cmap` ([`OutlineFace::has_symbol_cmap`]).
     symbol_cmap: bool,
-    /// `QFontEngine::hasHinting`: the `maxp` table says the font has instructions.
+    /// the glyph backend: the `maxp` table says the font has instructions.
     has_hinting: bool,
     /// The `(rangeMaxPPEM, rangeGaspBehavior)` records of the `gasp` table, in file order.
     gasp: Vec<(u16, u16)>,
@@ -194,7 +189,7 @@ impl Drop for DirectWriteFace {
     }
 }
 
-/// `QFontEngine::hasHinting` (qfontengine.cpp): `maxSizeOfInstructions > 0` for a version 1.0
+/// the glyph backend: `maxSizeOfInstructions > 0` for a version 1.0
 /// `maxp` table, true for any other version that is long enough to be read, false for a missing
 /// or short table (version 0.5, the CFF one, is 6 bytes).
 fn maxp_has_hinting(maxp: Option<&[u8]>) -> bool {
@@ -244,7 +239,7 @@ fn symmetric_antialiasing(size: f32, has_hinting: bool, gasp: &[(u16, u16)]) -> 
     symmetric
 }
 
-/// The simulations `QWindowsDirectWriteFontDatabase::fontEngine` (qwindowsdirectwritefontdatabase.cpp)
+/// The simulations DirectWrite font catalog
 /// asks DirectWrite for: bold when the request is at least `DemiBold` and the face is lighter, and
 /// oblique when the request is not upright and the face is (`DWRITE_FONT_STYLE_NORMAL`). `face_weight`
 /// and `face_style` are `IDWriteFontFace3::GetWeight` and `GetStyle` of the face the family match
@@ -384,7 +379,7 @@ impl DirectWriteFace {
                 }
                 if simulations != DWRITE_FONT_SIMULATIONS_NONE {
                     // Qt creates the simulated face from the font resource with no axis values, so
-                    // an instance loses its axes (`QWindowsDirectWriteFontDatabase::fontEngine`).
+                    // an instance loses its axes (DirectWrite font catalog).
                     effective_axes.clear();
                     // SAFETY: as for the first `CreateFontFace`: `file` is the live reference
                     // whose bytes `base` keeps alive, and `face_index` was checked against its
@@ -575,9 +570,9 @@ impl DirectWriteFace {
         Some((metrics, texture))
     }
 
-    /// `QFontEngine::m_subPixelPositionCount` at `size`: the number of different textures
+    /// the glyph backend at `size`: the number of different textures
     /// DirectWrite draws for a glyph at twelve offsets of a pixel, decided by the first glyph with
-    /// an outline that is positioned (`QTextureGlyphCache::calculateSubPixelPositionCount`,
+    /// an outline that is positioned (subpixel position bucketing,
     /// `populate`). 0 while no such glyph has been seen.
     fn subpixel_count(&self, glyph_id: u16, size: f32, scale: f32) -> i64 {
         let key = (size.to_bits(), scale.to_bits());
@@ -616,7 +611,7 @@ impl DirectWriteFace {
     /// glyph), as a 26.6 value: `DESIGN_TO_LOGICAL`, `QFixed::fromReal(design / unitsPerEm *
     /// pixelSize)`, truncated toward zero. It is not rounded to whole pixels here; Qt rounds the
     /// advances of an engine without sub-pixel positions once, after HarfBuzz added its kerning
-    /// (`qt_glyph_metrics`).
+    /// (the helper).
     ///
     /// * `direct_write == true` (a device pixel ratio other than 1): `determineHinting` is not full
     ///   hinting, so the design advance (`GetDesignGlyphMetrics`) is taken. The device pixel ratio
@@ -703,11 +698,11 @@ impl GlyphFace for DirectWriteFace {
     }
 
     /// Qt's DirectWrite engine fills its ascent, descent and leading from `DWRITE_FONT_METRICS`
-    /// (`initializeHeightMetrics`, qwindowsfontenginedirectwrite.cpp:399-409) and then calls
-    /// `QFontEngine::initializeHeightMetrics`, which replaces them with the values of the font's
+    /// (`initializeHeightMetrics`) and then calls
+    /// the glyph backend, which replaces them with the values of the font's
     /// own tables, read by [`OutlineFace::line_metrics`], and rounds them without sub-pixel
     /// positions. A font with embedded bitmaps (`EBLC`, `CBLC` or `bdat`) skips all of that
-    /// (qfontengine.cpp:432-445) and keeps DirectWrite's `DWRITE_FONT_METRICS` (ascent, descent
+    /// and keeps DirectWrite's `DWRITE_FONT_METRICS` (ascent, descent
     /// and line gap), each through `DESIGN_TO_LOGICAL` and never rounded.
     fn line_metrics(&self, px: f32) -> Option<LineMetrics> {
         let bitmaps = [b"EBLC", b"CBLC", b"bdat"]
@@ -759,7 +754,7 @@ impl GlyphFace for DirectWriteFace {
         self.rasterize_scaled(glyph_id, px, 1.0)
     }
 
-    /// Qt's `alphaMapForGlyph`: the texture reduced with `qGray`.
+    /// Qt's `alphaMapForGlyph`: the texture reduced with grayscale luminance.
     fn rasterize_scaled(&self, glyph_id: u16, size: f32, scale: f32) -> (GlyphMetrics, Vec<u8>) {
         self.rasterize_subpixel(glyph_id, size, scale, 0)
     }
@@ -863,7 +858,7 @@ mod tests {
         table
     }
 
-    /// `QFontEngine::hasHinting` reads `maxSizeOfInstructions` of a version 1.0 `maxp`, assumes
+    /// the glyph backend reads `maxSizeOfInstructions` of a version 1.0 `maxp`, assumes
     /// hinting for another version, and none for a missing or short table.
     #[test]
     fn maxp_decides_whether_the_font_has_hinting() {

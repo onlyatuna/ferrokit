@@ -17,7 +17,7 @@ use crate::text::glyph_layout::FontEngine;
 use rustybuzz::ttf_parser::name::Table as NameTable;
 use rustybuzz::ttf_parser::{PlatformId, name_id};
 
-/// Weight and slant requested from the font database (`QFontDatabase::bestStyle` key), and the
+/// Weight and slant requested from the font database (the font database key), and the
 /// hint style the face is built for (Qt's FreeType engine fixes it when it creates the engine).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FaceStyle {
@@ -245,10 +245,10 @@ pub fn set_application_device_pixel_ratio(dpr: f32) {
 /// Whether text is laid out as Qt's DirectWrite font engine lays it out for a device pixel ratio
 /// other than 1 (`qFuzzyCompare`): vertical or no hinting, fractional advances and sub-pixel glyph
 /// positions. Qt's Windows platform plugin creates its DirectWrite engine at every ratio
-/// (`qwindowsintegration.cpp`, `qwindowsdirectwritefontdatabase.cpp`; measured against PySide6
+/// (measured against PySide6
 /// 6.11.2 and 6.12.0, including a ratio of exactly 1); at a ratio of 1 the default hinting
 /// preference resolves to full hinting (`determineHinting`), which rounds advances and has no
-/// sub-pixel positions. The GDI font database, whose `useDirectWrite` (qwindowsfontdatabase.cpp)
+/// sub-pixel positions. The GDI font database, whose `useDirectWrite`
 /// picks DirectWrite by ratio, is only used with `windows:fontengine=gdi`; a real GDI engine
 /// differs again, e.g. in `averageCharWidth` (`tmAveCharWidth`), and is not modelled.
 pub fn uses_directwrite_engine() -> bool {
@@ -268,7 +268,7 @@ pub(crate) fn layout_has_subpixel_advances() -> bool {
     cfg!(target_os = "macos") || uses_directwrite_engine()
 }
 
-/// Font hinting style matching Qt's `QFontEngine::HintStyle` (qfontengine_p.h:60).
+/// Font hinting style matching Qt's the glyph backend.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum HintStyle {
@@ -295,10 +295,10 @@ const fn initial_default_hint_style_u8() -> u8 {
     }
 }
 
-/// Process-wide default hinting style (Qt `QFontEngine::default_hint_style`, `qfontengine_p.h:60`).
+/// Process-wide default hinting style (Qt the glyph backend).
 ///
 /// On Linux/FreeType this defaults to [`HintStyle::HintLight`], matching fontconfig's standard
-/// desktop default (`hintslight`, `qfontconfigdatabase.cpp:730`). On Windows it defaults to
+/// desktop default (`hintslight`). On Windows it defaults to
 /// [`HintStyle::HintFull`] (DirectWrite full hinting at ratio 1). On macOS it
 /// is [`HintStyle::HintNone`].
 pub fn default_hint_style() -> HintStyle {
@@ -319,7 +319,7 @@ pub fn set_default_hint_style(style: HintStyle) {
 }
 
 /// The hint style a face for a font with `preference` is built for: `defaultHintStyleFromMatch`
-/// (qfontconfigdatabase.cpp) with the process-wide default in place of fontconfig's
+/// with the process-wide default in place of fontconfig's
 /// `hintstyle`. Only the FreeType-role backend of Linux and the other Unix systems but macOS
 /// hints; elsewhere every preference shares one face ([`HintStyle::default`]).
 pub(crate) fn face_hint_style(preference: HintingPreference) -> HintStyle {
@@ -335,7 +335,7 @@ pub(crate) fn face_hint_style(preference: HintingPreference) -> HintStyle {
 }
 
 /// Whether `font`'s engine supports sub-pixel glyph positions under its hinting preference and
-/// platform rules (`QFontEngine::supportsSubPixelPositions`).
+/// platform rules (the glyph backend).
 ///
 /// When `true`, line metrics (ascent, descent, leading) remain fractional 26.6 values.
 /// When `false`, line metrics are rounded to whole pixels ([`LineMetrics::rounded`]), with
@@ -393,7 +393,7 @@ pub fn resolve_font_engines_global(font: &Font) -> Vec<FontEngine> {
 }
 
 /// What the primary face of `font` reports at its size: its [`LineMetrics`] and
-/// `QFontEngine::averageCharWidth` (see [`GlyphFace::line_metrics`] and
+/// the glyph backend (see [`GlyphFace::line_metrics`] and
 /// [`GlyphFace::average_char_width`]). A font carrying in-memory data is measured from that data,
 /// whichever platform backend parsed it. Both are `None` when no face resolves.
 ///
@@ -432,8 +432,7 @@ pub fn resolve_font_engines_for_text_global(font: &Font, text: &str) -> Vec<Font
     with_global_font_database(|db| db.resolve_font_engines_for_text(font, text))
 }
 
-/// Substitute font family for a style hint on Windows, matching Qt 6 / qtbase dev
-/// (`src/gui/text/windows/qwindowsfontdatabasebase.cpp:951-973`).
+/// Substitute font family for a style hint on Windows, matching Qt 6 / reference behavior dev
 ///
 /// On Windows, when a requested font family is not installed, Qt resolves the
 /// style hint to a platform substitute family:
@@ -459,8 +458,8 @@ pub fn family_for_style_hint(hint: StyleHint) -> &'static str {
     }
 }
 
-/// Substitute font family for a style hint on macOS matching Qt 6 / qtbase dev
-/// (`src/gui/text/coretext/qcoretextfontdatabase.mm:661-770`, specifically `descriptorForStyle` L691-706).
+/// Substitute font family for a style hint on macOS matching Qt 6 / reference behavior dev
+/// (specifically `descriptorForStyle` L691-706).
 ///
 /// On macOS, when a requested font family is not installed, Qt resolves the style hint:
 /// - `SansSerif` (`Helvetica`) -> "Helvetica"
@@ -541,11 +540,11 @@ fn query_system_ui_font_path() -> Option<std::path::PathBuf> {
     }
 }
 
-/// Fontconfig generic family for a style hint matching Qt 6 / qtbase dev
-/// (`src/gui/text/unix/qfontconfigdatabase.cpp:349-370`, `getFcFamilyForStyleHint`).
+/// Fontconfig generic family for a style hint matching Qt 6 / reference behavior dev
+/// (`getFcFamilyForStyleHint`).
 ///
 /// In Qt, when `styleHint == QFont::AnyStyle && fixedPitch`, Qt substitutes `QFont::TypeWriter`
-/// before calling `fallbacksForFamily` (`src/gui/text/qfontdatabase.cpp:846-848, 2776-2778`).
+/// before calling `fallbacksForFamily` (2776-2778`).
 ///
 /// Mappings:
 /// - `SansSerif` (`Helvetica`) -> "sans-serif"
@@ -567,7 +566,7 @@ pub fn fc_family_for_style_hint(hint: StyleHint) -> Option<&'static str> {
 }
 
 /// Substitute font family for a style hint on Linux/Unix platforms matching Qt's
-/// `getFcFamilyForStyleHint` (`src/gui/text/unix/qfontconfigdatabase.cpp:349-370`).
+/// `getFcFamilyForStyleHint`.
 #[cfg(all(unix, not(target_os = "macos")))]
 pub fn family_for_style_hint(hint: StyleHint) -> Option<&'static str> {
     fc_family_for_style_hint(hint)
@@ -579,7 +578,7 @@ pub fn is_fontconfig_available() -> bool {
     crate::text::fontconfig_ffi::is_available()
 }
 
-/// Qt's Linux font database (`QFontconfigDatabase`): the registry of families, the family a
+/// Qt's Linux font database (`fontconfig catalog`): the registry of families, the family a
 /// request resolves to and the fallback fonts per script.
 #[cfg(all(unix, not(target_os = "macos")))]
 mod linux;
@@ -621,7 +620,7 @@ impl FontDatabase {
         {
             // fontconfig's default directories (fonts.conf: /usr/share/fonts,
             // /usr/local/share/fonts, $XDG_DATA_HOME/fonts, ~/.fonts), which Qt's
-            // QFontconfigDatabase scans on Linux, plus the macOS system/user font folders.
+            // fontconfig catalog scans on Linux, plus the macOS system/user font folders.
             search_paths.push(PathBuf::from("/usr/share/fonts"));
             search_paths.push(PathBuf::from("/usr/local/share/fonts"));
             search_paths.push(PathBuf::from("/System/Library/Fonts"));
@@ -709,7 +708,7 @@ impl FontDatabase {
     }
 
     /// Sorted, de-duplicated family names of every installed and application font
-    /// (`QFontDatabase::families`). On Linux that is Qt's registry: the families fontconfig lists
+    /// (the font database). On Linux that is Qt's registry: the families fontconfig lists
     /// (a family a font gives a second name and style, such as "DejaVu Sans Condensed", is one
     /// too) and the generic `Monospace`, `Sans Serif` and `Serif`.
     pub fn families(&mut self) -> Vec<String> {
@@ -719,7 +718,7 @@ impl FontDatabase {
         self.collect_families(|_| true)
     }
 
-    /// Families whose faces are all fixed-pitch (`QFontDatabase::isFixedPitch` filter).
+    /// Families whose faces are all fixed-pitch (the font database filter).
     pub fn monospaced_families(&mut self) -> Vec<String> {
         let fixed: Vec<String> = self.collect_families(|face| face.fixed_pitch);
         fixed
@@ -743,7 +742,7 @@ impl FontDatabase {
             .any(|face| face.family.eq_ignore_ascii_case(family))
     }
 
-    /// Returns `true` if every known face of `family` is fixed-pitch (`QFontDatabase::isFixedPitch`).
+    /// Returns `true` if every known face of `family` is fixed-pitch (the font database).
     pub fn is_fixed_pitch(&mut self, family: &str) -> bool {
         let mut matched = false;
         for face in self.faces() {
@@ -869,7 +868,7 @@ impl FontDatabase {
         None
     }
 
-    /// Loads the face of `family` nearest to `style` (`QFontDatabase::bestStyle`), caching the result.
+    /// Loads the face of `family` nearest to `style` (the font database), caching the result.
     /// A family without a face for that style yields its nearest one (e.g. regular for bold); on
     /// Windows that face is then created with DirectWrite's bold or oblique simulation, as Qt
     /// does ([`parse_face_for_request`]).
@@ -933,7 +932,7 @@ impl FontDatabase {
         #[cfg(windows)]
         {
             // A family that is not there is replaced by the first family that exists of what Qt's
-            // fallback pass lists (`QFontDatabasePrivate::findFont`, step 4): the family of the
+            // fallback pass lists (font database matching, step 4): the family of the
             // style hint, then the ones `extraTryFontsForFamily` names for the user's language.
             let hint_family = family_for_style_hint(hint);
             let catalog = crate::text::directwrite_catalog::catalog();
@@ -995,7 +994,7 @@ impl FontDatabase {
         }
 
         // A family that is not there is replaced by the first family fontconfig lists for it that
-        // exists (`QFontDatabasePrivate::findFont`, step 4).
+        // exists (font database matching, step 4).
         #[cfg(all(unix, not(target_os = "macos")))]
         if let Some(found) = self.resolve_substitute(family, style, hint) {
             let own_key = style.cache_key(&found.family().to_ascii_lowercase(), hint);
@@ -1186,7 +1185,7 @@ impl FontDatabase {
             }
         };
         // A styled request first tries the family's bold/italic file by name (no directory scan),
-        // then the regular file: the nearest face, like `QFontDatabase::bestStyle`, for the
+        // then the regular file: the nearest face, like the font database, for the
         // families that ship no such variant. Families not known by name go to the face index.
         let candidate_filenames: Vec<String> = if style.weight == 400 && !style.italic {
             regular_filenames
@@ -1253,7 +1252,7 @@ impl FontDatabase {
             self.system_faces = Some(scan_font_directories(&self.search_paths));
         }
         let (face_path, face_index) = {
-            // `QFontDatabase::bestStyle`: the face of the family with the smallest style distance
+            // the font database: the face of the family with the smallest style distance
             // (first one wins a tie).
             let face = self
                 .system_faces

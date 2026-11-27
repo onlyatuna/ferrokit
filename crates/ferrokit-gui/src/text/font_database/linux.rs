@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! The font database on Linux as Qt's `QFontconfigDatabase` makes it.
+//! The font database on Linux as Qt's `fontconfig catalog` makes it.
 //!
 //! The families are the registry [`Registry`] builds from what fontconfig lists (`FcFontList`), so a
 //! family name, a weight and a slant resolve to the font file Qt picks: the style nearest by weight,
-//! stretch and slant (`QFontDatabasePrivate::match`), under the names fontconfig gives a font. A
+//! stretch and slant (font database matching), under the names fontconfig gives a font. A
 //! family that is not there is replaced by the first family `FcFontSort` lists for it
-//! (`QFontDatabasePrivate::findFont`). The fallback fonts of text are those of each of its script
+//! (font database matching). The fallback fonts of text are those of each of its script
 //! items (`QFontEngineMulti`, `fallbacksForFamily` per script), tried in fontconfig's order and
 //! skipped when the font fontconfig matches to the family lacks the character
 //! (`QFontEngineMultiFontConfig::shouldLoadFontEngineForCharacter`).
@@ -26,7 +26,7 @@ fn system_fonts() -> Option<&'static [RawFace]> {
     FONTS.as_deref()
 }
 
-/// The family a primary request resolved to (`QFontEngine::fontDef.families`), which the
+/// The family a primary request resolved to (the glyph backend), which the
 /// fallback fonts of the text are listed for.
 #[derive(Clone)]
 struct ResolvedFamily {
@@ -144,8 +144,8 @@ fn request_of(style: FaceStyle) -> Request<'static> {
 }
 
 /// `FT_Face::style_name` as FreeType 2.13 sets it for an sfnt font (`sfnt_load_face` with
-/// `tt_face_get_name`, sfobjs.c), which Qt's FreeType engine makes its `fontDef.styleName`
-/// (`QFontEngineFT::init`). With bit 8 of the OS/2 `fsSelection` set: the typographic
+/// `tt_face_get_name`), which Qt's FreeType engine makes its `fontDef.styleName`
+/// (FreeType glyph backend). With bit 8 of the OS/2 `fsSelection` set: the typographic
 /// subfamily (name 17), else the subfamily (2); without it: the WWS subfamily (22), else 17,
 /// else 2. Empty when the face has none of them.
 fn freetype_style_name(data: &[u8], index: u32) -> String {
@@ -397,7 +397,7 @@ impl FontDatabase {
             .map(|found| (found.raw, found.face))
     }
 
-    /// `QFontDatabase::families`: the registry's families and the application fonts.
+    /// the font database: the registry's families and the application fonts.
     pub(super) fn registry_families(&mut self) -> Vec<String> {
         let mut names: Vec<String> = self
             .linux
@@ -466,7 +466,7 @@ impl FontDatabase {
     }
 
     /// The first family named `name` (any family for "") with a font that opens and that `accept`s,
-    /// trying the best style of each matching family in `QFontDatabasePrivate::match`'s order.
+    /// trying the best style of each matching family in font database matching's order.
     fn find_loadable(
         &mut self,
         name: &str,
@@ -498,7 +498,7 @@ impl FontDatabase {
         }
     }
 
-    /// The font a script item of `key` is shaped with (`QFontDatabasePrivate::findFont` for the
+    /// The font a script item of `key` is shaped with (font database matching for the
     /// script): the requested family when it exists and, for a script that needs OpenType layout,
     /// supports the script; else the first family `fallbacksForFamily` lists for the script (then
     /// the first family of the database) that does; for emoji, color fonts first and then the
@@ -508,7 +508,7 @@ impl FontDatabase {
     ///
     /// Qt's emoji pass also takes a listed family whose emoji engine an earlier request of the
     /// same `QFontDef` left in the `QFontCache` (`findMatchingFallback` looks the cache up before
-    /// it requires a color font, qfontdatabase.cpp:2797), so in one process its result depends on
+    /// it requires a color font), so in one process its result depends on
     /// what was drawn before and on the cache's cost and timer driven eviction
     /// (`QFontCache::decreaseCache`). This is the result with that cache empty, as in a fresh
     /// process.
@@ -572,7 +572,7 @@ impl FontDatabase {
             .iter()
             .find_map(|name| self.find_loadable(name, style, &request, &accept));
         if chosen.is_none() && emoji {
-            // No color font (`findFont`'s final pass, qfontdatabase.cpp:2842-2850): the requested
+            // No color font (`findFont`'s final pass): the requested
             // family, then the listed ones, whatever they are.
             request.color = false;
             if exact {
@@ -632,9 +632,9 @@ impl FontDatabase {
         // where their engine is in `engines`; `None` for one that cannot be loaded.
         let mut loaded: HashMap<(String, String), Option<usize>> = HashMap::new();
         let mut fixed_of: HashMap<&'static str, bool> = HashMap::new();
-        // `QFontDatabasePrivate::load` (qfontdatabase.cpp:2947-2953): once a script's font is a
+        // font database matching: once a script's font is a
         // symbol font, every script that has no font yet gets it too; a symbol font is not
-        // wrapped in a `QFontEngineMulti` (qfontdatabase.cpp:835), so its items have no fallback.
+        // wrapped in a `QFontEngineMulti`, so its items have no fallback.
         let is_symbol = |engine: &FontEngine| {
             engine.raw_data.as_ref().is_some_and(|raw| {
                 crate::text::outline_face::OutlineFace::is_symbol_font(
@@ -664,7 +664,7 @@ impl FontDatabase {
                     fixed_of.insert(key, fixed);
                     // `QFontEngineMulti::loadEngine` asks for each fallback family with the
                     // `fontDef` of the item font, whose style name is that of its FreeType face
-                    // (`QFontEngineFT::init`): `bestStyle` then takes the fallback family's style
+                    // (FreeType glyph backend): `bestStyle` then takes the fallback family's style
                     // of that name, whatever weight and slant were asked for.
                     let style_name = engines[engine]
                         .raw_data
@@ -692,7 +692,7 @@ impl FontDatabase {
                 {
                     continue;
                 }
-                // `QFontDatabasePrivate::loadEngine`: a fixed pitch family asks for a typewriter
+                // font database matching: a fixed pitch family asks for a typewriter
                 // font.
                 let hint = if font.style_hint == StyleHint::AnyStyle && fixed_of[key] {
                     StyleHint::TypeWriter

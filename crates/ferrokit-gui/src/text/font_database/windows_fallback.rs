@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 use super::*;
 
-/// The families `QWindowsFontDatabaseBase::extraTryFontsForFamily` tries for the user's language
+/// The families Windows fallback font lookup tries for the user's language
 /// (`GetUserDefaultLangID`): Chinese for China and Singapore, Chinese for the other regions,
 /// Japanese, Korean, and the others' list.
 #[cfg(windows)]
@@ -88,7 +88,7 @@ pub(super) fn fallback_list_key(
 /// style hint, `extraTryFontsForFamily` (the user's language's families that exist, unless the
 /// family is a symbol font, then the emoji and symbol families), then every family that supports
 /// the script's writing system. Entries that are not families of the database are dropped; repeats
-/// stay. Built once per key and kept by the catalog (`QFontDatabasePrivate::fallbacksCache`); the
+/// stay. Built once per key and kept by the catalog (font database matching); the
 /// families that support the writing system are listed when a walk of the list gets to them
 /// (see [`FallbackList`](crate::text::directwrite_catalog::FallbackList)).
 #[cfg(windows)]

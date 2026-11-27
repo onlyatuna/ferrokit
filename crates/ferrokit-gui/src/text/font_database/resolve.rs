@@ -133,7 +133,7 @@ impl FontDatabase {
             &["Segoe UI Emoji", "Segoe UI Symbol"],
         ];
         // macOS: these families are ferrokit's own picks, not Qt's cascade. Qt
-        // (`QCoreTextFontDatabase::fallbacksForFamily`, qcoretextfontdatabase.mm) asks CoreText for
+        // (`QCoreTextFontDatabase::fallbacksForFamily`) asks CoreText for
         // `CTFontCopyDefaultCascadeListForLanguages(font, preferredLanguages)`; measured on macOS 26
         // with en-US, for the system UI font, that is `.AppleSystemFallback, .SF Georgian,
         // Helvetica Neue, .Apple Symbols Fallback, .SF Arabic, .AppleUrduFont,
@@ -179,7 +179,7 @@ impl FontDatabase {
         }
     }
 
-    /// Qt's fallbacks on Windows (`QFontEngineMulti`, `QWindowsDirectWriteFontDatabase::
+    /// Qt's fallbacks on Windows (`QFontEngineMulti`, `DirectWrite font catalog::
     /// fallbacksForFamily`): each script item of `text` has its own list of fallback families,
     /// and a character the primary font lacks takes the first family of its item's list that has
     /// a glyph for it. The engines are loaded only as far as the text needs them, appended to

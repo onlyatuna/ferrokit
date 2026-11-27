@@ -6,7 +6,7 @@
 use unicode_bidi::{BidiClass, BidiInfo, Level, bidi_class};
 
 /// Whether `text` reads right to left as a whole: its first strong character outside isolates is
-/// a right to left one (rules P2 and P3, `QtPrivate::isRightToLeft`, qstring.cpp:9606: the
+/// a right to left one (rules P2 and P3, `QtPrivate::isRightToLeft`,: the
 /// characters between an isolate initiator and its terminator do not count, however strong). The
 /// whole text counts, line feeds included: a text that starts with a line feed before its first
 /// strong character is not taken as left to right for that.
@@ -28,7 +28,7 @@ pub(crate) fn is_rtl(text: &str) -> bool {
 }
 
 /// Whether a character belongs to the classes that make `QBidiAlgorithm::checkForBidi`
-/// (qtextengine.cpp:1026) run the algorithm for a left to right text: the right to left and
+/// run the algorithm for a left to right text: the right to left and
 /// Arabic classes, Arabic numbers, and the explicit embedding, override and isolate controls.
 /// Everything else left to right has level 0 whatever surrounds it.
 fn is_bidi_trigger(c: char) -> bool {
@@ -52,7 +52,7 @@ fn is_bidi_trigger(c: char) -> bool {
 
 /// The embedding level of every grapheme of `text`, whose graphemes start at the byte offsets
 /// `starts` (followed by `text.len()`), in a text whose base direction is `base_rtl`: what
-/// `QBidiAlgorithm::process` (qtextengine.cpp:1046) leaves in `QScriptAnalysis::bidiLevel` for the
+/// `QBidiAlgorithm::process` leaves in `QScriptAnalysis::bidiLevel` for the
 /// first character of the grapheme. Empty when every grapheme is at level 0, which is the case
 /// that needs no bidi handling at all.
 ///
@@ -75,7 +75,7 @@ pub(crate) fn grapheme_levels(text: &str, starts: &[usize], base_rtl: bool) -> V
     let classes: Vec<BidiClass> = offsets.iter().map(|&i| info.original_classes[i]).collect();
     let mut levels: Vec<u8> = offsets.iter().map(|&i| info.levels[i].number()).collect();
 
-    // Rule L1 (qtextengine.cpp:1077-1091), from the end of the text.
+    // Rule L1, from the end of the text.
     let mut reset = true;
     for (class, level) in classes.iter().zip(levels.iter_mut()).rev() {
         match class {
@@ -102,7 +102,7 @@ pub(crate) fn grapheme_levels(text: &str, starts: &[usize], base_rtl: bool) -> V
         }
     }
 
-    // Boundary neutrals and explicit formatting characters (qtextengine.cpp:1093-1122).
+    // Boundary neutrals and explicit formatting characters.
     let is_bn = |class: BidiClass| {
         matches!(
             class,
@@ -185,7 +185,7 @@ pub(crate) fn level_runs(levels: &[u8]) -> Vec<LevelRun> {
 }
 
 /// The visual order of runs with the given levels (rule L2, `QTextEngine::bidiReorder`,
-/// qtextengine.cpp:1142): `order[i]` is the logical index of the run shown `i`-th from the left.
+/// ): `order[i]` is the logical index of the run shown `i`-th from the left.
 /// Qt reverses down to the lowest level of the runs, or the one above it when that is even (not
 /// to the lowest odd level of the rule).
 pub(crate) fn visual_order(levels: &[u8]) -> Vec<usize> {
@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn boundary_neutrals_take_the_lower_level_of_their_neighbours() {
         // The joiner between a Hebrew and a Latin letter is at the lower level of the two, not
-        // the one of the character before it (qtextengine.cpp:1093).
+        // the one of the character before it.
         let text = "\u{5d0}\u{200d}ab";
         assert_eq!(
             grapheme_levels(text, &starts(text), false),

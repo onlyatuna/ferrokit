@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! The font families the Linux font database knows, built the way it builds them
-//! (`QFontconfigDatabase::system font collection enumeration` and `pattern registration`, fontconfig database,
+//! (fontconfig catalog and `pattern registration`, fontconfig database,
 //! with `style registration` of font database), and the lookups the catalog runs on them
-//! (`QFontDatabasePrivate::match`, `foundry matching` and `nearest style matching`, `findFont`'s fallback pass and
+//! (font database matching, `foundry matching` and `nearest style matching`, `findFont`'s fallback pass and
 //! `fontconfig fallback family list`).
 //!
 //! the catalog registers every font `FcFontList` returns under the names fontconfig gives it: the first
@@ -188,10 +188,10 @@ pub(crate) fn weight_from_fc(weight: i32) -> u16 {
         return STOPS[0].1 as u16;
     }
     for pair in STOPS.windows(2) {
-        let ((fc_lower, qt_lower), (fc_upper, qt_upper)) = (pair[0], pair[1]);
+        let ((fc_lower, css_lower), (fc_upper, css_upper)) = (pair[0], pair[1]);
         if weight <= fc_upper {
-            return (qt_lower
-                + ((weight - fc_lower) * (qt_upper - qt_lower)) / (fc_upper - fc_lower))
+            return (css_lower
+                + ((weight - fc_lower) * (css_upper - css_lower)) / (fc_upper - fc_lower))
                 as u16;
         }
     }
@@ -524,7 +524,7 @@ impl Registry {
         }
     }
 
-    /// `qt_registerAliasToFontFamily`.
+    /// family alias registration.
     fn add_alias(&mut self, family: &str, alias: &str) {
         if alias.is_empty() {
             return;
@@ -541,7 +541,7 @@ impl Registry {
         }
     }
 
-    /// The families in the order of the registry, which is the order of `QFontDatabase::families`.
+    /// The families in the order of the registry, which is the order of the font database.
     pub fn families(&self) -> &[Family] {
         &self.families
     }
@@ -588,6 +588,10 @@ impl Registry {
         &self.families[found.family]
     }
 
+    const SLANT_TIEBREAK_PENALTY: i32 = 1;
+    const SLANT_MISMATCH_PENALTY: i32 = 4096;
+    const STYLE_MISMATCH_PENALTY: u32 = 8192;
+
     /// `nearest style matching`: the style named as the request's style name, else the style nearest to the
     /// request by weight, stretch and slant (the first of equals).
     fn best_style(foundry: &Foundry, request: &Request, stretch: i32) -> usize {
@@ -604,9 +608,9 @@ impl Registry {
             if request.slant != style.slant {
                 if request.slant != Slant::Normal && style.slant != Slant::Normal {
                     // One is italic, the other oblique.
-                    d += 0x0001;
+                    d += Self::SLANT_TIEBREAK_PENALTY;
                 } else {
-                    d += 0x1000;
+                    d += Self::SLANT_MISMATCH_PENALTY;
                 }
             }
             if d < distance {
@@ -618,8 +622,7 @@ impl Registry {
     }
 
     /// `foundry matching` for scalable fonts: the foundry of the family whose best style scores
-    /// below `score` (the penalty is 0x2000 for a style that is not exactly the one asked for);
-    /// returns the winning score and the foundry and style, if any beat `score`.
+    /// below `score`; returns the winning score and the foundry and style, if any beat `score`.
     fn best_foundry(
         family: &Family,
         score: u32,
@@ -639,7 +642,7 @@ impl Registry {
             let style = Self::best_style(foundry, request, stretch);
             let mut this_score = 0u32;
             if !foundry.styles[style].key_equals(request.weight, request.slant, stretch) {
-                this_score += 0x2000;
+                this_score += Self::STYLE_MISMATCH_PENALTY;
             }
             if this_score < score {
                 score = this_score;
@@ -649,7 +652,7 @@ impl Registry {
         (score, found)
     }
 
-    /// `QFontDatabasePrivate::match` for a request in no particular script: the family named
+    /// font database matching for a request in no particular script: the family named
     /// `family_name` (any family for an empty name; an alias counts) whose best style scores
     /// lowest, the first of equals, skipping the families in `blacklist`.
     pub fn find(
@@ -699,7 +702,7 @@ impl Registry {
     }
 
     /// The family named `requested` ("Family [Foundry]" is read as
-    /// `QFontDatabasePrivate::parseFontName` does) with its best style for `request`
+    /// font database matching does) with its best style for `request`
     /// (`findFont`'s family name match pass). `load` says whether the font of a match can be
     /// opened; a family it refuses is put in `blacklist`, as the catalog does for a font engine it could
     /// not create.
@@ -750,7 +753,7 @@ impl Registry {
         None
     }
 
-    /// `QFontDatabasePrivate::findFont` for a request in no particular script: the family
+    /// font database matching for a request in no particular script: the family
     /// `requested`, else the first family that replaces it.
     #[cfg(test)]
     pub fn find_font(
@@ -835,7 +838,7 @@ struct Registration<'a> {
     handle: Option<Handle>,
 }
 
-/// `QFontDatabasePrivate::parseFontName`: `"Family [Foundry]"` into family and foundry. The family
+/// font database matching: `"Family [Foundry]"` into family and foundry. The family
 /// and foundry are capitalized per word, which the case insensitive matching does not see.
 fn parse_font_name(name: &str) -> (String, String) {
     if let (Some(open), Some(close)) = (name.find('['), name.rfind(']'))

@@ -10,7 +10,7 @@ impl<'a> Painter<'a> {
     //
     // Raster helpers
     // Sets opacity (0.0 to 1.0).
-    /// `QPainter::drawText(QPointF, QString)` (qpainter.cpp:5698): `pos` is the baseline origin of
+    /// `QPainter::drawText(QPointF, QString)`: `pos` is the baseline origin of
     /// the line. The text is itemized by bidi level and tabs, each item shaped in its own
     /// direction, and the items are drawn from `pos` in their visual order, each as wide as its
     /// advance (`text::line_items`). The base direction is the painter's
@@ -56,7 +56,7 @@ impl<'a> Painter<'a> {
         }
 
         // Under rotation, scale or skew the translate-only glyph path below cannot place the
-        // glyphs, but Qt draws the transformed glyphs (qpaintengine_raster.cpp:3094-3128). Fill the
+        // glyphs, but Qt draws the transformed glyphs. Fill the
         // glyph outlines with the pen colour instead; this is not pixel-identical to Qt's glyph cache.
         if !self.text_transform_is_translate_only() {
             if let Some(path) = Self::glyph_path(pos, glyphs, engines, font) {
@@ -227,17 +227,17 @@ impl<'a> Painter<'a> {
 
             // An engine with horizontal sub-pixel positions (Qt's CoreText engine, and its
             // DirectWrite engine at a device pixel ratio other than 1) draws the glyph at the
-            // fractional position of its pen, kept in 26.6 pixels (`QFixed::fromReal`), and blits
-            // it at the floor of that position (`QRasterPaintEngine::drawCachedGlyphs`). Qt's
+            // fractional position of its pen, kept in 26.6 pixels (26.6 fixed-point conversion), and blits
+            // it at the floor of that position (raster paint engine). Qt's
             // Windows engines without sub-pixel positions blit at that floor too.
             let pen_x = (f64::from(px) * 64.0).trunc() as i64;
             // Qt draws LCD masks when ClearType is on and the face has them
-            // (`QRasterPaintEngine::drawCachedGlyphs`, `alphaRGBMapForGlyph`).
+            // (raster paint engine, `alphaRGBMapForGlyph`).
             let lcd_glyph = lcd_lut
                 .as_ref()
                 .and_then(|_| engine.rasterize_lcd_glyph_at(glyph.glyph_id, font.size, dpr, pen_x));
             // A face of Qt's FreeType engine is placed at the glyph's 26.6 position as
-            // `QFontEngine::getGlyphPositions` computes it: the translation truncated to 26.6, plus
+            // the glyph backend computes it: the translation truncated to 26.6, plus
             // the laid-out advances, unless the transform scales.
             let placement = engine
                 .face
@@ -252,15 +252,15 @@ impl<'a> Painter<'a> {
                     {
                         // The laid-out positions are 26.6 values already.
                         (
-                            qt_fixed(f64::from(transform.tx) + f64::from(pos.x))
+                            to_fixed_26_6(f64::from(transform.tx) + f64::from(pos.x))
                                 .saturating_add((f64::from(glyph.x) * 64.0).round() as i64),
-                            qt_fixed(f64::from(transform.ty) + f64::from(pos.y))
+                            to_fixed_26_6(f64::from(transform.ty) + f64::from(pos.y))
                                 .saturating_add((f64::from(glyph.y) * 64.0).round() as i64),
                         )
                     } else {
-                        (qt_fixed(f64::from(px)), qt_fixed(f64::from(py)))
+                        (to_fixed_26_6(f64::from(px)), to_fixed_26_6(f64::from(py)))
                     };
-                    qt_glyph_placement(x, y)
+                    glyph_placement_from_26_6(x, y)
                 });
             let pen_x = placement.map_or(pen_x, |p| p.pen_x);
             let subpixel_glyph =
@@ -346,7 +346,7 @@ impl<'a> Painter<'a> {
                 continue;
             }
 
-            // `QFontEngine::expectsGammaCorrectedBlending` (the text gamma of `colorProfileForA8Text`
+            // the glyph backend (the text gamma of `colorProfileForA8Text`
             // is 1.7 where the platform integration does not say otherwise).
             let a8_gamma = lcd_glyph.is_none() && engine.face.gamma_corrected_blending();
             for gy in 0..metrics.height {

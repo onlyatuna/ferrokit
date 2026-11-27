@@ -75,7 +75,7 @@ impl std::fmt::Debug for ShapedParagraph {
 
 /// `QChar::LineSeparator`: what ends a line of a `QTextLayout` (`QTextEngine::itemize` marks it
 /// `LineOrParagraphSeparator`). A line feed does not: it is an ordinary character of no width,
-/// which is why `QTextDocument` splits its paragraphs into blocks and `qt_format_text` replaces
+/// which is why `QTextDocument` splits its paragraphs into blocks and the helper replaces
 /// the line feeds of a label's text with this before laying out.
 const LINE_SEPARATOR: &str = "\u{2028}";
 
@@ -708,7 +708,7 @@ impl TextLayout {
         let line_idx = self.lines.len();
 
         let y_pos = self.position.y + (line_idx as f32) * pitch;
-        // `QTextEngine::alignLine` (qtextengine.cpp:3558-3572): Right, else HCenter, else the
+        // `QTextEngine::alignLine`: Right, else HCenter, else the
         // line starts at the left (Left, Justify, no flag).
         // Justified text of a right to left paragraph is aligned right.
         let align_right = self.alignment.contains(Alignment::RIGHT)

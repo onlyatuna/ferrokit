@@ -265,7 +265,7 @@ impl TextLine {
         (self.position.x + base_x + offset).min(self.right_limit)
     }
 
-    /// Maps an X coordinate back to a grapheme cursor position (`xToCursor`, qtextlayout.cpp:3079).
+    /// Maps an X coordinate back to a grapheme cursor position (`xToCursor`).
     ///
     /// Returns the global grapheme index within the layout text. Left of the line is its start
     /// (its end in a right to left text); right of the text it is the end (the start in a right
@@ -352,7 +352,7 @@ impl TextLine {
     }
 }
 
-/// The height of lines stacked as `qt_format_text` stacks them (qpainter.cpp:7370-7388): every
+/// The height of lines stacked as the helper stacks them: every
 /// line but the last advances by its [`pitch`](TextLine::pitch), the last adds its own height.
 pub(crate) fn stacked_height<'a>(lines: impl IntoIterator<Item = &'a TextLine>) -> f32 {
     let (mut top, mut advance, mut last_height) = (0.0, 0.0, 0.0);

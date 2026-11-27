@@ -25,8 +25,8 @@ pub struct GlyphMetrics {
 }
 
 /// Ascent, descent and leading of a font engine in pixels at the requested size: Qt's
-/// `QFontEngine::ascent`, `descent` and `leading` (`m_ascent`, `m_descent`, `m_leading` of
-/// `initializeHeightMetrics`), each a 26.6 value (`QFixed::fromReal` truncates toward zero).
+/// the glyph backend, `descent` and `leading` (`m_ascent`, `m_descent`, `m_leading` of
+/// `initializeHeightMetrics`), each a 26.6 value (26.6 fixed-point conversion truncates toward zero).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LineMetrics {
     pub ascent: f32,
@@ -34,7 +34,7 @@ pub struct LineMetrics {
     pub leading: f32,
     /// The engine keeps these values as it reports them even where it has no sub-pixel
     /// positions: Qt's `initializeHeightMetrics` skips both the table override and the rounding
-    /// for a font with embedded bitmaps (`EBLC`, `CBLC` or `bdat`, qfontengine.cpp:432-445),
+    /// for a font with embedded bitmaps (`EBLC`, `CBLC` or `bdat`),
     /// leaving what the platform engine computed. [`rounded`](Self::rounded) returns such values
     /// unchanged.
     pub unrounded: bool,
@@ -42,7 +42,7 @@ pub struct LineMetrics {
 
 impl LineMetrics {
     /// The values an engine that does not position glyphs at sub-pixel offsets reports
-    /// (`QFontEngine::initializeHeightMetrics`, qfontengine.cpp:439-444): ascent and descent
+    /// (the glyph backend): ascent and descent
     /// rounded to whole pixels, the leading absorbing the rounding of the whole line height
     /// (so it can be negative: a 12.5 + 3.5 line is 13 + 4 with a leading of -1).
     pub fn rounded(self) -> Self {
@@ -107,7 +107,7 @@ pub trait GlyphFace: Send + Sync {
     }
 
     /// The face is Qt's FreeType engine (`QFontEngineFT`): the painter places its glyphs as
-    /// `QFontEngine::getGlyphPositions` and `QRasterPaintEngine::drawCachedGlyphs` do (whole pixel
+    /// the glyph backend and raster paint engine do (whole pixel
     /// `qFloor(x)`, `qRound(y)`), and the layout rounds its advances to whole pixels exactly when
     /// the face has no [horizontal sub-pixel positions](Self::supports_horizontal_subpixel_positions)
     /// (its hint style is neither none nor light).
@@ -115,7 +115,7 @@ pub trait GlyphFace: Send + Sync {
         false
     }
 
-    /// `QFontEngine::expectsGammaCorrectedBlending`: the grey-scale glyphs of this face are blended
+    /// the glyph backend: the grey-scale glyphs of this face are blended
     /// with the text gamma (`QGuiApplicationPrivate::colorProfileForA8Text`, 1.7 on Unix). Qt's
     /// FreeType engine says so for CFF fonts, whose stem darkening it enables; every other engine
     /// of this crate keeps the plain blend.
@@ -123,7 +123,7 @@ pub trait GlyphFace: Send + Sync {
         false
     }
 
-    /// `QFontEngine::supportsHorizontalSubPixelPositions`: the glyph cache draws a glyph at the
+    /// the glyph backend: the glyph cache draws a glyph at the
     /// fractional x position of its pen (see [`subpixel_position`](Self::subpixel_position)) and
     /// blits it at the floor of that position, instead of at the rounded one. Qt's CoreText
     /// engine, its DirectWrite engine at a device pixel ratio other than 1, and its FreeType
@@ -132,10 +132,10 @@ pub trait GlyphFace: Send + Sync {
         false
     }
 
-    /// `QFontEngine::subPixelPositionFor`, horizontal part: the offset, in 26.6 pixels, at which the
+    /// the glyph backend, horizontal part: the offset, in 26.6 pixels, at which the
     /// bitmap of `glyph_id` is drawn for a pen at `x` (26.6 device pixels). The first glyph with an
     /// outline that is asked about decides how many offsets a pixel has at `size`
-    /// (`QTextureGlyphCache::populate`). Only backends that support horizontal sub-pixel positions
+    /// (subpixel position bucketing). Only backends that support horizontal sub-pixel positions
     /// return other than 0.
     fn subpixel_position(&self, _glyph_id: u16, _size: f32, _scale: f32, _x: i64) -> i32 {
         0
@@ -165,20 +165,20 @@ pub trait GlyphFace: Send + Sync {
         None
     }
 
-    /// `QFontEngine::averageCharWidth` at `px` per em, a 26.6 value in pixels, or `None` when the
+    /// the glyph backend at `px` per em, a 26.6 value in pixels, or `None` when the
     /// backend has no font tables to derive it from.
     fn average_char_width(&self, _px: f32) -> Option<f32> {
         None
     }
 
     /// Unrounded cap height in pixels at `px` per em (the OS/2 `sCapHeight` Qt's Windows engines
-    /// report as `QFontEngine::capHeight`), or `None` when the face has none.
+    /// report as the glyph backend), or `None` when the face has none.
     fn cap_height(&self, _px: f32) -> Option<f32> {
         None
     }
 
     /// The unhinted outline of the glyph at `px` per em, in pixels with the origin on the baseline
-    /// and y growing downwards (what `QFontEngine::addGlyphsToPath` adds to a `QPainterPath`), or
+    /// and y growing downwards (what the glyph backend adds to a `QPainterPath`), or
     /// `None` when the backend cannot produce outlines.
     fn glyph_outline(&self, _glyph_id: u16, _px: f32) -> Option<tiny_skia::Path> {
         None
@@ -369,10 +369,10 @@ pub(crate) fn parse_system_ui_face(data: &SharedFontData) -> Result<SharedGlyphF
     }
 }
 
-/// `QFontEngine::subPixelPositionFor`, horizontal part, for a pen position `x` in 26.6 pixels and
+/// the glyph backend, horizontal part, for a pen position `x` in 26.6 pixels and
 /// a bucket `count` (`m_subPixelPositionCount`): the fraction of the position plus one 26.6 unit
 /// (against the precision lost in fixed point), floored to a multiple of `1 / count`, then divided
-/// by `count` with `QFixed::operator/=`, which rounds half up in 26.6 (`((a << 6) + (b >> 1)) / b`).
+/// by `count` with 26.6 fixed-point division, which rounds half up in 26.6 (`((a << 6) + (b >> 1)) / b`).
 /// The result is in 26.6 pixels; 0 for a position of 0 or fewer than two buckets.
 pub fn subpixel_bucket_offset(x: i64, count: i64) -> i32 {
     if count <= 1 || x == 0 {

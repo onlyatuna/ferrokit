@@ -45,7 +45,7 @@ pub enum HighDpiScaleFactorRoundingPolicy {
 
 /// Applies the global `HighDpiScaleFactorRoundingPolicy` to a raw screen scale factor and
 /// clamps the result to at least 1, mirroring `QHighDpiScaling::roundScaleFactor`
-/// (`qtbase/src/gui/kernel/qhighdpiscaling.cpp:322-361`).
+/// (`reference).
 pub fn round_scale_factor(raw: f64) -> f64 {
     let rounded = match GuiApplication::high_dpi_scale_factor_rounding_policy() {
         HighDpiScaleFactorRoundingPolicy::Round => raw.round(),
@@ -150,7 +150,7 @@ impl GuiApplication {
     /// Initializes a new `GuiApplication` instance.
     pub fn new(args: Vec<String>) -> Self {
         // `QGuiApplication` takes its event dispatcher from the platform plugin
-        // (qguiapplication.cpp:1629-1643): the GUI path, chosen when the loop is created.
+        // : the GUI path, chosen when the loop is created.
         let core_app = CoreApplication::with_dispatcher_kind(args, DispatcherKind::Gui);
 
         // Ensure default palette and font are established
@@ -398,7 +398,7 @@ impl GuiApplication {
         color_scheme::reset_for_test();
     }
 
-    /// Emits `lastWindowClosed` if registered (`qguiapplication.cpp:3939`).
+    /// Emits `lastWindowClosed` if registered.
     pub fn emit_last_window_closed() {
         let sig = ferrokit_core::poison::read_unpoisoned(&LAST_WINDOW_CLOSED_SIGNAL).clone();
         if let Some(sig) = sig {
@@ -406,7 +406,7 @@ impl GuiApplication {
         }
     }
 
-    /// Emits `focusWindowChanged` if registered (`qguiapplication.cpp:2417`).
+    /// Emits `focusWindowChanged` if registered.
     pub fn emit_focus_window_changed(window_id: Option<ObjectId>) {
         let sig = ferrokit_core::poison::read_unpoisoned(&FOCUS_WINDOW_CHANGED_SIGNAL).clone();
         if let Some(sig) = sig {

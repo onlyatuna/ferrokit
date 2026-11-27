@@ -150,7 +150,7 @@ fn select_script(table: Option<&LayoutTable>, tags: &[Tag]) -> Option<(u16, Tag)
         .find_map(|&tag| table.scripts.index(tag).map(|index| (index, tag)))
 }
 
-/// `QFontEngine::supportsScript` for the scripts that need OpenType layout (`scriptRequiresOpenType`:
+/// the glyph backend for the scripts that need OpenType layout (`scriptRequiresOpenType`:
 /// Syriac to Sinhala, Khmer and N'Ko): whether the font's GSUB table has the script under one of
 /// the tags HarfBuzz would shape it with (`hb_ot_layout_table_select_script` returning true, so
 /// not through `DFLT`, `dflt` or `latn`). A font with an AAT `mort` or `morx` table supports every

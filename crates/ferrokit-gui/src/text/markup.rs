@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Rich text import/export for `TextDocument`.
 //!
-//! - HTML subset import (`QTextHtmlImporter`): inline styles (`<b>`, `<i>`, `<u>`, `<s>`, `<sup>`,
+//! - HTML subset import (HTML subset importer): inline styles (`<b>`, `<i>`, `<u>`, `<s>`, `<sup>`,
 //!   `<sub>`, `<font color>`, `<span style>`), hyperlinks and named anchors (`<a href>`, `<a name>`,
 //!   `id`), block elements (`<p>`, `<div>`, `<h1>`..`<h6>`, `<li>`, `<pre>`, `<br>`), entity decoding,
 //!   HTML whitespace collapsing and `<title>` capture.
-//! - HTML export (`QTextHtmlExporter`) producing markup that re-imports losslessly.
-//! - CommonMark-style Markdown import/export (`QTextMarkdownImporter` / `QTextMarkdownWriter`):
+//! - HTML export (HTML exporter) producing markup that re-imports losslessly.
+//! - CommonMark-style Markdown import/export (Markdown importer / Markdown writer):
 //!   ATX/setext headings, paragraphs, fenced code, emphasis, strikethrough, code spans and links.
 
 use crate::alignment::Alignment;
@@ -16,7 +16,7 @@ use crate::text::format::{TextBlockFormat, TextCharFormat, UnderlineStyle, Verti
 use crate::text::fragment::TextFragment;
 use std::borrow::Cow;
 use tiny_skia::Color;
-/// The HTML element names `QTextHtmlParser::lookupElement` knows (qtexthtmlparser.cpp:355-416),
+/// The HTML element names HTML element lookup knows,
 /// sorted for binary search.
 #[rustfmt::skip]
 const RICH_TEXT_ELEMENTS: &[&str] = &[
@@ -27,7 +27,7 @@ const RICH_TEXT_ELEMENTS: &[&str] = &[
     "tfoot", "th", "thead", "title", "tr", "tt", "u", "ul", "var",
 ];
 
-/// `Qt::mightBeRichText` (qtextdocument.cpp:72-130): whether `text` likely holds rich text.
+/// rich-text detection: whether `text` likely holds rich text.
 ///
 /// Looks for a tag, or a `&lt;` entity, before the first line break. The first tag must be a known
 /// element name, so `value <5 and >3` is plain text and `<b>x</b>` is rich.
@@ -93,7 +93,7 @@ pub fn might_be_rich_text(text: &str) -> bool {
     false
 }
 
-/// Default hyperlink color applied to imported anchors (`QPalette::Link`).
+/// Default hyperlink color applied to imported anchors (default link color).
 pub fn link_color() -> Color {
     Color::from_rgba8(0, 0, 255, 255)
 }
@@ -886,7 +886,7 @@ pub(crate) fn write_html(blocks: &[TextBlock], title: &str) -> String {
         };
         html.push('<');
         html.push_str(tag);
-        // `QTextHtmlExporter::emitAlignment` (qtextdocument.cpp:2833-2843): nothing for Left.
+        // `QTextHtmlExporter::emitAlignment`: nothing for Left.
         let align = b.block_format.alignment;
         if !align.contains(Alignment::LEFT) {
             let named = [

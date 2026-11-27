@@ -29,7 +29,7 @@ impl GradientStop {
 }
 
 /// Inserts a stop keeping `stops` sorted by position; a stop at an existing position replaces
-/// its color (`QGradient::setColorAt`, qgradient.cpp).
+/// its color (`QGradient::setColorAt`).
 fn insert_stop(stops: &mut Vec<GradientStop>, position: f32, color: Color) {
     let stop = GradientStop::new(position, color);
     let index = stops.partition_point(|s| s.position < stop.position);
