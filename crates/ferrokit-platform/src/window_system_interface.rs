@@ -118,7 +118,7 @@ pub enum WindowSystemEvent {
         pos: Point,
         global_pos: Point,
         /// The buttons held down while the pointer moves (`QMouseEvent::buttons`). Qt shows a
-        /// tool tip only for a move with no button down (`qapplication.cpp:2722`).
+        /// tool tip only for a move with no button down.
         buttons: MouseButtons,
     },
     MousePress {
@@ -138,7 +138,7 @@ pub enum WindowSystemEvent {
     },
     /// The OS recognised the second press of a double click. Qt delivers
     /// `Press, Release, DblClick, Release` and does *not* deliver that second press
-    /// (`qguiapplication.cpp:2495-2540`, `qwidgetwindow.cpp:570,680`), so this replaces it.
+    /// (680`), so this replaces it.
     MouseDoubleClick {
         pos: Point,
         global_pos: Point,
@@ -153,7 +153,7 @@ pub enum WindowSystemEvent {
     },
     MouseLeave,
     /// The window lost the mouse capture it held (`WM_CAPTURECHANGED` with another owner): an
-    /// explicit `QWidget::grabMouse` of the window has no native grab behind it any more.
+    /// explicit `a widget::grabMouse` of the window has no native grab behind it any more.
     MouseGrabLost,
     KeyPress {
         key: u32,
@@ -174,9 +174,9 @@ pub enum WindowSystemEvent {
     InteractiveResizeEnd,
     /// Window minimized or restored (Windows `WM_SIZE` `SIZE_MINIMIZED` / `SIZE_RESTORED`).
     /// Qt delivers this as `WindowStateChange` and the minimize transition as a spontaneous
-    /// `Hide`/`Show` (`QWidgetWindow::handleWindowStateChangedEvent`, qwidgetwindow.cpp:1125-1151;
-    /// `QWidget::event` `WindowStateChange`, qwidget.cpp:9292-9311). Qt's minimize does not
-    /// change the window geometry (qwindowswindow.cpp:2370-2377).
+    /// `Hide`/`Show` (`QWidgetWindow::handleWindowStateChangedEvent`,;
+    /// `a widget::event` `WindowStateChange`). Qt's minimize does not
+    /// change the window geometry.
     Minimize {
         minimized: bool,
     },
@@ -211,7 +211,7 @@ pub enum WindowSystemEvent {
         data: Vec<(String, Vec<u8>)>,
         drop_action: u32,
     },
-    /// Power management event (aligned with QWindowsContext / WM_POWERBROADCAST)
+    /// Power management event (aligned with the Win32 platform backend / WM_POWERBROADCAST)
     Power {
         event: PowerEvent,
     },

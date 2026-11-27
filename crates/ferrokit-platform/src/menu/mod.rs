@@ -55,7 +55,7 @@ pub trait PlatformMenu {
     }
 }
 
-/// Create a platform-appropriate native menu instance (aligned with `QPlatformIntegration::createPlatformMenu`).
+/// Create a platform-appropriate native menu instance (aligned with the platform abstraction).
 pub fn create_platform_menu(_native_handle: isize) -> Box<dyn PlatformMenu> {
     #[cfg(windows)]
     {

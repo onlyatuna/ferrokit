@@ -512,7 +512,7 @@ impl Win32LayeredSurface {
             info.pptSrc = &pt_src;
             info.crKey = 0;
             info.pblend = &blend;
-            // Plain `ULW_ALPHA`, as Qt's QWindowsBackingStore::flush does. `ULW_EX_NORESIZE` made the
+            // Plain `ULW_ALPHA`, as Qt's the Win32 platform backend does. `ULW_EX_NORESIZE` made the
             // call fail (GetLastError 31) whenever `psize` was 1 px off the HWND (DPI rounding) and
             // measured no faster.
             let dw_flags = ULW_ALPHA;

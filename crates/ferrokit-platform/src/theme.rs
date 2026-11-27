@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex};
 pub use ferrokit_gui::application::ColorScheme;
 
 /// The colour scheme a platform theme reports: the system's scheme and, next to it, the one the
-/// application asked for (`QPlatformTheme::requestColorScheme`). The effective scheme is the
-/// request unless that is [`ColorScheme::Unknown`], as in `QWindowsTheme::effectiveColorScheme`
-/// (qwindowstheme.cpp:655-667) and `QGnomeThemePrivate::colorScheme` (qgnometheme.cpp:56-78).
+/// application asked for (platform theme `requestColorScheme`). The effective scheme is the
+/// request unless that is [`ColorScheme::Unknown`], as in effective color scheme resolution
+/// and GNOME color scheme detection.
 ///
 /// `changed` fires when the *effective* scheme changes, after the lock is released, so a slot can
 /// read the theme back.
@@ -86,7 +86,7 @@ pub trait PlatformTheme: Send + Sync {
     fn native_style(&self) -> NativeStyle {
         NativeStyle::Fusion
     }
-    /// `QPlatformTheme::colorScheme`: the effective scheme, an application override included.
+    /// platform theme `colorScheme`: the effective scheme, an application override included.
     fn color_scheme(&self) -> ColorScheme;
     /// Emitted with the new effective scheme whenever it changes, on the thread that noticed the
     /// change (a window procedure, a D-Bus listener thread, the main thread for AppKit). It is
@@ -96,14 +96,14 @@ pub trait PlatformTheme: Send + Sync {
     fn theme_changed(&self) -> &Signal<ColorScheme>;
     /// Re-reads what the system exposes (called when the system says its settings changed).
     fn refresh(&self);
-    /// `QPlatformTheme::requestColorScheme`: overrides the system scheme with `scheme`, or follows
+    /// platform theme `requestColorScheme`: overrides the system scheme with `scheme`, or follows
     /// the system again with [`ColorScheme::Unknown`]. Like the base class in Qt
-    /// (qplatformtheme.cpp:480-487) the default ignores the request; every theme of this crate
+    /// the default ignores the request; every theme of this crate
     /// honours it.
     fn request_color_scheme(&self, scheme: ColorScheme) {
         let _ = scheme;
     }
-    /// Family of the system menu font (`QPlatformTheme::MenuFont`), which Qt uses as the base
+    /// Family of the system menu font (the system menu font), which Qt uses as the base
     /// font of every `QMenu`. `None` when the platform has no such query.
     fn menu_font_family(&self) -> Option<String> {
         None
@@ -113,7 +113,7 @@ pub trait PlatformTheme: Send + Sync {
     fn text_smoothing(&self) -> ferrokit_gui::text::smoothing::TextSmoothing {
         ferrokit_gui::text::smoothing::TextSmoothing::OFF
     }
-    /// `QPlatformTheme::motionPreference`.
+    /// platform theme `motionPreference`.
     fn motion_preference(&self) -> ferrokit_gui::application::MotionPreference {
         ferrokit_gui::application::MotionPreference::NoPreference
     }
@@ -195,7 +195,7 @@ pub mod win32_theme {
 
         /// What the system contributes to the effective scheme: the registry value, but
         /// `Light` when the style part of dark mode is switched off
-        /// (`QWindowsTheme::effectiveColorScheme`, qwindowstheme.cpp:655-667;
+        /// (effective color scheme resolution,;
         /// `-platform windows:darkmode=0|1`, see [`crate::dark_mode`]).
         fn system_color_scheme() -> ColorScheme {
             let style = crate::dark_mode::DarkModeHandling::STYLE;
@@ -257,7 +257,7 @@ pub mod win32_theme {
 
     impl PlatformTheme for Win32Theme {
         /// Qt picks `windows11` from build 22000 on and `windowsvista` before
-        /// (`QWindowsIntegration`), whose menus draw differently.
+        /// (the Win32 integration), whose menus draw differently.
         fn native_style(&self) -> NativeStyle {
             static STYLE: std::sync::LazyLock<NativeStyle> =
                 std::sync::LazyLock::new(|| match Win32Theme::build_number() {
@@ -303,7 +303,7 @@ pub mod win32_theme {
         }
 
         /// `SPI_GETCLIENTAREAANIMATION` off means reduced motion; a failed query counts as off
-        /// (`QWindowsTheme::motionPreference`, `booleanSystemParametersInfo(.., false)`).
+        /// (reduced-motion preference query, `SystemParametersInfo` boolean query).
         fn motion_preference(&self) -> ferrokit_gui::application::MotionPreference {
             use ferrokit_gui::application::MotionPreference;
             use windows_sys::Win32::UI::WindowsAndMessaging::SystemParametersInfoW;
@@ -329,7 +329,7 @@ pub mod win32_theme {
 
         /// `SPI_GETFONTSMOOTHINGTYPE` is ClearType (`winClearTypeFontsEnabled`) and the
         /// gamma is `SPI_GETFONTSMOOTHINGCONTRAST / 1000`, 1.4 when out of 1..=5
-        /// (`QWindowsFontDatabase::fontSmoothingGamma`).
+        /// (ClearType font smoothing gamma query).
         fn text_smoothing(&self) -> ferrokit_gui::text::smoothing::TextSmoothing {
             use windows_sys::Win32::UI::WindowsAndMessaging::SystemParametersInfoW;
             const SPI_GETFONTSMOOTHINGTYPE: u32 = 0x200A;
@@ -356,7 +356,7 @@ pub mod win32_theme {
                     ),
                 )
             };
-            // `QWindowsFontDatabase::fontSmoothingGamma` starts from 1 when the query fails.
+            // ClearType font smoothing gamma query starts from 1 when the query fails.
             let mut gamma = if contrast_ok != 0 {
                 contrast as f32 / 1000.0
             } else {
@@ -372,15 +372,15 @@ pub mod win32_theme {
         }
 
         /// Called when Windows says its settings changed (`WM_SETTINGCHANGE`, `WM_THEMECHANGED`):
-        /// re-reads `AppsUseLightTheme`, as `QWindowsTheme::handleThemeChange` re-queries the
-        /// registry (qwindowstheme.cpp:681-705). `theme_changed` fires only if the effective
+        /// re-reads `AppsUseLightTheme`, as theme change handling re-queries the
+        /// registry. `theme_changed` fires only if the effective
         /// scheme moved.
         fn refresh(&self) {
             ferrokit_gui::application::set_system_motion_preference(self.motion_preference());
             self.core.set_system(Self::system_color_scheme());
         }
 
-        /// `QWindowsTheme::requestColorScheme` (qwindowstheme.cpp:669-673): the request replaces
+        /// color scheme override request: the request replaces
         /// the registry value until it is reset with [`ColorScheme::Unknown`].
         fn request_color_scheme(&self, scheme: ColorScheme) {
             self.core.set_requested(scheme);
@@ -433,7 +433,7 @@ impl PlatformTheme for GenericTheme {
 pub mod cocoa_theme {
     use super::*;
 
-    /// The colour scheme on macOS, as `QCocoaTheme` has it: the effective appearance of
+    /// The colour scheme on macOS, as the Cocoa theme backend has it: the effective appearance of
     /// `NSApp`, observed so that a change of the system appearance (or of `NSApp.appearance`)
     /// reaches `theme_changed`.
     ///
@@ -462,7 +462,7 @@ pub mod cocoa_theme {
     }
 
     /// The KVO and notification observers of one theme (`m_appearanceObserver` and
-    /// `m_systemColorObserver` of `QCocoaTheme`). Removed on drop, on the thread that registered
+    /// the system appearance observer of the Cocoa theme backend). Removed on drop, on the thread that registered
     /// them (the main thread), whichever thread drops the theme.
     #[cfg(target_os = "macos")]
     struct AppearanceObserver(#[allow(dead_code)] OnThread<Observers>);
@@ -616,10 +616,10 @@ pub mod cocoa_theme {
             }
         }
 
-        /// `QCocoaTheme::QCocoaTheme` (qcocoatheme.mm:217-230): key-value observation of
+        /// the Cocoa theme observer setup: key-value observation of
         /// `NSApp.effectiveAppearance` and of `NSSystemColorsDidChangeNotification`; either
         /// re-reads the appearance (`handleSystemThemeChange` -> `updateColorScheme`,
-        /// qcocoatheme.mm:245-262). On the application's main thread this registers at once;
+        /// ). On the application's main thread this registers at once;
         /// elsewhere the registration is posted to it. See [`observe_plan`](Self::observe_plan).
         #[cfg(target_os = "macos")]
         fn observe_appearance(
@@ -719,7 +719,7 @@ pub mod cocoa_theme {
         ) {
         }
 
-        /// `QCocoaTheme::updateColorScheme` (qcocoatheme.mm:505-511): Dark only when the
+        /// the Cocoa color scheme update: Dark only when the
         /// effective appearance's best match among Aqua and DarkAqua is DarkAqua; Light otherwise.
         #[cfg(target_os = "macos")]
         pub fn query_color_scheme() -> ColorScheme {
@@ -806,7 +806,7 @@ pub mod cocoa_theme {
             self.core.set_system(Self::query_color_scheme());
         }
 
-        /// `QCocoaTheme::requestColorScheme` (qcocoatheme.mm:478-496): sets `NSApp.appearance` to
+        /// the Cocoa color scheme override: sets `NSApp.appearance` to
         /// Aqua or DarkAqua, or to nil (follow the system) for [`ColorScheme::Unknown`]. The
         /// appearance observer then reports the change, so the effective scheme is always what
         /// AppKit says. Must run on the main thread.
@@ -981,7 +981,7 @@ pub mod unix_theme {
 
     impl UnixInner {
         /// The system scheme: the portal's when it has an opinion, else what the GTK theme says
-        /// (`QGnomeThemePrivate::colorScheme`, qgnometheme.cpp:56-78).
+        /// (GNOME color scheme detection).
         fn recompute(&self) {
             let portal = ColorScheme::from(self.portal.load(Ordering::Acquire));
             let system = if portal != ColorScheme::Unknown {
@@ -1027,9 +1027,9 @@ pub mod unix_theme {
     ///
     /// Follows the XDG desktop portal's `org.freedesktop.appearance` `color-scheme` over D-Bus
     /// (GNOME, KDE and others), including its `SettingChanged` signal, from a listener thread:
-    /// `QGnomePortalInterface` / `QDBusListener` (qgnomeportalinterface.cpp, qdbuslistener.cpp).
+    /// the XDG portal interface / the D-Bus settings listener.
     /// When the portal has no preference (or there is none) the fallback decides: the theme name
-    /// of `GTK_THEME` (Qt's `QGnomeThemePrivate::colorScheme` tests the GTK theme name for
+    /// of `GTK_THEME` (Qt's GNOME color scheme detection tests the GTK theme name for
     /// "light" / "dark"); with neither the scheme is [`ColorScheme::Unknown`], as in Qt.
     ///
     /// **Extension, not in Qt:** the fallback also reads `gtk-3.0/settings.ini`
@@ -1127,7 +1127,7 @@ pub mod unix_theme {
         }
 
         /// The fallback scheme, when no portal answers: the theme name in `GTK_THEME`
-        /// (`QGnomeThemePrivate::colorScheme`'s name test), then, as an extension not in Qt,
+        /// (GNOME color scheme detection's name test), then, as an extension not in Qt,
         /// `gtk-3.0/settings.ini`. [`ColorScheme::Unknown`] when neither says.
         pub fn query_color_scheme() -> ColorScheme {
             if let Ok(name) = std::env::var("GTK_THEME") {
@@ -1156,7 +1156,7 @@ pub mod unix_theme {
         }
     }
 
-    /// `QGnomeThemePrivate::colorScheme`'s theme-name test (qgnometheme.cpp:68-74): a name with
+    /// GNOME color scheme detection's theme-name test: a name with
     /// "light" in it is Light, else with "dark" Dark, case-insensitively.
     pub(super) fn scheme_from_theme_name(name: &str) -> ColorScheme {
         let name = name.to_lowercase();
@@ -1221,7 +1221,7 @@ pub mod unix_theme {
             self.inner.recompute();
         }
 
-        /// `QGnomeTheme::requestColorScheme` (qgnometheme.cpp:175-183): remembers the request; the
+        /// GNOME color scheme override: remembers the request; the
         /// effective scheme is the request unless it is [`ColorScheme::Unknown`].
         fn request_color_scheme(&self, scheme: ColorScheme) {
             self.inner.core.set_requested(scheme);
@@ -1455,7 +1455,7 @@ pub use unix_theme::UnixTheme;
 ///
 /// The theme's `theme_changed` may fire on any thread; the style hints re-read the scheme and
 /// emit `color_scheme_changed` on the main thread (`QGuiApplicationPrivate::handleThemeChanged`,
-/// qguiapplication.cpp:2854-2856).
+/// ).
 pub fn install_style_hints_theme(theme: Arc<dyn PlatformTheme>) {
     struct ThemeSource(Arc<dyn PlatformTheme>);
 
@@ -1480,7 +1480,7 @@ pub fn install_style_hints_theme(theme: Arc<dyn PlatformTheme>) {
         }
         let connection = theme.theme_changed().connect(|_| {
             // Qt moves the window frames before it signals the change
-            // (`QWindowsTheme::handleThemeChange`, qwindowstheme.cpp:690-705). The pass reads the
+            // (theme change handling). The pass reads the
             // scheme itself, so a late delivery of an older notification cannot apply a stale one.
             crate::dark_mode::scheme_changed();
             ferrokit_gui::application::handle_theme_changed();

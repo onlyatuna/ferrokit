@@ -89,8 +89,8 @@ impl CocoaLayerSurface {
         &self.pixel_buffer
     }
 
-    /// Window opacity is not applied here: like `QCocoaWindow::setOpacity`
-    /// (qcocoawindow.mm:1206-1213) it lives only in `[NSWindow alphaValue]`
+    /// Window opacity is not applied here: like the Cocoa window backend
+    /// it lives only in `[NSWindow alphaValue]`
     /// (`CocoaNativeWindow::set_opacity`); the layer stays at opacity 1.
     pub fn commit_to_layer(&self) -> Result<(), &'static str> {
         let layer = Id(self.layer_id as *mut std::ffi::c_void);
@@ -117,10 +117,10 @@ impl CocoaLayerSurface {
             use core_graphics::*;
             let color_space = CGColorSpaceCreateDeviceRGB();
             // Qt never lets Core Animation hold memory it will write again: the flushed
-            // IOSurface stays untouched while in use (qcocoabackingstore.mm:141,163,347,392-402).
+            // IOSurface stays untouched while in use (163,347,392-402).
             // The layer keeps this image after we return, so it gets its own copy of the frame;
             // `pixel_buffer` is overwritten by the next present and reallocated by `resize`.
-            // The content view is flipped like QNSView (qnsview_drawing.mm:67-70), so its layer
+            // The content view is flipped like the platform NSView, so its layer
             // flips contents when rendering ([CALayer contentsAreFlipped]); the copy then stores
             // the rows bottom-up, and the frame's first row still shows at the top.
             let len = self.pixel_buffer.len();
@@ -146,8 +146,8 @@ impl CocoaLayerSurface {
             }
 
             // The pixmap is premultiplied RGBA8 in memory (tiny-skia), which Qt describes as
-            // QImage::Format_RGBA8888_Premultiplied (qimage.cpp:6235) ->
-            // kCGImageAlphaPremultipliedLast | kCGImageByteOrder32Big (qcoregraphics.mm:46-64).
+            // QImage::Format_RGBA8888_Premultiplied ->
+            // kCGImageAlphaPremultipliedLast | kCGImageByteOrder32Big.
             let bitmap_info = K_CG_IMAGE_ALPHA_PREMULTIPLIED_LAST | K_CG_BITMAP_BYTE_ORDER_32_BIG;
             let cg_image = CGImageCreate(
                 self.width as usize,

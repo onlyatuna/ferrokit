@@ -442,8 +442,8 @@ pub mod cocoa {
         }
     }
 
-    /// The `NSApplication` setup of Qt's `QCocoaIntegration` constructor
-    /// (qcocoaintegration.mm:137-161): make the process a foreground application unless
+    /// The `NSApplication` setup of Qt's the Cocoa integration constructor
+    /// : make the process a foreground application unless
     /// `QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM` is set, and install the application
     /// delegate, which activates the application once it has launched.
     #[cfg(target_os = "macos")]
@@ -474,7 +474,7 @@ pub mod cocoa {
         };
     }
 
-    /// `qt_mac_transformProccessToForegroundApplication` (qcocoahelpers.mm:138-180): the
+    /// foreground application promotion: the
     /// activation policy becomes `NSApplicationActivationPolicyRegular` unless the Info.plist sets
     /// `LSUIElement` or `LSBackgroundOnly` to a true value.
     #[cfg(target_os = "macos")]
@@ -676,7 +676,7 @@ pub fn platform() -> Arc<dyn PlatformIntegration> {
     drop(writer);
     if installed_here {
         // `QGuiApplicationPrivate` hands the platform theme to `QStyleHints` once the platform
-        // plugin is up (qguiapplication.cpp:1617).
+        // plugin is up.
         crate::theme::install_style_hints_theme(integration.theme());
     }
     integration

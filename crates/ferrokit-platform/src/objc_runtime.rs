@@ -147,7 +147,7 @@ pub const NS_WINDOW_STYLE_MASK_FULL_SIZE_CONTENT_VIEW: NSUInteger = 1 << 15;
 
 pub const NS_BACKING_STORE_BUFFERED: NSUInteger = 2;
 
-// NSWindowLevel values used by QCocoaWindow::windowLevel (qcocoawindow.mm:548-564).
+// NSWindowLevel values used by the Cocoa platform backend.
 pub const NS_NORMAL_WINDOW_LEVEL: NSInteger = 0; // kCGNormalWindowLevel
 pub const NS_FLOATING_WINDOW_LEVEL: NSInteger = 3; // kCGFloatingWindowLevel
 pub const NS_MODAL_PANEL_WINDOW_LEVEL: NSInteger = 8; // kCGModalPanelWindowLevel
@@ -371,8 +371,8 @@ impl Drop for AutoreleasePool {
     }
 }
 
-/// The content view class: an `NSView` subclass named `QNSView` whose `-isFlipped` returns YES,
-/// like Qt's (qnsview_drawing.mm:67-70), registered with the runtime on first use.
+/// The content view class: an `NSView` subclass named the platform NSView whose `-isFlipped` returns YES,
+/// like Qt's, registered with the runtime on first use.
 #[cfg(target_os = "macos")]
 pub fn qnsview_class() -> Class {
     extern "C" fn is_flipped(_this: *mut c_void, _cmd: *const c_void) -> BOOL {
@@ -443,9 +443,9 @@ fn is_macos_at_least(major: NSInteger) -> bool {
     res != NO
 }
 
-/// The application delegate, an `NSObject` subclass named `QCocoaApplicationDelegate` created
+/// The application delegate, an `NSObject` subclass named the Cocoa platform backend created
 /// once and never released (Qt's `sharedDelegate`). Its `-applicationDidFinishLaunching:` brings
-/// the application to the front like Qt's (qcocoaapplicationdelegate.mm:157-194): it activates
+/// the application to the front like Qt's: it activates
 /// the application if it is not active, and on macOS 14 and later activates it again with all
 /// its windows. Neither happens when `QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM` is set.
 #[cfg(target_os = "macos")]
@@ -793,7 +793,7 @@ impl MockObjcRuntime {
         }
 
         if class_name == "QNSView" {
-            // Align with Qt QNSView (qnsview_drawing.mm:67-70): the view reports itself as flipped.
+            // Align with Qt the platform NSView: the view reports itself as flipped.
             obj.is_flipped = true;
         }
 

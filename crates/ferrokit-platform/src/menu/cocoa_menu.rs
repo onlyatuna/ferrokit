@@ -167,7 +167,7 @@ impl CocoaMenuItem {
     }
 
     /// Routes AppKit clicks on this item to [`trigger`](Self::trigger), as a click on a Qt menu
-    /// item reaches `QCocoaMenuItem`'s action. The target holds the item weakly, so the item's
+    /// item reaches the Cocoa platform backend's action. The target holds the item weakly, so the item's
     /// owner (the menu) stays the only strong reference.
     pub fn attach_target(self: &Arc<Self>) {
         let item = Arc::downgrade(self);

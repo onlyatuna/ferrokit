@@ -507,7 +507,7 @@ impl PlatformTrayIcon for DbusStatusNotifierItem {
         self.menu = Some(menu);
     }
 
-    /// Mirrors `QStatusNotifierItemAdaptor` (qstatusnotifieritemadaptor.cpp): see
+    /// Mirrors `QStatusNotifierItemAdaptor`: see
     /// [`DbusStatusNotifierItem::handle_message`] for the method-to-reason mapping and the
     /// `org.freedesktop.DBus.Properties` reads that are answered. The reasons
     /// arrive when [`PlatformTrayIcon::process_events`] runs, which something must drive from
@@ -570,9 +570,9 @@ impl PlatformTrayIcon for DbusStatusNotifierItem {
     }
 
     /// Queues the registration with the StatusNotifierWatcher on the session bus and returns
-    /// without waiting for the answer, like `QSystemTrayIcon::show` with an asynchronous
+    /// without waiting for the answer, like `the system tray icon::show` with an asynchronous
     /// registration. Without a reachable bus the icon cannot appear, as with
-    /// `QSystemTrayIcon::show` when no tray exists: this is not an error, but `is_registered()`
+    /// `the system tray icon::show` when no tray exists: this is not an error, but `is_registered`
     /// stays false. `Err` means the requests could not be queued on the connection.
     ///
     /// With a bus, `RequestName` and `RegisterStatusNotifierItem` are queued and

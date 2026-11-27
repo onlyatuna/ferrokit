@@ -318,7 +318,7 @@ pub(crate) fn set_cocoa_window_backdrop(
     match backdrop {
         BackdropType::None => {
             // Qt removes the area's effect view from its superview and forgets it; the content
-            // view is untouched (QCocoaWindow::manageVisualEffectArea, qcocoawindow.mm:2258-2263).
+            // view is untouched (the Cocoa platform backend).
             // The window's opacity is not touched here: it may still be transparent for vibrancy
             // or a mask, so `CocoaNativeWindow` restores it once nothing needs it.
             if let Some(effect_view) = backdrop_view.take() {
@@ -361,7 +361,7 @@ pub(crate) fn set_cocoa_window_backdrop(
                 }
             }
             // Qt keeps one effect view per area and updates it in place
-            // (QCocoaWindow::manageVisualEffectArea, qcocoawindow.mm:2258-2259,2278-2281).
+            // (the Cocoa platform backend,,2278-2281).
             let existing = *backdrop_view;
             let effect_view = match existing {
                 Some(view) => view,
@@ -430,7 +430,7 @@ pub(crate) fn set_cocoa_window_backdrop(
 
             if existing.is_none() {
                 // Qt stacks the effect layer below the content layer (z 0): wantsLayer, then
-                // layer.zPosition = -FLT_MAX (qcocoawindow.mm:2267-2270). zPosition is a CGFloat.
+                // layer.zPosition = -FLT_MAX. zPosition is a CGFloat.
                 // SAFETY: `effect_view` is live; `setWantsLayer:` takes one BOOL, matching `send_bool`.
                 unsafe { ObjcMsg::send_bool(effect_view, Sel::register("setWantsLayer:"), true) };
                 // SAFETY: `effect_view` is live; `layer` takes no arguments and returns an object,

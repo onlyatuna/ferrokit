@@ -1,28 +1,28 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Dark mode of the native Windows chrome: the window frames and the system's own menus.
 //!
-//! # What Qt does (`qtbase` tag `v6.11.2`, `src/plugins/platforms/windows`)
+//! # What Qt does (reference behavior tag `v6.11.2`)
 //!
-//! * **Window frames.** `QWindowsWindow::setDarkBorderToWindow` (qwindowswindow.cpp:3857-3866)
+//! * **Window frames.** the Win32 window backend
 //!   sets `DWMWA_USE_IMMERSIVE_DARK_MODE` (20) and, if that fails, the pre-20H1 value 19.
-//!   It runs when a window is created while the scheme is dark (qwindowswindow.cpp:971-972), on
-//!   `QEvent::ApplicationPaletteChange` (qwindowswindow.cpp:2912-2914) and, for every window, when
-//!   the effective colour scheme changes (`QWindowsTheme::handleThemeChange`,
-//!   qwindowstheme.cpp:681-705). `QWindowsWindow::setDarkBorder` (qwindowswindow.cpp:3868-3874)
-//!   first asks `shouldApplyDarkFrame` (qwindowswindow.cpp:863-878): top-level, not
+//!   It runs when a window is created while the scheme is dark, on
+//!   `QEvent::ApplicationPaletteChange` and, for every window, when
+//!   the effective colour scheme changes (theme change handling,
+//!   ). the Win32 window backend
+//!   first asks `shouldApplyDarkFrame`: top-level, not
 //!   `Qt::FramelessWindowHint`, not opted out with `darkmode=0`, and a palette whose text is
 //!   lighter than its window.
-//! * **Colour scheme.** `QWindowsTheme::effectiveColorScheme` (qwindowstheme.cpp:655-667): an
+//! * **Colour scheme.** effective color scheme resolution: an
 //!   application override (`requestColorScheme`), else the registry value, but `Light` when the
 //!   style part of dark mode is switched off.
-//! * **The `-platform windows:darkmode=N` option** (qwindowsintegration.cpp:178-186, default
+//! * **The `-platform windows:darkmode=N` option** (default
 //!   `DarkModeWindowFrames | DarkModeStyle`): `0` neither, `1` frames only, `2` frames and style
-//!   (`QNativeInterface::Private::QWindowsApplication::DarkModeHandlingFlag`).
+//!   (`QNativeInterface::Private::the Win32 platform backend`).
 //! * **uxtheme: nothing.** Qt 6.11.2 never calls `SetPreferredAppMode`, `AllowDarkModeForWindow`,
 //!   `FlushMenuThemes` or `SetWindowTheme(.., "DarkMode_Explorer", ..)` (a search of `src/` finds
-//!   `SetWindowTheme` only in qwindowsvistastyle.cpp:274, for `L"explorer"`, and qwizard_win.cpp).
+//!   `SetWindowTheme` only in, for `L"explorer"`, and).
 //!   Qt draws its menus, scroll bars and controls itself from a dark palette, so it never needs
-//!   the system to theme them. Native `HMENU` pop-ups (`menus=native`, `QWindowsMenu`) get no dark
+//!   the system to theme them. Native `HMENU` pop-ups (`menus=native`, the Win32 platform backend) get no dark
 //!   treatment in Qt.
 //!
 //! # What this module adds
@@ -49,9 +49,9 @@
 //! # Other platforms
 //!
 //! macOS: nothing to do here. `QStyleHints::setColorScheme` reaches `NSApp.appearance`
-//! ([`crate::theme::CocoaTheme`], as `QCocoaTheme::requestColorScheme`, qcocoatheme.mm:478-496) and
+//! ([`crate::theme::CocoaTheme`], as the Cocoa color scheme override) and
 //! AppKit gives `NSMenu`s, the menu bar and status item menus that appearance unless they set their
-//! own; neither Qt (`QCocoaMenu`) nor `cocoa_menu.rs` does. Linux: no native chrome to theme (the
+//! own; neither Qt (the Cocoa platform backend) nor `cocoa_menu.rs` does. Linux: no native chrome to theme (the
 //! portal scheme only feeds [`crate::theme::UnixTheme`]); these functions do nothing there.
 
 #[cfg(any(windows, test))]
@@ -59,7 +59,7 @@ use crate::theme::ColorScheme;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 bitflags::bitflags! {
-    /// `QNativeInterface::Private::QWindowsApplication::DarkModeHandlingFlag`.
+    /// `QNativeInterface::Private::the Win32 platform backend`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct DarkModeHandling: u8 {
         /// `DarkModeWindowFrames`: top-level frames follow a dark scheme.
@@ -78,7 +78,7 @@ impl Default for DarkModeHandling {
 }
 
 impl DarkModeHandling {
-    /// One `-platform windows:<param>` option (`parseOptions`, qwindowsintegration.cpp:178-186):
+    /// One `-platform windows:<param>` option (`parseOptions`):
     /// `darkmode=0` clears both flags, `darkmode=1` sets the frames and clears the style,
     /// `darkmode=2` sets both. `None` for any other parameter.
     pub fn with_platform_option(self, param: &str) -> Option<Self> {
@@ -93,12 +93,12 @@ impl DarkModeHandling {
 
 static HANDLING: AtomicU8 = AtomicU8::new(0x3);
 
-/// `QWindowsApplication::darkModeHandling`.
+/// the Win32 platform backend.
 pub fn dark_mode_handling() -> DarkModeHandling {
     DarkModeHandling::from_bits_truncate(HANDLING.load(Ordering::Relaxed))
 }
 
-/// `QWindowsApplication::setDarkModeHandling`. Qt sets it once, while the integration is built;
+/// the Win32 platform backend. Qt sets it once, while the integration is built;
 /// here a later call also re-reads the system scheme and re-applies it to every open window (on
 /// Windows; the setting is stored and otherwise ignored on other platforms).
 pub fn set_dark_mode_handling(handling: DarkModeHandling) {
@@ -111,7 +111,7 @@ pub fn set_dark_mode_handling(handling: DarkModeHandling) {
 }
 
 /// Whether a window's frame should be dark under `scheme`: `Some(dark)` to set it, `None` to
-/// leave the frame alone: the window is frameless (`shouldApplyDarkFrame`, qwindowswindow.cpp:
+/// leave the frame alone: the window is frameless (`shouldApplyDarkFrame`,:
 /// 863-878, skips those, so nothing at all is written for them, neither a light nor a dark
 /// frame) or the application set the frame itself (`set_window_backdrop`). Otherwise the frame
 /// follows the scheme (the palette test of `shouldApplyDarkFrame` is left out: ferrokit has no
@@ -594,7 +594,7 @@ mod win {
         theme.map_or(ColorScheme::Unknown, |t| t.color_scheme())
     }
 
-    /// `QWindowsWindow::setDarkBorderToWindow` (qwindowswindow.cpp:3857-3866): attribute 20, and
+    /// the Win32 window backend: attribute 20, and
     /// 19 when the build does not know it. Returns whether either was accepted.
     pub(crate) fn set_dark_border_to_window(hwnd: HWND, dark: bool) -> bool {
         if hwnd.is_null() {
@@ -637,7 +637,7 @@ mod win {
     /// A top-level window exists. It is registered, and then a pass runs (or the running one is
     /// asked to repeat), so that a scheme change racing with the creation cannot miss it: the
     /// pass reads the scheme after the window is in the registry. A dark scheme darkens the
-    /// frame from the start (qwindowswindow.cpp:971-972); under a light one the pass finds a
+    /// frame from the start; under a light one the pass finds a
     /// new window already light and writes nothing.
     ///
     /// `frameless` windows draw no frame the scheme could darken. That is wider than Qt's

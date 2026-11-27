@@ -10,8 +10,8 @@ pub trait PlatformScreen: Send + Sync {
 }
 
 /// Physical cursor point to logical, through the screen that contains it. Qt does the same:
-/// `QWindowsSystemTrayIcon` uses `screenAtDp(globalPos)` (`qwindowssystemtrayicon.cpp:398-404`)
-/// and `QSystemTrayIcon` maps with `QHighDpi::fromNativePixels(pos, screen)` (`qsystemtrayicon.cpp:184`).
+/// the Win32 system tray backend uses `screenAtDp(globalPos)`
+/// and `the system tray icon` maps with `QHighDpi::fromNativePixels(pos, screen)`.
 /// Falls back to the primary screen, as Qt does (`screens().value(0)`).
 pub fn native_cursor_to_logical(native: Point) -> Point {
     let (origin, dpr) = native_screen_mapping(native);
@@ -181,7 +181,7 @@ pub mod win32_screen {
     }
 
     /// The mapping of the screen a top-level window is on (`MonitorFromWindow`, as
-    /// `QWindowsWindow` finds its screen); `None` without a monitor.
+    /// the Win32 window backend finds its screen); `None` without a monitor.
     pub fn window_screen_mapping(hwnd: isize) -> Option<(Point, f32)> {
         // SAFETY: by-value arguments only; MonitorFromWindow accepts any HWND value and returns the
         // nearest monitor or null for an invalid one (null is rejected by `monitor_mapping`).
@@ -189,8 +189,8 @@ pub mod win32_screen {
     }
 
     /// `QHighDpi::fromNativeGlobalPosition(pos, window)`: a desktop position maps through the
-    /// screen that contains it, else through the window's screen (`qhighdpiscaling.cpp:646-681,
-    /// 733-744`, used for mouse events at `qwindowsysteminterface.cpp:419-420`).
+    /// screen that contains it, else through the window's screen (
+    /// 733-744`, used for mouse events at).
     pub fn from_native_global_point(pt: Point, hwnd: isize) -> Point {
         // SAFETY: by-value arguments only; MONITOR_DEFAULTTONULL makes the call return null when no
         // monitor contains `pt`, which `monitor_mapping` rejects.
@@ -266,7 +266,7 @@ pub mod win32_screen {
             }
         }
 
-        /// `QWindowsScreen::primaryScreen` (`qwindowsscreen.cpp:355`):
+        /// the Win32 platform backend:
         /// finds the screen whose monitor flags contain `MONITORINFOF_PRIMARY`.
         /// Falls back to system metrics if no monitors are enumerated.
         pub fn primary() -> Self {
@@ -357,7 +357,7 @@ pub mod win32_screen {
             list
         }
 
-        /// `QGuiApplication::screenAt` (qguiapplication.cpp:1147-1164): queries screens in
+        /// application `screenAt`: queries screens in
         /// logical coordinate space (`sibling->geometry().contains(point)`), not native pixels.
         pub fn screen_at(pos: Point) -> Option<Self> {
             Self::all_screens()
@@ -372,8 +372,8 @@ pub mod win32_screen {
         }
 
         /// `QScreenPrivate::updateGeometry` maps `rcMonitor` and `rcWork` with
-        /// `fromNativeGlobalPosition` against this screen's native top-left (`qscreen.cpp:65-69`,
-        /// `qhighdpiscaling.cpp:713-721`), so the screen keeps its native top-left.
+        /// `fromNativeGlobalPosition` against this screen's native top-left (
+        /// ), so the screen keeps its native top-left.
         fn geometry(&self) -> Rect {
             crate::high_dpi::from_native_global_rect(
                 self.geometry,
@@ -414,7 +414,7 @@ pub mod win32_screen {
         }
 
         // QScreenPrivate::updateGeometry maps rcMonitor and rcWork with fromNativeGlobalPosition,
-        // relative to the screen's native top-left (qscreen.cpp:65-69, qhighdpiscaling.cpp:720),
+        // relative to the screen's native top-left,
         // so a screen keeps its native top-left and only its size scales.
 
         #[test]

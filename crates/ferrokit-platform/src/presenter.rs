@@ -37,7 +37,7 @@ pub mod win32 {
     use windows_sys::Win32::Graphics::Gdi::{BitBlt, SRCCOPY};
     /// Presenter for standard Win32 windows using GDI `GetDC` + `BitBlt`.
     ///
-    /// Mirrors Qt's `QWindowsBackingStore::flush` non-layered branch:
+    /// Mirrors Qt's the Win32 platform backend non-layered branch:
     /// standard windows with native frames or standard styles do NOT use layered window APIs.
     pub struct Win32DcPresenter {
         hwnd: HWND,
@@ -185,7 +185,7 @@ pub mod win32 {
 
     /// Presenter for layered windows using `UpdateLayeredWindowIndirect`.
     ///
-    /// Mirrors Qt's `QWindowsBackingStore::flush` layered branch:
+    /// Mirrors Qt's the Win32 platform backend layered branch:
     /// uses `UPDATELAYEREDWINDOWINFO` with `prcDirty` for true dirty-region presentation.
     pub struct Win32LayeredPresenter {
         surface: crate::surface::win32::Win32LayeredSurface,

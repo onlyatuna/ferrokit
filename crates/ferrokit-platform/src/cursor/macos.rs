@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Pointer position on macOS: `QCocoaCursor::pos` / `setPos` over Quartz Event Services.
+//! Pointer position on macOS: the Cocoa platform backend / `setPos` over Quartz Event Services.
 //!
 //! Quartz global display coordinates already have their origin at the top-left of the primary
 //! display and are measured in points, which is the "native desktop" space `PlatformCursor`
@@ -25,7 +25,7 @@ pub fn cursor_pos(services: &dyn CursorServices) -> Option<Point> {
     Some(Point::new(x.round() as i32, y.round() as i32))
 }
 
-/// Moves the pointer to `pos` (`QCocoaCursor::setPos`).
+/// Moves the pointer to `pos` (the Cocoa platform backend).
 pub fn set_cursor_pos(services: &dyn CursorServices, pos: Point) {
     services.warp(f64::from(pos.x), f64::from(pos.y));
 }

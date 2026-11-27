@@ -59,7 +59,7 @@ impl CursorShape {
     ];
 }
 
-/// `QWindowsCursor::size` (qwindowscursor.cpp:675-692): the cursor's size in native pixels on a
+/// cursor size query: the cursor's size in native pixels on a
 /// screen whose device pixel ratio is `screen_dpr`, given the system cursor width
 /// (`SM_CXCURSOR`), the accessibility value `HKCU\Control Panel\Cursors\CursorBaseSize` and the
 /// device pixel ratio of the primary screen. `logicalDpi / logicalBaseDpi` is `dpr` (96 DPI base).
@@ -69,7 +69,7 @@ pub fn windows_cursor_size(
     screen_dpr: f64,
     primary_dpr: f64,
 ) -> i32 {
-    // `screenCursorSize` (qwindowscursor.cpp:162-179): another screen's DPI rescales the
+    // per-screen cursor size scaling: another screen's DPI rescales the
     // primary screen's size (`QSizeF::toSize` rounds, `qFuzzyCompare` is relative 1e-12).
     let fuzzy_equal =
         (screen_dpr - primary_dpr).abs() * 1e12 <= screen_dpr.abs().min(primary_dpr.abs());
@@ -94,29 +94,29 @@ pub fn windows_cursor_size(
 pub trait PlatformCursor: Send + Sync {
     /// Makes `shape` the application-wide cursor and shows it.
     fn change_cursor(&mut self, shape: CursorShape);
-    /// `QPlatformCursor::size` (qplatformcursor.cpp:100-103): the cursor's size in native pixels
+    /// platform cursor `size`: the cursor's size in native pixels
     /// on a screen with `screen_dpr` while the primary screen has `primary_dpr`. The default is
     /// 16x16; the Windows plugin overrides it with [`windows_cursor_size`].
     fn size(&self, _screen_dpr: f64, _primary_dpr: f64) -> (i32, i32) {
         (16, 16)
     }
-    /// `QPlatformCursor::pos`: the pointer position in native desktop pixels, queried from the
+    /// platform cursor `pos`: the pointer position in native desktop pixels, queried from the
     /// window system; `None` when the backend cannot query it (`QCursor::pos` then reports the
     /// position of the last mouse event, `QGuiApplicationPrivate::lastCursorPosition`).
     fn pos(&self) -> Option<ferrokit_gui::geometry::primitives::Point> {
         None
     }
-    /// `QPlatformCursor::setPos`: moves the pointer to a native desktop position. A backend that
+    /// platform cursor `setPos`: moves the pointer to a native desktop position. A backend that
     /// cannot do it does nothing, which `QCursor::setPos` documents as allowed.
     fn set_pos(&mut self, _pos: ferrokit_gui::geometry::primitives::Point) {}
-    /// `QPlatformCursor::setOverrideCursor`: shows `shape` on every window of the application
+    /// platform cursor `setOverrideCursor`: shows `shape` on every window of the application
     /// until [`clear_override_cursor`](Self::clear_override_cursor). Returns whether the backend
     /// has override cursors; when it does not, the caller applies the shape to each window, the
-    /// fallback of `QGuiApplication::setOverrideCursor` (qguiapplication.cpp:4449-4457).
+    /// fallback of application `setOverrideCursor`.
     fn set_override_cursor(&mut self, _shape: CursorShape) -> bool {
         false
     }
-    /// `QPlatformCursor::clearOverrideCursor`.
+    /// platform cursor `clearOverrideCursor`.
     fn clear_override_cursor(&mut self) {}
 }
 
@@ -156,9 +156,9 @@ pub mod win32_cursor {
     };
 
     static CURRENT_GLOBAL_SHAPE: AtomicU8 = AtomicU8::new(0);
-    /// The application override cursor (`QWindowsCursor::m_overrideCursor`).
+    /// The application override cursor (the override cursor).
     static OVERRIDE_SHAPE: AtomicU8 = AtomicU8::new(NO_SHAPE);
-    /// The cursor that was showing when the override began (`QWindowsCursor::m_overriddenCursor`),
+    /// The cursor that was showing when the override began (the previously active cursor),
     /// put back when the override ends; 0 while none.
     static OVERRIDDEN_CURSOR: AtomicIsize = AtomicIsize::new(0);
 
@@ -180,7 +180,7 @@ pub mod win32_cursor {
         }
     }
 
-    /// `createPixmapCursor` (qwindowscursor.cpp:69-97): a 32-bit premultiplied colour bitmap with
+    /// pixmap cursor creation: a 32-bit premultiplied colour bitmap with
     /// an AND mask, as `CreateIconIndirect` takes it, for the image's hot spot.
     fn create_custom_cursor(shape: CursorShape, system_cursor_width: i32) -> HCURSOR {
         let Some(image) = crate::cursor::bitmap::custom_cursor_image(shape, system_cursor_width)
@@ -234,7 +234,7 @@ pub mod win32_cursor {
         unsafe { CreateIconIndirect(&icon) }
     }
 
-    /// The system's handle for `shape` (`QWindowsCursor::createCursorFromShape`); null for
+    /// The system's handle for `shape` (shape cursor creation); null for
     /// `Blank`, which hides the cursor.
     fn handle_for(shape: CursorShape) -> HCURSOR {
         let idc = match shape {
@@ -302,12 +302,12 @@ pub mod win32_cursor {
             Self::apply_shape(shape);
         }
 
-        /// The application override cursor, if one is set (`QWindowsCursor::hasOverrideCursor`).
+        /// The application override cursor, if one is set (override cursor check).
         pub fn override_shape() -> Option<CursorShape> {
             shape_from_u8(OVERRIDE_SHAPE.load(Ordering::Relaxed))
         }
 
-        /// `QWindowsCursor::setOverrideCursor` (qwindowscursor.cpp:626-639): shows `shape` and
+        /// setting the override cursor: shows `shape` and
         /// remembers the cursor that was showing, once.
         pub fn set_override(shape: CursorShape) {
             OVERRIDE_SHAPE.store(shape as u8, Ordering::Relaxed);
@@ -317,7 +317,7 @@ pub mod win32_cursor {
             }
         }
 
-        /// `QWindowsCursor::clearOverrideCursor` (qwindowscursor.cpp:641-650): puts the
+        /// clearing the override cursor: puts the
         /// remembered cursor back. A window re-applies its own cursor on its next
         /// `WM_SETCURSOR`.
         pub fn clear_override() {
@@ -467,7 +467,7 @@ pub mod cocoa_cursor {
     use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
     static CURRENT_GLOBAL_SHAPE: AtomicU8 = AtomicU8::new(0);
-    /// The application override cursor (`QCocoaCursor` override), `NO_SHAPE` when inactive.
+    /// The application override cursor (the Cocoa cursor backend override), `NO_SHAPE` when inactive.
     static OVERRIDE_SHAPE: AtomicU8 = AtomicU8::new(NO_SHAPE);
     /// Retained `NSCursor` that was showing when `set_override` began, restored and released on
     /// `clear_override`; 0 while none.
@@ -508,8 +508,8 @@ pub mod cocoa_cursor {
                 .unwrap_or(CursorShape::Arrow)
         }
 
-        /// The public `NSCursor` class method for `shape` (`QCocoaCursor::createCursorFromShape`,
-        /// qcocoacursor.mm:103-146), or `None` when `shape` uses a custom `NSImage` cursor from
+        /// The public `NSCursor` class method for `shape` (the Cocoa shape cursor lookup,
+        /// ), or `None` when `shape` uses a custom `NSImage` cursor from
         /// [`crate::cursor::bitmap::cocoa_custom_cursor_image`].
         pub fn native_selector(shape: CursorShape) -> Option<&'static str> {
             match shape {
@@ -586,7 +586,7 @@ pub mod cocoa_cursor {
             }
         }
 
-        /// The application override cursor, if one is active (`QCocoaCursor` override).
+        /// The application override cursor, if one is active (the Cocoa cursor backend override).
         pub fn override_shape() -> Option<CursorShape> {
             shape_from_u8(OVERRIDE_SHAPE.load(Ordering::Relaxed))
         }

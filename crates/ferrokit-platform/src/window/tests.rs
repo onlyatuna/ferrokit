@@ -292,7 +292,7 @@ fn test_native_window_wndproc_events() {
 
 #[test]
 fn wheel_deltas_negate_horizontal_like_qt() {
-    // qwindowspointerhandler.cpp / qwindowsmousehandler.cpp: "Qt horizontal wheel rotation
+    // /: "Qt horizontal wheel rotation
     // orientation is opposite to the one in WM_MOUSEHWHEEL": delta = -delta.
     assert_eq!(wheel_deltas(true, 120), (-120, 0));
     assert_eq!(wheel_deltas(true, -120), (120, 0));

@@ -134,7 +134,7 @@ pub struct DCompSurface {
 /// channel (alpha included) by `opacity`.
 ///
 /// Scaling a premultiplied pixel by a constant is exactly `UpdateLayeredWindow`'s
-/// `SourceConstantAlpha`, which is how Qt applies `windowOpacity` (`qwindowsbackingstore.cpp:66`:
+/// `SourceConstantAlpha`, which is how Qt applies `windowOpacity` (:
 /// `BYTE(qRound(255.0 * opacity))`). DirectComposition's swap chain is premultiplied
 /// (`DXGI_ALPHA_MODE_PREMULTIPLIED`), so the composed result matches the layered window's.
 pub fn convert_rgba_to_staging_bgra(src: &[u8], dst: &mut [u8], opacity: f32) {

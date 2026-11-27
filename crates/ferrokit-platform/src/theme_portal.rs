@@ -2,13 +2,13 @@
 //! The `org.freedesktop.appearance` `color-scheme` setting of the XDG desktop portal, the source
 //! of the colour scheme on Linux (GNOME, KDE, and every desktop with a portal backend).
 //!
-//! Mirrors Qt 6.11 (`qtbase` tag `v6.11.2`):
-//! - `QGnomePortalInterface` (qgnomeportalinterface.cpp) reads the setting once at start-up and
-//!   then follows the `SettingChanged` signal (`QDBusListener`, qdbuslistener.cpp:
+//! Mirrors Qt 6.11 (reference behavior tag `v6.11.2`):
+//! - the XDG portal interface reads the setting once at start-up and
+//!   then follows the `SettingChanged` signal (the D-Bus settings listener,:
 //!   `org.freedesktop.portal.Settings` on `/org/freedesktop/portal/desktop`, no sender filter);
-//! - `QDBusSettings::XdgSettings::convertColorScheme` (qdbussettings.cpp:24-35) maps the value:
+//! - `QDBusSettings::XdgSettings::convertColorScheme` maps the value:
 //!   `0` no preference to `Unknown`, `1` prefer dark to `Dark`, `2` prefer light to `Light`;
-//! - `QGnomeThemePrivate::colorScheme` (qgnometheme.cpp:56-78) falls back to what the GTK theme
+//! - GNOME color scheme detection falls back to what the GTK theme
 //!   name says when the portal reports `Unknown` (here: [`crate::theme::UnixTheme`]'s fallback).
 //!
 //! Qt reads the value with `ReadAll` for the appearance namespace; this reads the one key with
@@ -76,7 +76,7 @@ pub(crate) struct PortalSession {
 impl PortalSession {
     /// Subscribes and sends the `Read`; the answer comes through [`poll`](Self::poll).
     pub(crate) fn start(mut conn: DbusConnection) -> Result<Self, &'static str> {
-        // As `QDBusListener`: the match names path, interface and member, not the sender.
+        // As the D-Bus settings listener: the match names path, interface and member, not the sender.
         conn.add_match(&format!(
             "type='signal',path='{PORTAL_PATH}',interface='{SETTINGS_INTERFACE}',member='SettingChanged'"
         ))?;

@@ -20,7 +20,7 @@ pub struct Win32InputContext {
 /// Associates (`true`) or dissociates (`false`) the window's default IME input context.
 ///
 /// A window starts without an input context and gets it back when a text widget asks for an input
-/// method (`set_micro_focus`), as `QWindowsInputContext` does. The first activation of a window
+/// method (`set_micro_focus`), as the Win32 platform backend does. The first activation of a window
 /// that still has its default context initializes the process' text services, which measured
 /// ~800 ms inside `DefWindowProc(WM_ACTIVATE)` on a machine with Chinese IMEs installed, even for a bare Win32 window.
 #[cfg(windows)]

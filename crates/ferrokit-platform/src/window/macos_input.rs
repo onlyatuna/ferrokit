@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Native input and event delivery of [`CocoaNativeWindow`](crate::window::macos::CocoaNativeWindow).
 //!
-//! AppKit calls the methods of the content view (`QNSView`, see `objc_runtime::appkit`) with
+//! AppKit calls the methods of the content view (the platform NSView, see `objc_runtime::appkit`) with
 //! `NSEvent`s. Those methods do not know the Rust window: the window struct moves (it is boxed
 //! behind `PlatformWindow`), AppKit can call back while the window is borrowed, and the struct
 //! owns the handler. So each window registers a [`ViewSlot`] under its view's address in a
@@ -62,8 +62,8 @@ const QT_ALT_MODIFIER: u32 = 0x0800_0000;
 const QT_META_MODIFIER: u32 = 0x1000_0000;
 
 /// `NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingCursorUpdate |
-/// NSTrackingActiveAlways | NSTrackingInVisibleRect`, the options of `QNSView`'s tracking
-/// area (qnsview_mouse.mm:250-256 `updateTrackingAreas`).
+/// NSTrackingActiveAlways | NSTrackingInVisibleRect`, the options of the platform NSView's tracking
+/// area ( `updateTrackingAreas`).
 const TRACKING_AREA_OPTIONS: NSUInteger = 0x01 | 0x02 | 0x04 | 0x80 | 0x200;
 
 /// Which `NSResponder` method an `NSEvent` arrived through. The left, right and other mouse
@@ -174,7 +174,7 @@ pub fn special_qt_key(key_code: u16, shift: bool) -> Option<u32> {
         0x7E => qt_key::UP,
         0x47 => qt_key::CLEAR,
         0x6E => qt_key::MENU,
-        // Qt swaps the roles of Command and Control (see `qt_modifiers_from_ns_flags`).
+        // Qt swaps the roles of Command and Control (see the platform helper).
         0x36 | 0x37 => qt_key::CONTROL,
         0x3B | 0x3E => qt_key::META,
         0x3A | 0x3D => qt_key::ALT,
@@ -211,7 +211,7 @@ fn function_char_qt_key(c: char) -> Option<u32> {
 
 /// The `Qt::Key` of a key event: the key code decides for keys without text; otherwise it is
 /// the first character of `charactersIgnoringModifiers` (so shortcuts follow the keyboard
-/// layout, as in `QCocoaKeyMapper`), upper-cased like Qt's letter keys and the Win32 virtual-key
+/// layout, as in the Cocoa platform backend), upper-cased like Qt's letter keys and the Win32 virtual-key
 /// codes the widgets already understand (`'A'` for the A key).
 pub fn qt_key_for_event(
     key_code: u16,
@@ -650,7 +650,7 @@ pub fn dispatch_notification(view: Id, window: Id, name: &str) -> bool {
             // On macOS, the coordinate origin is at the bottom-left of the primary display.
             // When the window height changes, the flipped top-left y position in Qt screen
             // coordinates also moves (flip_y = screen_h - y - h). Matching Qt's
-            // QCocoaWindow::handleGeometryChange(), deliver GeometryChange so the top-left
+            // the Cocoa platform backend, deliver GeometryChange so the top-left
             // position updates, followed by Resize for layout. The backing surface follows the
             // new size when the handler presents a frame of that size.
             let (geometry, prev_geo) = take_geometry_change(view, window);
@@ -808,7 +808,7 @@ fn button_number(event: Id) -> u16 {
 ///
 /// # Safety
 /// `event` is nil or a live `NSEvent` of the kind `kind` names: the event AppKit passed to the
-/// `QNSView` method `kind` stands for (`mouseDown:` for [`NsEventKind::MouseDown`], `keyDown:`
+/// the platform NSView method `kind` stands for (`mouseDown:` for [`NsEventKind::MouseDown`], `keyDown:`
 /// for [`NsEventKind::KeyDown`], ...), since each kind sends the selectors defined only for its
 /// events. `view` needs no guarantee: it is only used once found in the table of live views.
 /// The mock runtime of other targets never dereferences an `Id`, so there any value will do.
@@ -969,7 +969,7 @@ pub unsafe fn handle_ns_event(view: Id, kind: NsEventKind, event: Id) -> bool {
 
 /// The wheel delta of a scroll event in Qt's angle units (1/8 degree; 120 per wheel notch).
 /// A trackpad's pixel deltas become 1/4 degree per pixel; a wheel's accelerated delta is
-/// reduced to a single notch per event (qnsview_mouse.mm `scrollWheel:`).
+/// reduced to a single notch per event ( `scrollWheel:`).
 fn wheel_angle_delta(event: Id) -> (f64, f64) {
     // SAFETY: `event` is the live scroll-wheel NSEvent `handle_ns_event` passed; the selectors
     // used (`hasPreciseScrollingDeltas` BOOL; `scrollingDeltaX/Y`, `deltaX/Y` CGFloat; none take
@@ -1011,7 +1011,7 @@ fn key_of_event(event: Id, flags: usize) -> (u32, u16) {
     )
 }
 
-/// `keyDown:` (qnsview_keys.mm `handleKeyEvent:`): the input method sees the key first
+/// `keyDown:` ( `handleKeyEvent:`): the input method sees the key first
 /// (`interpretKeyEvents:`), because it may turn it into composition or committed text; the key
 /// press reaches the window unless the input method consumed it. Command and Control chords are
 /// shortcuts, not text, and skip the input method.
@@ -1156,7 +1156,7 @@ pub fn text_input_set_marked_str(view: Id, text: &str, selected: NSRange) {
 }
 
 /// `-unmarkText`: the input method accepts the composition as it stands, which commits it
-/// (qnsview_keys.mm `unmarkText`).
+/// ( `unmarkText`).
 pub fn text_input_unmark(view: Id) {
     let marked = with_slot(view, |slot| slot.marked_text.take()).flatten();
     if let Some(text) = marked {
@@ -1264,7 +1264,7 @@ pub fn update_tracking_area(view: Id) {
     }
 }
 
-/// `-resetCursorRects` (Qt `QNSView`): the window cursor (or active application override cursor)
+/// `-resetCursorRects` (Qt the platform NSView): the window cursor (or active application override cursor)
 /// covers the visible rect. False when neither is set, so the caller runs the default
 /// implementation.
 pub fn reset_cursor_rects(view: Id) -> bool {
@@ -1289,7 +1289,7 @@ pub fn reset_cursor_rects(view: Id) -> bool {
     true
 }
 
-/// `-cursorUpdate:` (Qt `QNSView`): the pointer entered the view, so the window cursor (or active
+/// `-cursorUpdate:` (Qt the platform NSView): the pointer entered the view, so the window cursor (or active
 /// application override cursor) shows. False when neither is set, so the caller runs the default
 /// implementation.
 pub fn cursor_update(view: Id) -> bool {
@@ -1332,7 +1332,7 @@ pub(crate) fn replace_cursor(view: Id, cursor: Id) {
     }
 }
 
-/// Invalidates cursor rects on every registered `QNSView` on the current thread so AppKit asks
+/// Invalidates cursor rects on every registered the platform NSView on the current thread so AppKit asks
 /// `resetCursorRects` to reflect an updated [`CocoaCursor::override_shape`].
 pub(crate) fn invalidate_all_cursor_rects() {
     let pairs: Vec<(Id, Id)> = VIEWS
@@ -1352,7 +1352,7 @@ pub(crate) fn invalidate_all_cursor_rects() {
 }
 
 // ---------------------------------------------------------------------------
-// Drag and drop (`NSDraggingDestination`, qnsview_dragging.mm / qcocoadrag.mm)
+// Drag and drop (`NSDraggingDestination`, /)
 // ---------------------------------------------------------------------------
 
 pub const NS_DRAG_OPERATION_NONE: NSUInteger = 0;
@@ -1366,8 +1366,8 @@ const QT_DROP_ACTION_COPY: u32 = 1;
 const QT_DROP_ACTION_MOVE: u32 = 2;
 const QT_DROP_ACTION_LINK: u32 = 4;
 
-/// The pasteboard types `QNSView` registers with `registerForDraggedTypes:` when a window enables
-/// its drop target (`QNSView::registerDragTypes`, qnsview_dragging.mm:11-30).
+/// The pasteboard types the platform NSView registers with `registerForDraggedTypes:` when a window enables
+/// its drop target (drag type registration).
 pub const DRAGGED_PASTEBOARD_TYPES: [&str; 10] = [
     "public.utf8-plain-text",
     "public.utf16-plain-text",
@@ -1382,7 +1382,7 @@ pub const DRAGGED_PASTEBOARD_TYPES: [&str; 10] = [
 ];
 
 /// Enables or disables `view` as an AppKit drag-and-drop destination (`registerForDraggedTypes:`
-/// / `unregisterDraggedTypes`). Returns `false` when `view` is not a registered `QNSView`.
+/// / `unregisterDraggedTypes`). Returns `false` when `view` is not a registered the platform NSView.
 pub fn set_drop_target_enabled(view: Id, enabled: bool) -> bool {
     ThreadContext::assert_main_thread("set_drop_target_enabled");
     let Some((was_enabled, was_active)) = with_slot(view, |slot| {
@@ -1398,7 +1398,7 @@ pub fn set_drop_target_enabled(view: Id, enabled: bool) -> bool {
     };
     if enabled {
         if !was_enabled {
-            // SAFETY: `view` was just found in `VIEWS`, so it is the live `QNSView` of a
+            // SAFETY: `view` was just found in `VIEWS`, so it is the live the platform NSView of a
             // `CocoaNativeWindow` on the main thread.
             unsafe {
                 ObjcMsg::send_register_dragged_types(view, &DRAGGED_PASTEBOARD_TYPES);
@@ -1417,7 +1417,7 @@ pub fn set_drop_target_enabled(view: Id, enabled: bool) -> bool {
     true
 }
 
-/// `qt_mac_mapNSDragOperations` (qcocoahelpers.mm): maps an `NSDragOperation` mask to a
+/// `NSDragOperation` mask mapping: maps an `NSDragOperation` mask to a
 /// `Qt::DropActions` bitmask (`Copy = 1`, `Move = 2`, `Link = 4`).
 pub fn qt_drop_actions_from_ns(ns_ops: NSUInteger) -> u32 {
     let mut actions = 0;
@@ -1433,7 +1433,7 @@ pub fn qt_drop_actions_from_ns(ns_ops: NSUInteger) -> u32 {
     actions
 }
 
-/// `QCocoaDrag::defaultAction` (qcocoadrag.mm:58-100): chooses the proposed single drop action
+/// default drop action selection: chooses the proposed single drop action
 /// from `allowed` (`Qt::DropActions`) and the current `Qt::KeyboardModifiers`. On macOS Command
 /// (`QT_CONTROL_MODIFIER`) + Option (`QT_ALT_MODIFIER`) requests Link, Option alone requests Copy,
 /// Command alone requests Move, and no modifier defaults to Copy (falling back to Copy, then Move,
@@ -1466,8 +1466,8 @@ pub fn proposed_drop_action(allowed: u32, modifiers: u32) -> u32 {
     .unwrap_or(0)
 }
 
-/// `qt_mac_mapDropAction` (qcocoahelpers.mm): maps a single accepted `Qt::DropAction` (restricted
-/// to `allowed`) back to an `NSDragOperation`. Following `dnd_enums` order in `qcocoahelpers.mm`,
+/// drop action mapping: maps a single accepted `Qt::DropAction` (restricted
+/// to `allowed`) back to an `NSDragOperation`. Following the drag-and-drop action table order in,
 /// Link -> `NSDragOperationLink`, Move -> `NSDragOperationMove`, Copy -> `NSDragOperationCopy`.
 pub fn ns_drag_operation_from_qt(reply: u32, allowed: u32) -> NSUInteger {
     let mask = reply & allowed;
@@ -1518,16 +1518,16 @@ fn dispatch_accepted(view: Id, event: WindowSystemEvent) -> u32 {
 /// Reads `(pos, allowed_qt_actions, proposed_qt_action)` from an `id<NSDraggingInfo>` for `view`.
 ///
 /// # Safety
-/// `view` is a live `QNSView` and `sender` is a non-nil `id<NSDraggingInfo>`.
+/// `view` is a live the platform NSView and `sender` is a non-nil `id<NSDraggingInfo>`.
 unsafe fn drag_info_location_and_actions(view: Id, sender: Id) -> (Point, u32, u32) {
     // SAFETY: `sender` responds to `draggingLocation` (NSPoint) and `draggingSourceOperationMask`
     // (NSDragOperation = NSUInteger); `view` responds to `convertPoint:fromView:`; `+[NSEvent
-    // modifierFlags]` returns NSUInteger (`qnsview_dragging.mm:158`).
+    // modifierFlags]` returns NSUInteger.
     unsafe {
         let in_window = ObjcMsg::send_point_return(sender, sel("draggingLocation"));
         let local =
             ObjcMsg::send_convert_point(view, sel("convertPoint:fromView:"), in_window, Id::NIL);
-        // `QPointF::fromCGPoint(...).toPoint()` rounds each coordinate (`qpoint.h`).
+        // `CGPoint` rounding to integer coordinates rounds each coordinate.
         let pos = Point::new(local.x.round() as i32, local.y.round() as i32);
         let mask = ObjcMsg::send_nsuinteger_return(sender, sel("draggingSourceOperationMask"));
         let allowed = qt_drop_actions_from_ns(mask);
@@ -1539,7 +1539,7 @@ unsafe fn drag_info_location_and_actions(view: Id, sender: Id) -> (Point, u32, u
     }
 }
 
-/// `-[QNSView draggingEntered:]` (`qnsview_dragging.mm:140-143`).
+/// `-[NSView draggingEntered:]`.
 ///
 /// # Safety
 /// `sender` is nil or a live `id<NSDraggingInfo>` whose `draggingPasteboard` is nil or a live
@@ -1552,7 +1552,7 @@ pub unsafe fn dragging_entered(view: Id, sender: Id) -> NSUInteger {
     }
     // SAFETY: `sender` is non-nil and conforms to `NSDraggingInfo` (caller contract); `view` was
     // found in `VIEWS` above, so it is live. Only pasteboard type names are inspected here; data
-    // payloads are fetched on `performDragOperation:` (`QCocoaDropData`, qnsview_dragging.mm).
+    // payloads are fetched on `performDragOperation:` (the Cocoa drop payload).
     let (pos, allowed, proposed, formats) = unsafe {
         let (pos, allowed, proposed) = drag_info_location_and_actions(view, sender);
         let pboard = ObjcMsg::send_id_prop(sender, sel("draggingPasteboard"));
@@ -1575,7 +1575,7 @@ pub unsafe fn dragging_entered(view: Id, sender: Id) -> NSUInteger {
     ns_drag_operation_from_qt(reply, allowed)
 }
 
-/// `-[QNSView draggingUpdated:]` (`qnsview_dragging.mm:145-149`).
+/// `-[NSView draggingUpdated:]`.
 ///
 /// # Safety
 /// `sender` is nil or a live `id<NSDraggingInfo>`.
@@ -1604,7 +1604,7 @@ pub unsafe fn dragging_updated(view: Id, sender: Id) -> NSUInteger {
     ns_drag_operation_from_qt(reply, allowed)
 }
 
-/// `-[QNSView draggingExited:]` (`qnsview_dragging.mm:191-213`).
+/// `-[NSView draggingExited:]`.
 pub fn dragging_exited(view: Id) {
     ThreadContext::assert_main_thread("dragging_exited");
     let Some(was_active) = with_slot(view, |slot| {
@@ -1620,7 +1620,7 @@ pub fn dragging_exited(view: Id) {
     let _ = dispatch_window_event(view, WindowSystemEvent::DragLeave);
 }
 
-/// `-[QNSView performDragOperation:]` (`qnsview_dragging.mm:216-248`).
+/// `-[NSView performDragOperation:]`.
 ///
 /// # Safety
 /// `sender` is nil or a live `id<NSDraggingInfo>` whose `draggingPasteboard` is nil or a live

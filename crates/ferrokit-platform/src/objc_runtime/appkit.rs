@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! AppKit messages `window_cocoa` needs beyond the original [`ObjcMsg`] set, the mock runtime's
 //! property store and call log that make them testable on any OS, and the Objective-C classes
-//! whose methods call back into Rust (`QNSView`'s input methods, `QNSWindow`).
+//! whose methods call back into Rust (the platform NSView's input methods, `QNSWindow`).
 //!
 //! Every function here follows the contract documented on [`ObjcMsg`]. The `*_logged` family
 //! additionally appends to the mock's call log (`MockObjcRuntime::calls`), so a test sees the
@@ -1492,7 +1492,7 @@ mod native {
                     // event methods].
                     let handled = unsafe { input::handle_ns_event(Id(this), $kind, Id(event)) };
                     if !handled {
-                        // SAFETY: `this` is a `QNSView` (an `NSView` subclass); `cmd`/`event` are
+                        // SAFETY: `this` is a the platform NSView (an `NSView` subclass); `cmd`/`event` are
                         // the selector and argument AppKit passed to this method.
                         unsafe {
                             objc2_bridge::send_super_msg::<(*mut c_void,), ()>(
@@ -1563,7 +1563,7 @@ mod native {
     extern "C" fn update_tracking_areas(this: *mut c_void, cmd: *const c_void) {
         guarded((), || input::update_tracking_area(Id(this)));
         guarded((), || {
-            // SAFETY: `this` is a `QNSView`, an `NSView` subclass; `updateTrackingAreas` takes no
+            // SAFETY: `this` is a the platform NSView, an `NSView` subclass; `updateTrackingAreas` takes no
             // arguments and returns nothing; `cmd` is the selector AppKit passed.
             unsafe {
                 objc2_bridge::send_super_msg::<(), ()>(this, objc_get_class("NSView"), cmd, ());
@@ -1575,7 +1575,7 @@ mod native {
         let applied = guarded(false, || input::reset_cursor_rects(Id(this)));
         if !applied {
             guarded((), || {
-                // SAFETY: same as `update_tracking_areas`: `this` is a `QNSView` (`NSView`
+                // SAFETY: same as `update_tracking_areas`: `this` is a the platform NSView (`NSView`
                 // subclass).
                 unsafe {
                     objc2_bridge::send_super_msg::<(), ()>(this, objc_get_class("NSView"), cmd, ());
@@ -1588,7 +1588,7 @@ mod native {
         let applied = guarded(false, || input::cursor_update(Id(this)));
         if !applied {
             guarded((), || {
-                // SAFETY: `this` is a `QNSView` (`NSView` subclass); `cursorUpdate:` takes the
+                // SAFETY: `this` is a the platform NSView (`NSView` subclass); `cursorUpdate:` takes the
                 // event and returns nothing.
                 unsafe {
                     objc2_bridge::send_super_msg::<(*mut c_void,), ()>(
@@ -1764,7 +1764,7 @@ mod native {
         }
     }
 
-    /// Adds the input methods to `QNSView`, the `NSTextInputClient` ones included, and declares
+    /// Adds the input methods to the platform NSView, the `NSTextInputClient` ones included, and declares
     /// the protocol so `-inputContext` exists.
     ///
     /// # Safety
@@ -1826,7 +1826,7 @@ mod native {
             accepts_first_mouse as *const c_void,
             ENC_BOOL_METHOD_WITH_ID_ARG,
         );
-        // NSDraggingDestination (qnsview_dragging.mm)
+        // NSDraggingDestination
         add(
             "draggingEntered:",
             dragging_entered as *const c_void,

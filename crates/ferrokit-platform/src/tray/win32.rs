@@ -253,12 +253,12 @@ impl Menu {
     }
 }
 
-/// `QSystemTrayIcon::ActivationReason`, with Qt's values (qsystemtrayicon.h).
+/// tray activation reason, with Qt's values.
 ///
 /// Which reasons arrive depends on the platform engine, as in Qt:
-/// - Windows (`QWindowsSystemTrayIcon::winEvent`): `Trigger` on a left click (`NIN_SELECT`),
+/// - Windows (Win32 tray message handling): `Trigger` on a left click (`NIN_SELECT`),
 ///   `DoubleClick`, `Context` (`WM_CONTEXTMENU`) and `MiddleClick`; never `Unknown`.
-/// - macOS (`QCocoaSystemTrayIcon::emitActivated`): a status item click is classified by
+/// - macOS (status item activation): a status item click is classified by
 ///   `[NSApp currentEvent]`: click count 2 is `DoubleClick`, otherwise the middle button gives
 ///   `MiddleClick`, the right button `Context` and anything else `Trigger`; `Unknown` is only
 ///   the initial value Qt assigns before classifying. Not run on macOS.
@@ -328,10 +328,10 @@ unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             match event_type {
                 // Under NOTIFYICON_VERSION_4 the shell sends `NIN_SELECT` for a click and
                 // `WM_CONTEXTMENU` for the context menu; the raw button-up messages accompany them
-                // and Qt (`QWindowsSystemTrayIcon::winEvent`) does not act on those.
+                // and Qt (Win32 tray message handling) does not act on those.
                 NIN_SELECT | NIN_KEYSELECT => {
                     // The release that ends a double click is not a click (Qt:
-                    // `m_ignoreNextMouseRelease`, qwindowssystemtrayicon.cpp).
+                    // the duplicate mouse-release suppression flag).
                     if shared.ignore_next_release.replace(false) {
                         return 0;
                     }
@@ -367,25 +367,25 @@ unsafe fn tray_window_proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
                     return 0;
                 }
                 0x0405 => {
-                    // NIN_BALLOONUSERCLICK (aligned with QWindowsSystemTrayIcon)
+                    // NIN_BALLOONUSERCLICK (aligned with the Win32 system tray backend)
                     shared.on_message_clicked.emit(&());
                     return 0;
                 }
                 WM_MBUTTONUP => {
-                    // `QWindowsSystemTrayIcon::winEvent`: the only raw button message it acts on.
+                    // Win32 tray message handling: the only raw button message it acts on.
                     shared.on_activated.emit(&TrayActivation::MiddleClick);
                     return 0;
                 }
                 _ => {}
             }
         } else if msg == WM_CLOSE {
-            // `QWindowsSystemTrayIcon::winEvent`: the tray window is closed (session end, a
+            // Win32 tray message handling: the tray window is closed (session end, a
             // `taskkill` without force) -> `handleApplicationTermination`, which sends the
             // application a `Quit`; Qt then lets `DefWindowProc` destroy the window.
             ferrokit_core::application::CoreApplication::quit();
         } else if msg == 0x0218 {
             // WM_POWERBROADCAST. Qt has no suspend/resume event (it only handles PBT_POWERSETTINGCHANGE
-            // in qwindowscontext.cpp); this is a ferrokit extension.
+            // in); this is a ferrokit extension.
             let power_event = match wparam as u32 {
                 0x0012 | 0x0007 => Some(crate::window_system_interface::PowerEvent::Resume),
                 0x0004 => Some(crate::window_system_interface::PowerEvent::Suspend),
@@ -482,7 +482,7 @@ struct TrayShared {
     /// `TaskbarCreated` replaces the icon from the window procedure.
     icon: RefCell<IconHandle>,
     /// The icon `icon` was made from, when the tray was given an [`Icon`]
-    /// (`QWindowsSystemTrayIcon::m_icon`): `TaskbarCreated` builds the `HICON` again from it.
+    /// (the Win32 platform backend): `TaskbarCreated` builds the `HICON` again from it.
     source: RefCell<Option<ferrokit_gui::image::Icon>>,
     /// The tooltip sent with the icon (also on `TaskbarCreated`). `TrayIcon::tooltip` keeps its
     /// own copy because it returns a `&str`.
@@ -554,7 +554,7 @@ impl TrayShared {
             nid.Anonymous.uVersion = windows_sys::Win32::UI::Shell::NOTIFYICON_VERSION_4;
             // Without version 4 the shell sends callbacks in the old layout, which the window
             // procedure would misread, so the icon is taken off again and the add fails
-            // (`QWindowsSystemTrayIcon::sendTrayMessage` also reports this as a failure).
+            // (the Win32 platform backend also reports this as a failure).
             // SAFETY: as for the first call: `nid` is initialised, `cbSize` set, `hWnd` is this
             // tray's live window, and `uVersion` is set just above as `NIM_SETVERSION` requires.
             if unsafe { Shell_NotifyIconW(windows_sys::Win32::UI::Shell::NIM_SETVERSION, &nid) }
@@ -569,7 +569,7 @@ impl TrayShared {
         Ok(())
     }
 
-    /// The `TaskbarCreated` half of `QWindowsSystemTrayIcon::winEvent`: the resolution or DPI
+    /// The `TaskbarCreated` half of Win32 tray message handling: the resolution or DPI
     /// may have changed, so the `HICON` is built again from the kept [`Icon`] before the icon is
     /// added to the new taskbar. Without a kept icon the `HICON` stays as it is.
     fn rebuild_icon_from_source(&self) {
@@ -610,7 +610,7 @@ impl TrayShared {
 #[cfg(windows)]
 pub struct TrayIcon {
     shared: Rc<TrayShared>,
-    /// The icon of the last balloon message, kept as `QWindowsSystemTrayIcon::m_hMessageIcon`.
+    /// The icon of the last balloon message, kept as the Win32 platform backend.
     /// Not used by the window procedure.
     balloon_icon: Option<IconHandle>,
     /// A copy of `shared.tooltip`, which `tooltip` can lend as a `&str`; `set_tooltip` updates
@@ -679,7 +679,7 @@ impl TrayIcon {
         }
         // Let `TaskbarCreated` through the UIPI filter, so a tray in an elevated process still
         // hears an Explorer that was restarted without elevation
-        // (`QWindowsSystemTrayIcon::ensureInstalled`).
+        // (the Win32 platform backend).
         // SAFETY: `hwnd` was created by `CreateWindowExW` above and checked non-null; a null
         // `pChangeFilterStruct` is documented as allowed for `MSGFLT_ALLOW`.
         unsafe {
@@ -760,7 +760,7 @@ impl TrayIcon {
         Some(f(menu))
     }
 
-    /// Shows the icon (`QSystemTrayIcon::setVisible(true)`). As in Qt (`QWindowsSystemTrayIcon::init`
+    /// Shows the icon (`the system tray icon::setVisible(true)`). As in Qt (the Win32 platform backend
     /// sets `m_visible` before it adds the icon, and ignores the result), the tray is visible from
     /// here on even if the shell refuses the `NIM_ADD` (Explorer busy or not running yet): the
     /// error is still returned so the caller can log it, but `is_visible` is `true` and
@@ -773,8 +773,8 @@ impl TrayIcon {
         self.shared.send_notify_icon_message(NIM_ADD)
     }
 
-    /// Hides the icon (`QSystemTrayIcon::setVisible(false)`). As in Qt
-    /// (`QWindowsSystemTrayIcon::cleanup` sets `m_visible` before it deletes the icon), the tray is
+    /// Hides the icon (`the system tray icon::setVisible(false)`). As in Qt
+    /// (the Win32 platform backend sets `m_visible` before it deletes the icon), the tray is
     /// hidden even if the shell refuses the `NIM_DELETE`, and `TaskbarCreated` no longer adds it.
     pub fn hide(&mut self) -> Result<(), &'static str> {
         self.set_balloon_icon(None);
@@ -819,7 +819,7 @@ impl TrayIcon {
         self.shared.icon.borrow().as_raw()
     }
 
-    /// A tray icon showing `icon` at the size of a small icon (`QSystemTrayIcon(const QIcon &)`).
+    /// A tray icon showing `icon` at the size of a small icon (`the system tray icon(const QIcon &)`).
     /// The tray keeps `icon`, so it can build the `HICON` again when the taskbar is re-created.
     pub fn from_icon(
         tooltip: impl Into<String>,
@@ -833,7 +833,7 @@ impl TrayIcon {
         Ok(tray)
     }
 
-    /// Shows `icon` (`QSystemTrayIcon::setIcon`) and keeps it for `TaskbarCreated`.
+    /// Shows `icon` (`the system tray icon::setIcon`) and keeps it for `TaskbarCreated`.
     pub fn set_icon_from(&mut self, icon: &ferrokit_gui::image::Icon) -> Result<(), &'static str> {
         let hicon = Self::hicon_for_small_icon(icon)?;
         let result = self.replace_icon(IconHandle::owned(hicon));
@@ -843,7 +843,7 @@ impl TrayIcon {
         result
     }
 
-    /// `QWindowsSystemTrayIcon::createIcon`: the size of a small icon (`SM_CXSMICON`,
+    /// the Win32 platform backend: the size of a small icon (`SM_CXSMICON`,
     /// `SM_CYSMICON`) as far as `icon` has one (`QIcon::actualSize`), as one `HICON`.
     fn hicon_for_small_icon(icon: &ferrokit_gui::image::Icon) -> Result<HICON, &'static str> {
         use ferrokit_gui::geometry::primitives::Size;
@@ -865,18 +865,18 @@ impl TrayIcon {
         self.shared.visible.get()
     }
 
-    /// The tooltip (`QSystemTrayIcon::toolTip`).
+    /// The tooltip (`the system tray icon::toolTip`).
     pub fn tooltip(&self) -> &str {
         &self.tooltip
     }
 
-    /// `QSystemTrayIcon::isSystemTrayAvailable`: Qt's Windows engine answers `true` without
-    /// looking for a taskbar (`QWindowsSystemTrayIcon::isSystemTrayAvailable`).
+    /// `the system tray icon::isSystemTrayAvailable`: Qt's Windows engine answers `true` without
+    /// looking for a taskbar (the Win32 platform backend).
     pub fn is_system_tray_available() -> bool {
         true
     }
 
-    /// Whether the shell reports the icon on the taskbar (`QWindowsSystemTrayIcon::isIconVisible`):
+    /// Whether the shell reports the icon on the taskbar (the Win32 platform backend):
     /// a rectangle for it, that is not hidden by the overflow area (Windows 10 answers `S_FALSE`,
     /// Windows 11 a rectangle below the monitor).
     fn is_icon_shown(&self) -> Option<windows_sys::Win32::Foundation::RECT> {
@@ -919,7 +919,7 @@ impl TrayIcon {
         (rect.bottom <= info.rcMonitor.bottom).then_some(rect)
     }
 
-    /// Where the shell shows the icon, in logical desktop pixels (`QSystemTrayIcon::geometry`);
+    /// Where the shell shows the icon, in logical desktop pixels (`the system tray icon::geometry`);
     /// an empty rectangle while the icon is hidden or not on the taskbar.
     pub fn geometry(&self) -> Rect {
         match self.is_icon_shown() {
@@ -933,7 +933,7 @@ impl TrayIcon {
         }
     }
 
-    /// `QWindowsSystemTrayIcon::supportsMessages`: balloon messages are on unless the user turned
+    /// the Win32 platform backend: balloon messages are on unless the user turned
     /// them off (`HKCU\...\Explorer\Advanced\EnableBalloonTips`; the key is typically absent
     /// on Windows 10 and means on).
     pub fn supports_messages(&self) -> bool {
@@ -954,7 +954,7 @@ impl TrayIcon {
         icon: crate::platform_tray::TrayMessageIcon,
         duration_ms: u32,
     ) -> Result<(), &'static str> {
-        // `QSystemTrayIcon::showMessage` (both overloads) does nothing while the icon is hidden.
+        // `the system tray icon::showMessage` (both overloads) does nothing while the icon is hidden.
         if !self.shared.visible.get() || !self.supports_messages() {
             return Ok(());
         }
@@ -973,14 +973,14 @@ impl TrayIcon {
     }
 
     /// Replaces the icon of the last balloon message; the old one is destroyed if owned. As
-    /// `QWindowsSystemTrayIcon::m_hMessageIcon` the icon is kept after `NIM_MODIFY` returns (the
+    /// the Win32 platform backend the icon is kept after `NIM_MODIFY` returns (the
     /// `hBalloonIcon` documentation does not say the shell is done with the handle by then) and
     /// freed when the next message is shown, when the icon is hidden and when it is dropped.
     fn set_balloon_icon(&mut self, icon: Option<IconHandle>) {
         self.balloon_icon = icon;
     }
 
-    /// The pixel size of the balloon icon made from a stock icon: `QWindowsTheme::
+    /// The pixel size of the balloon icon made from a stock icon: `the Win32 platform backend
     /// refreshIconPixmapSizes` gives the style icon the sizes `SM_CXSMICON`, `SM_CXICON`,
     /// 1.5 x `SM_CXICON` and 8 x `SM_CXICON` (16, 32, 48 and 256 at 100% scaling), and
     /// `actualSize(QSize(256, 256))` takes the first with at least that area, else the largest,
@@ -994,12 +994,12 @@ impl TrayIcon {
             .clamp(1, 256) as u32
     }
 
-    /// `QSystemTrayIcon::showMessage(title, msg, MessageIcon, msecs)` hands the platform the
+    /// `the system tray icon::showMessage(title, msg, MessageIcon, msecs)` hands the platform the
     /// style's standard icon for the type (`SP_MessageBoxInformation`, `SP_MessageBoxWarning`,
-    /// `SP_MessageBoxCritical`) and none for `NoIcon`; `QWindowsSystemTrayIcon::showMessage` then
+    /// `SP_MessageBoxCritical`) and none for `NoIcon`; the Win32 platform backend then
     /// shows `NIIF_USER | NIIF_LARGE_ICON` with that icon, and `NIIF_INFO` when there is none
     /// (`NoIcon` included).
-    /// `QWindowsTheme::standardPixmap` tries the shell's stock icon, then (for the types that
+    /// the Win32 theme backend tries the shell's stock icon, then (for the types that
     /// have one, not these) a shell32 resource, then `LoadIcon(IDI_INFORMATION / IDI_WARNING /
     /// IDI_ERROR)`, and gives a null pixmap, hence `NIIF_INFO`, when all fail.
     fn balloon_style(icon: crate::platform_tray::TrayMessageIcon) -> (u32, Option<IconHandle>) {
@@ -1076,7 +1076,7 @@ impl TrayIcon {
         (!hicon.is_null()).then_some(hicon)
     }
 
-    /// Shows a balloon whose icon is `icon` (`QSystemTrayIcon::showMessage(title, msg, QIcon,
+    /// Shows a balloon whose icon is `icon` (`the system tray icon::showMessage(title, msg, QIcon,
     /// msecs)`): `NIIF_USER | NIIF_LARGE_ICON` with an `hBalloonIcon` made from the icon at its
     /// actual size for 256x256 (`icon.actualSize(QSize(256, 256))`).
     /// A null icon shows the balloon without one.
@@ -1157,7 +1157,7 @@ impl TrayIcon {
         nid.uID = 1;
         nid.uFlags = NIF_INFO | NIF_SHOWTIP;
 
-        // A message that is empty next to a title still shows (qwindowssystemtrayicon.cpp).
+        // A message that is empty next to a title still shows.
         let msg = if msg.is_empty() && !title.is_empty() {
             " "
         } else {
@@ -1407,7 +1407,7 @@ impl Drop for TrayIcon {
 #[cfg(not(windows))]
 pub struct TrayIcon {
     inner: Box<dyn crate::platform_tray::PlatformTrayIcon>,
-    /// Whether the icon is shown (`QSystemTrayIcon::isVisible`): messages are dropped while it is not.
+    /// Whether the icon is shown (`the system tray icon::isVisible`): messages are dropped while it is not.
     visible: bool,
     tooltip: String,
     pub on_menu_action: Signal<u32>,
@@ -1418,7 +1418,7 @@ pub struct TrayIcon {
 
 #[cfg(not(windows))]
 impl TrayIcon {
-    /// A tray icon showing `icon` (`QSystemTrayIcon(const QIcon &)`).
+    /// A tray icon showing `icon` (`the system tray icon(const QIcon &)`).
     pub fn from_icon(
         tooltip: impl Into<String>,
         icon: &ferrokit_gui::image::Icon,
@@ -1433,7 +1433,7 @@ impl TrayIcon {
     }
 
     /// Wraps `inner`, forwarding the activations it reports to [`TrayIcon::on_activated`]
-    /// (`QSystemTrayIcon::activated`).
+    /// (`the system tray icon::activated`).
     pub fn with_backend(mut inner: Box<dyn crate::platform_tray::PlatformTrayIcon>) -> Box<Self> {
         let on_activated = Signal::new();
         let on_message_clicked = Signal::new();
@@ -1542,7 +1542,7 @@ impl TrayIcon {
         icon: crate::platform_tray::TrayMessageIcon,
         duration_ms: u32,
     ) -> Result<(), &'static str> {
-        // `QSystemTrayIcon::showMessage` does nothing while the icon is hidden.
+        // `the system tray icon::showMessage` does nothing while the icon is hidden.
         if !self.visible {
             return Ok(());
         }
@@ -1705,7 +1705,7 @@ mod tests {
 
     #[test]
     fn the_balloon_icon_lives_until_the_next_message_or_hide() {
-        // `QWindowsSystemTrayIcon::m_hMessageIcon`: kept after the notification, freed before the
+        // the Win32 platform backend: kept after the notification, freed before the
         // next message's icon is made and on cleanup.
         use crate::platform_tray::TrayMessageIcon;
         use windows_sys::Win32::UI::WindowsAndMessaging::GetIconInfo;
@@ -1733,7 +1733,7 @@ mod tests {
         if !tray.supports_messages() {
             return;
         }
-        // `QSystemTrayIcon::showMessage` does nothing while the icon is hidden (`d->visible`):
+        // `the system tray icon::showMessage` does nothing while the icon is hidden (`d->visible`):
         // no notification, no icon kept.
         assert!(!tray.is_visible());
         tray.show_message(" ", "Hidden", TrayMessageIcon::Information, 1000)
@@ -1810,7 +1810,7 @@ mod tests {
 
     #[test]
     fn the_system_icons_are_the_fallback_when_the_shell_has_no_stock_icon() {
-        // `QWindowsTheme::standardPixmap`: `LoadIcon(nullptr, IDI_INFORMATION / IDI_WARNING /
+        // the Win32 theme backend: `LoadIcon(nullptr, IDI_INFORMATION / IDI_WARNING /
         // IDI_ERROR)` after the stock icon. The shell picks their size (40 px here, where
         // `SM_CXICON` is 32), so only that they exist and are square is checked.
         use windows_sys::Win32::Graphics::Gdi::{BITMAP, GetObjectW};
@@ -1869,9 +1869,9 @@ mod tests {
 
     #[test]
     fn a_balloon_message_shows_the_standard_icon_of_its_type() {
-        // `QSystemTrayIcon::showMessage(.., MessageIcon, ..)`: the style's standard icon is shown
+        // `the system tray icon::showMessage(.., MessageIcon,..)`: the style's standard icon is shown
         // as `NIIF_USER | NIIF_LARGE_ICON`; `NoIcon` has none and gets `NIIF_INFO`
-        // (`QWindowsSystemTrayIcon::showMessage` with a null pixmap).
+        // (the Win32 platform backend with a null pixmap).
         use crate::platform_tray::TrayMessageIcon;
         const NIIF_INFO: u32 = 1;
         const NIIF_USER_LARGE: u32 = 0x4 | 0x20;
@@ -1947,7 +1947,7 @@ mod tests {
 
     #[test]
     fn a_balloon_icon_is_made_at_the_actual_size_for_256_pixels() {
-        // `QWindowsSystemTrayIcon::showMessage`: `icon.actualSize(QSize(256, 256))`.
+        // the Win32 platform backend: `icon.actualSize(QSize(256, 256))`.
         use ferrokit_gui::image::{Icon, IconMode, IconState};
         use windows_sys::Win32::Graphics::Gdi::{BITMAP, GetObjectW};
         use windows_sys::Win32::UI::WindowsAndMessaging::GetIconInfo;

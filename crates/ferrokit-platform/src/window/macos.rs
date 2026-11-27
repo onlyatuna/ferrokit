@@ -203,7 +203,7 @@ impl CocoaNativeWindow {
         };
         #[cfg(not(target_os = "macos"))]
         let window_class = Class::get("NSWindow").ok_or("Cannot find NSWindow class")?;
-        // Qt's content view is a QNSView, whose -isFlipped returns YES (qnsview_drawing.mm:67-70).
+        // Qt's content view is a the platform NSView, whose -isFlipped returns YES.
         #[cfg(target_os = "macos")]
         let view_class = crate::objc_runtime::qnsview_class();
         #[cfg(not(target_os = "macos"))]
@@ -238,7 +238,7 @@ impl CocoaNativeWindow {
         };
 
         // `releasedWhenClosed` defaults to YES: a user close would free the window we still own
-        // and `Drop` would then message freed memory. Qt: qcocoawindow.mm:2079.
+        // and `Drop` would then message freed memory. Qt:.
         // SAFETY: `ns_window` is the object initialised above (nil is a no-op); `setReleasedWhenClosed:`
         // takes one BOOL, matching `send_bool`.
         unsafe { ObjcMsg::send_bool(ns_window, Sel::register("setReleasedWhenClosed:"), false) };
@@ -247,7 +247,7 @@ impl CocoaNativeWindow {
         unsafe { ObjcMsg::send_str(ns_window, Sel::register("setTitle:"), title) };
 
         // SAFETY: `alloc` takes no arguments and returns an object, matching `send_class_0`;
-        // `view_class` is the QNSView class (registered by `qnsview_class`).
+        // `view_class` is the the platform NSView class (registered by `qnsview_class`).
         let ns_view_alloc = unsafe { ObjcMsg::send_class_0(view_class, Sel::register("alloc")) };
         let view_rect = CGRect::new(0.0, 0.0, rect.width as f64, rect.height as f64);
         // SAFETY: `initWithFrame:` takes one NSRect, matching `send_rect`; the receiver is the
@@ -277,9 +277,9 @@ impl CocoaNativeWindow {
                 true,
             )
         };
-        // Qt: QNSView makes itself layer-backed (qnsview_drawing.mm:57) and the backing store
-        // flushes into the view's layer (QCocoaWindow::contentLayer, qcocoawindow.mm:2235-2241;
-        // qcocoabackingstore.mm:392), not into the view.
+        // Qt: the platform NSView makes itself layer-backed and the backing store
+        // flushes into the view's layer (the Cocoa platform backend,;
+        // ), not into the view.
         // SAFETY: `ns_view` is the view created above; `setWantsLayer:` takes one BOOL.
         unsafe { ObjcMsg::send_bool(ns_view, Sel::register("setWantsLayer:"), true) };
         // SAFETY: `ns_view` as above; `layer` takes no arguments and returns an object.
@@ -303,7 +303,7 @@ impl CocoaNativeWindow {
             unsafe { ObjcMsg::send_bool(ns_window, Sel::register("setIgnoresMouseEvents:"), true) };
         }
 
-        // Qt: `hidesOnDeactivate` for `Qt::Tool` (qcocoawindow.mm `setWindowFlags`).
+        // Qt: `hidesOnDeactivate` for `Qt::Tool` ( `setWindowFlags`).
         if flags.contains(WindowFlags::TOOL) {
             // SAFETY: `ns_window` as above; `setHidesOnDeactivate:` takes one BOOL.
             unsafe {
@@ -526,7 +526,7 @@ impl CocoaNativeWindow {
                     // SAFETY: as above; `setState:` takes one NSInteger.
                     unsafe { ObjcMsg::send_int(effect_view, Sel::register("setState:"), 1) };
                     // Qt stacks the effect layer below the content layer (z 0): wantsLayer, then
-                    // layer.zPosition = -FLT_MAX (qcocoawindow.mm:2267-2270).
+                    // layer.zPosition = -FLT_MAX.
                     // SAFETY: `effect_view` is live; `setWantsLayer:` takes one BOOL.
                     unsafe {
                         ObjcMsg::send_bool(effect_view, Sel::register("setWantsLayer:"), true);
@@ -834,7 +834,7 @@ impl PlatformWindow for CocoaNativeWindow {
     }
 
     fn raise(&self) {
-        // `QCocoaWindow::raise` (qcocoawindow.mm): brings the window front in the window
+        // the Cocoa window backend: brings the window front in the window
         // system's stacking order without taking activation or making it the key window.
         // AppKit's `-[NSWindow orderFront:]` would order an invisible window onto screen, so
         // invisible windows are skipped, matching Qt (`if ([m_nsWindow isVisible])`).
@@ -900,7 +900,7 @@ impl PlatformWindow for CocoaNativeWindow {
         true
     }
     fn request_activate_window(&self) {
-        // `QCocoaWindow::requestActivateWindow` (qcocoawindow.mm): a tooltip never
+        // the Cocoa window backend: a tooltip never
         // takes activation, and an invisible window cannot become active.
         if self.flags.contains(WindowFlags::TOOLTIP)
             || self.flags.contains(WindowFlags::CLICK_THROUGH)
@@ -909,7 +909,7 @@ impl PlatformWindow for CocoaNativeWindow {
             return;
         }
         // AppKit's `-[NSWindow isVisible]` is NO when miniaturized (minimized) or hidden,
-        // even though our local state tracks shown (`QCocoaWindow::requestActivateWindow`).
+        // even though our local state tracks shown (the Cocoa window backend).
         // SAFETY: `self.ns_window` is live from `new` to `Drop`; `isVisible` takes no arguments
         // and returns BOOL, matching `send_bool_return`.
         if !unsafe { ObjcMsg::send_bool_return(self.ns_window, Sel::register("isVisible")) } {
@@ -929,7 +929,7 @@ impl PlatformWindow for CocoaNativeWindow {
                 ObjcMsg::send_bool_logged(nsapp, Sel::register("activateIgnoringOtherApps:"), true)
             };
         }
-        // `QCocoaWindow::requestActivateWindow`: the view becomes the window's first responder
+        // the Cocoa window backend: the view becomes the window's first responder
         // and the window becomes key. The window is already visible (checked above), so no
         // ordering is needed.
         // SAFETY: `self.ns_window` and `self.ns_view` are live from `new` to `Drop`;
@@ -962,7 +962,7 @@ impl PlatformWindow for CocoaNativeWindow {
 
     fn set_geometry(&mut self, rect: Rect) {
         self.geometry = rect;
-        // `QCocoaWindow::setGeometry` hands AppKit the content rect through
+        // the Cocoa window backend hands AppKit the content rect through
         // `-[NSWindow setFrame:display:]` after converting it to a frame (with title bar).
         let cg_rect = native_frame_rect(self.ns_window, rect);
         // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setFrame:display:` takes
@@ -982,7 +982,7 @@ impl PlatformWindow for CocoaNativeWindow {
 
     fn set_stays_on_top(&mut self, enabled: bool) {
         // Qt changes the hint through setWindowFlags, which recomputes the level from all
-        // flags (qcocoawindow.mm:749).
+        // flags.
         self.stays_on_top = enabled;
         self.flags.set(WindowFlags::STAYS_ON_TOP, enabled);
         // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setLevel:` takes one NSInteger.
@@ -1013,7 +1013,7 @@ impl PlatformWindow for CocoaNativeWindow {
         self.flags
     }
 
-    /// `QCocoaWindow::setWindowFlags` (qcocoawindow.mm): the style mask follows the frame
+    /// the Cocoa window backend: the style mask follows the frame
     /// flags, the level the stacking flags, `hidesOnDeactivate` follows `Qt::Tool` (unless
     /// overridden via `set_hides_on_deactivate`), and `LAYERED` toggles window transparency.
     fn set_window_flag(&mut self, flag: WindowFlags, on: bool) {
@@ -1082,7 +1082,7 @@ impl PlatformWindow for CocoaNativeWindow {
         }
     }
 
-    /// `QCocoaCursor::changeCursor` (qcocoacursor.mm): the window cursor is kept by the content
+    /// the Cocoa platform backend: the window cursor is kept by the content
     /// view, which shows it through a cursor rect and `cursorUpdate:` while the pointer is over
     /// the window; AppKit shows it from the next pointer movement.
     fn set_cursor(&mut self, shape: CursorShape) {
@@ -1097,7 +1097,7 @@ impl PlatformWindow for CocoaNativeWindow {
     }
 
     /// AppKit has no call that routes the whole application's mouse to one window, and
-    /// `QCocoaWindow` implements none either (`QPlatformWindow::setMouseGrabEnabled` returns
+    /// the Cocoa window backend implements none either (the platform abstraction returns
     /// false there). What a window gets natively is the implicit grab of a pressed button: the
     /// view receives the drag and the release wherever the pointer goes. An explicit grab
     /// therefore holds for a visible window, and is reported by `has_mouse_grab`, but does not
@@ -1245,7 +1245,7 @@ impl PlatformWindow for CocoaNativeWindow {
 
     fn start_system_move(&self) -> bool {
         // Qt: only while the left button alone is pressed; otherwise the move is refused
-        // (QCocoaWindow::startSystemMove, qcocoawindow.mm:366-370).
+        // (the Cocoa platform backend).
         let ns_event = Id(Class::get("NSEvent").unwrap_or(Class::NIL).0);
         // SAFETY: `ns_event` is the `NSEvent` class object (nil makes the send a no-op);
         // `pressedMouseButtons` is a class method with no arguments returning NSUInteger,
@@ -1283,8 +1283,7 @@ impl PlatformWindow for CocoaNativeWindow {
         true
     }
 
-    /// `QCocoaWindow` has no system resize; `QPlatformWindow::startSystemResize` returns false
-    /// (qplatformwindow.cpp:495-498).
+    /// the Cocoa window backend has no system resize; the platform abstraction returns false
     fn start_system_resize(&self, _edges: crate::platform_window::WindowEdges) -> bool {
         false
     }
@@ -1307,8 +1306,8 @@ impl PlatformWindow for CocoaNativeWindow {
     }
 
     fn set_minimum_size(&mut self, min_w: i32, min_h: i32) {
-        // Qt: QCocoaWindow::propagateSizeHints sets window.contentMinSize, the minimum of the
-        // content area (qcocoawindow.mm:1181-1185), not the frame's minSize.
+        // Qt: the Cocoa platform backend sets window.contentMinSize, the minimum of the
+        // content area, not the frame's minSize.
         self.size_limits.min = crate::size_limits::clamp_size_limit(min_w, min_h);
         // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setContentMinSize:` takes one
         // NSSize, matching `send_size`.
@@ -1330,7 +1329,7 @@ impl PlatformWindow for CocoaNativeWindow {
 
     fn set_maximum_size(&mut self, max_w: i32, max_h: i32) {
         // Qt: the same `propagateSizeHints` sets window.contentMaxSize to `windowMaximumSize()`
-        // as is, `QWINDOWSIZE_MAX` included for an axis without a maximum (qcocoawindow.mm:1187-1188).
+        // as is, `WINDOW_SIZE_MAX` included for an axis without a maximum.
         self.size_limits.max = crate::size_limits::clamp_size_limit(max_w, max_h);
         // SAFETY: `self.ns_window` is live from `new` to `Drop`; `setContentMaxSize:` takes one
         // NSSize, matching `send_size`.
@@ -1399,7 +1398,7 @@ impl PlatformWindow for CocoaNativeWindow {
 
     fn device_pixel_ratio(&self) -> f32 {
         // AppKit's `-[NSWindow backingScaleFactor]` reports the scaling factor of the screen
-        // this window is currently on (qcocoawindow.mm:1450).
+        // this window is currently on.
         if !self.ns_window.is_nil() {
             // SAFETY: `self.ns_window` is live and non-nil; `backingScaleFactor` takes no
             // arguments and returns a CGFloat (double), matching `send_f64_return`.
@@ -1559,7 +1558,7 @@ impl raw_window_handle::HasDisplayHandle for CocoaNativeWindow {
 }
 
 impl Drop for CocoaNativeWindow {
-    /// Qt's `~QCocoaWindow` takes the window off screen and releases its views and the window.
+    /// Qt's `~the Cocoa platform backend` takes the window off screen and releases its views and the window.
     fn drop(&mut self) {
         let me = self.ns_window;
         // No handle may name this window once it is released: it leaves the set of live
@@ -1668,7 +1667,7 @@ impl Drop for CocoaNativeWindow {
     }
 }
 
-/// `QCocoaWindow::windowLevel` (qcocoawindow.mm:548-564): Tool floats, StaysOnTop goes above
+/// the Cocoa window backend: Tool floats, StaysOnTop goes above
 /// Tool windows, ToolTip goes above StaysOnTop windows.
 pub fn cocoa_window_level(flags: WindowFlags) -> isize {
     if flags.contains(WindowFlags::TOOLTIP) {
@@ -1682,7 +1681,7 @@ pub fn cocoa_window_level(flags: WindowFlags) -> isize {
     }
 }
 
-/// `QCocoaWindow::windowStyleMask` (qcocoawindow.mm): a frameless window or a tooltip is
+/// the Cocoa window backend: a frameless window or a tooltip is
 /// borderless, any other window has the title bar, close, miniaturize and resize controls; a
 /// custom frame draws its own but still resizes.
 pub fn cocoa_style_mask(flags: WindowFlags) -> NSUInteger {
@@ -1717,15 +1716,15 @@ pub fn qt_mac_flip_rect(rect: Rect, reference_height: i32) -> Rect {
 }
 
 /// Height of the primary screen (the one with the menu bar, `[NSScreen screens][0]`), the
-/// reference of every Qt top-left <-> Cocoa bottom-left conversion (qcocoascreen.mm:226-227).
+/// reference of every Qt top-left <-> Cocoa bottom-left conversion.
 #[inline]
 pub fn qt_mac_primary_screen_height() -> i32 {
     crate::screen::CocoaScreen::primary_height()
 }
-/// Queries an `NSWindow`'s live content rect (`QCocoaWindow::geometry` is the content area, not
+/// Queries an `NSWindow`'s live content rect (the Cocoa window backend is the content area, not
 /// the frame with the title bar) and flips it from Cocoa bottom-left desktop coordinates to
 /// Qt's top-left desktop coordinates. Each component is rounded as `QRectF::toRect()` rounds
-/// (`qRound`), including the fractional origins of secondary monitors.
+/// (round-half-away-from-zero), including the fractional origins of secondary monitors.
 pub fn window_flipped_geometry(window: Id) -> Rect {
     if !window.is_nil() {
         // SAFETY: `window` is live from `new` to `Drop`; `frame` takes no arguments
@@ -1753,7 +1752,7 @@ pub fn window_flipped_geometry(window: Id) -> Rect {
 }
 
 /// The `NSWindow` frame rect (with title bar) whose content rect is Qt's top-left global
-/// `rect`: `frameRectForContentRect:` of `QCocoaWindow::setGeometry`'s native rect.
+/// `rect`: `frameRectForContentRect:` of the Cocoa window backend's native rect.
 fn native_frame_rect(window: Id, rect: Rect) -> CGRect {
     // SAFETY: `window` is live (callers pass `self.ns_window`); `frameRectForContentRect:` takes
     // one NSRect and returns an NSRect, matching `send_rect_arg_rect_return`.
@@ -1765,7 +1764,7 @@ fn native_frame_rect(window: Id, rect: Rect) -> CGRect {
         )
     }
 }
-/// `QCocoaScreen::mapToNative` (qcocoascreen.mm:815-818): Qt's top-left global rect as the
+/// the Cocoa platform backend: Qt's top-left global rect as the
 /// bottom-left rect AppKit expects.
 fn native_rect(rect: Rect) -> CGRect {
     let flipped = qt_mac_flip_global_rect(rect);

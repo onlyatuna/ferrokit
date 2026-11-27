@@ -3,7 +3,7 @@ use crate::menu::PlatformMenu;
 use crate::tray_icon::TrayActivation;
 use ferrokit_gui::image::Icon;
 
-/// Aligned with `QPlatformSystemTrayIcon::MessageIcon` (qtbase)
+/// Aligned with the platform abstraction (reference behavior)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TrayMessageIcon {
     #[default]
@@ -13,7 +13,7 @@ pub enum TrayMessageIcon {
     Critical = 3,
 }
 
-/// Makes `tray` emit every activation it reports on `signal` (`QSystemTrayIcon::activated`).
+/// Makes `tray` emit every activation it reports on `signal` (`the system tray icon::activated`).
 /// The non-Windows `TrayIcon` wires its `on_activated` signal this way.
 pub fn forward_activations(
     tray: &mut dyn PlatformTrayIcon,
@@ -41,7 +41,7 @@ pub fn forward_message_clicks(
     tray.set_message_clicked_handler(Box::new(move || emitter.emit(&())));
 }
 pub trait PlatformTrayIcon {
-    /// Shows `icon` (`QSystemTrayIcon::setIcon`).
+    /// Shows `icon` (`the system tray icon::setIcon`).
     fn set_icon(&mut self, icon: &Icon) -> Result<(), &'static str>;
     fn set_tooltip(&mut self, tooltip: &str) -> Result<(), &'static str>;
     fn set_menu(&mut self, menu: Box<dyn PlatformMenu>);
@@ -51,7 +51,7 @@ pub trait PlatformTrayIcon {
     fn show(&mut self) -> Result<(), &'static str>;
     fn hide(&mut self) -> Result<(), &'static str>;
 
-    /// Installs the receiver of `QPlatformSystemTrayIcon::activated(ActivationReason)`: the
+    /// Installs the receiver of the platform abstraction: the
     /// back end calls `handler` with the reason each time the user activates the icon. The
     /// default drops the handler, for back ends that never report activations (the headless
     /// [`GenericTrayIcon`]); the Windows icon reports through `TrayIcon::on_activated` instead.
@@ -93,7 +93,7 @@ pub trait PlatformTrayIcon {
         Ok(None)
     }
 
-    /// Displays a balloon or toast message aligned with `QPlatformSystemTrayIcon::showMessage`.
+    /// Displays a balloon or toast message aligned with the platform abstraction.
     /// `duration_ms` defaults to 10,000 ms if 0.
     fn show_message(
         &mut self,
@@ -107,7 +107,7 @@ pub trait PlatformTrayIcon {
     }
 
     /// Displays a balloon or toast message with a custom icon, aligned with the
-    /// `QSystemTrayIcon::showMessage(title, msg, QIcon, msecs)` overload.
+    /// `the system tray icon::showMessage(title, msg, QIcon, msecs)` overload.
     /// `duration_ms` defaults to 10,000 ms if 0.
     ///
     /// The default falls back to [`TrayMessageIcon::NoIcon`]: back ends that cannot show an
