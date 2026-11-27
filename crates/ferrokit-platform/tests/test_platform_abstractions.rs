@@ -1492,7 +1492,7 @@ fn test_cross_platform_input_event_bridge_queuing_and_polling() {
     );
 }
 
-// Mock-runtime test: Qt's QNSView returns YES from -isFlipped (qnsview_drawing.mm:67-70). On macOS
+// Mock-runtime test: Qt's FerrokitNSView returns YES from -isFlipped (qnsview_drawing.mm:67-70). On macOS
 // the real view is checked on the main thread: examples/appkit_main_thread.rs (`window_flipped`).
 #[cfg(not(target_os = "macos"))]
 #[test]
@@ -1512,7 +1512,7 @@ fn test_macos_content_view_is_flipped() {
 
     assert!(
         cocoa_win.is_flipped(),
-        "QNSView must return isFlipped == true, flipping Cocoa coordinates with top-left as origin (Y downward)"
+        "FerrokitNSView must return isFlipped == true, flipping Cocoa coordinates with top-left as origin (Y downward)"
     );
 }
 
@@ -1626,7 +1626,7 @@ fn test_platform_parity_gaps_verification() {
         // `send_bool` does.
         unsafe { ObjcMsg::send_bool(win, Sel::register("setIgnoresMouseEvents:"), true) };
 
-        let view_cls = Class::get("QNSView").unwrap_or(Class::NIL);
+        let view_cls = Class::get("FerrokitNSView").unwrap_or(Class::NIL);
         // SAFETY: `view_cls` is a mock class or `Class::NIL` (a no-op); `alloc` takes no
         // arguments and returns an object, matching `send_class_0`. Mock runtime only.
         let view_alloc = unsafe { ObjcMsg::send_class_0(view_cls, Sel::register("alloc")) };

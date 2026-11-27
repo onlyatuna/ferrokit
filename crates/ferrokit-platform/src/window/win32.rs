@@ -40,9 +40,10 @@ pub fn set_dcomp_enabled(enabled: Option<bool>) {
 static REGISTER_WINDOW_CLASS_ONCE: Once = Once::new();
 #[cfg(windows)]
 pub(crate) const NATIVE_WINDOW_CLASS_NAME: &[u16] = &[
-    'Q' as u16, 't' as u16, 'r' as u16, 's' as u16, 'N' as u16, 'a' as u16, 't' as u16, 'i' as u16,
-    'v' as u16, 'e' as u16, 'W' as u16, 'i' as u16, 'n' as u16, 'd' as u16, 'o' as u16, 'w' as u16,
-    'C' as u16, 'l' as u16, 'a' as u16, 's' as u16, 's' as u16, 0,
+    'F' as u16, 'e' as u16, 'r' as u16, 'r' as u16, 'o' as u16, 'k' as u16, 'i' as u16, 't' as u16,
+    'N' as u16, 'a' as u16, 't' as u16, 'i' as u16, 'v' as u16, 'e' as u16, 'W' as u16, 'i' as u16,
+    'n' as u16, 'd' as u16, 'o' as u16, 'w' as u16, 'C' as u16, 'l' as u16, 'a' as u16, 's' as u16,
+    's' as u16, 0,
 ];
 
 #[cfg(windows)]

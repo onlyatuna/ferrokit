@@ -197,7 +197,7 @@ impl CocoaNativeWindow {
             // become key, which is what `Qt::ToolTip` wants.
             Class::get("NSWindow").ok_or("Cannot find NSWindow class")?
         } else {
-            // Windows that can take focus need `QNSWindow`: AppKit refuses key status to a
+            // Windows that can take focus need `FerrokitNSWindow`: AppKit refuses key status to a
             // plain NSWindow without a title bar.
             appkit::qnswindow_class()
         };
@@ -207,12 +207,12 @@ impl CocoaNativeWindow {
         #[cfg(target_os = "macos")]
         let view_class = crate::objc_runtime::qnsview_class();
         #[cfg(not(target_os = "macos"))]
-        let view_class = Class::get("QNSView").ok_or("Cannot find class QNSView")?;
+        let view_class = Class::get("FerrokitNSView").ok_or("Cannot find class FerrokitNSView")?;
 
         let style_mask = cocoa_style_mask(flags);
 
         // SAFETY: `alloc` takes no arguments and returns an object, matching `send_class_0`;
-        // `window_class` is the NSWindow/QNSWindow class resolved above (a nil class would make
+        // `window_class` is the NSWindow/FerrokitNSWindow class resolved above (a nil class would make
         // the send a no-op returning nil, which is checked right below). `new` asserted the main
         // thread at its start, which AppKit requires.
         let ns_window_alloc =
@@ -348,7 +348,7 @@ impl CocoaNativeWindow {
         let center = unsafe { ObjcMsg::send_class_0(center_class, Sel::register("defaultCenter")) };
         let mut window_observers = Vec::new();
         if !center.is_nil() && !ns_window.is_nil() {
-            // A close request is not a notification: `QNSWindow windowShouldClose:` delivers it
+            // A close request is not a notification: `FerrokitNSWindow windowShouldClose:` delivers it
             // synchronously (`input::window_should_close`) so the handler can refuse it.
             const NOTIFICATIONS: [&str; 6] = [
                 "NSWindowDidBecomeKeyNotification",
