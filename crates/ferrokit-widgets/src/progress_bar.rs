@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 //! Horizontal or vertical progress indicator (`QProgressBar`).
 //!
-//! Value semantics follow `qprogressbar.cpp`: out-of-range values are ignored
+//! Value semantics follow: out-of-range values are ignored
 //! rather than clamped, `reset()` moves the value to `minimum - 1` ("no
 //! progress"), and the text is built from the `%p` / `%v` / `%m` format
 //! placeholders. When `minimum == maximum` the bar is in busy (indeterminate)
@@ -42,7 +42,7 @@ pub struct ProgressBar {
     text_visible: bool,
     inverted_appearance: bool,
     orientation: Orientation,
-    /// `QProgressBar::alignment`, `Qt::AlignLeft` by default (qprogressbar.cpp:49).
+    /// `QProgressBar::alignment`, `Qt::AlignLeft` by default.
     alignment: Alignment,
     text_direction: ProgressTextDirection,
     busy_phase: f32,
@@ -229,7 +229,7 @@ impl ProgressBar {
 
     pub fn set_font(&mut self, font: Font) {
         self.font = font;
-        // FontChange (qwidget.cpp:4894-4895) precedes the update work (qwidget.cpp:9502).
+        // FontChange precedes the update work.
         notify_borrowed(self, &mut Event::new(EventKind::FontChange));
         self.update_geometry();
         self.update();
@@ -432,8 +432,8 @@ impl QObject for ProgressBar {
 impl Widget for ProgressBar {
     leaf_widget_common!();
 
-    /// `QProgressBar::sizeHint` through `QStyleSheetStyle::sizeFromContents(CT_ProgressBar)`
-    /// (`qprogressbar.cpp:396-406`, `qstylesheetstyle.cpp:5311-5320,5485-5490`): the content size is
+    /// `QProgressBar::sizeHint` through stylesheet resolution
+    /// (5485-5490`): the content size is
     /// transposed for a vertical bar, clamped to `max-*` and expanded to `min-*` (both content-box,
     /// `QRenderRule::adjustSize`), then the border and padding are added.
     fn size_hint(&self) -> Size {
@@ -451,7 +451,7 @@ impl Widget for ProgressBar {
         }
         (w, h) = style.adjust_size((w, h));
         // `CT_ProgressBar` with a contents size: `rule.size(sz)` takes `width`/`height` back
-        // over the adjusted size (`qstylesheetstyle.cpp:5487-5489`).
+        // over the adjusted size.
         w = style.width.unwrap_or(w);
         h = style.height.unwrap_or(h);
         let (ex, ey) = style.box_extra();
@@ -466,7 +466,7 @@ impl Widget for ProgressBar {
         Size::new(style_w.max(explicit.width), style_h.max(explicit.height))
     }
 
-    /// `QProgressBar::minimumSizeHint` (`qprogressbar.cpp:411-418`): the styled `sizeHint` along the
+    /// `QProgressBar::minimumSizeHint`: the styled `sizeHint` along the
     /// bar, `fontMetrics().height() + 2` across it.
     fn minimum_size_hint(&self) -> Size {
         let hint = self.size_hint();
@@ -521,7 +521,7 @@ impl Widget for ProgressBar {
         };
 
         // 1. Track
-        // Groove and chunks are anti-aliased (`qstylesheetstyle.cpp:4175-4190`, `qfusionstyle.cpp:1118-1142`).
+        // Groove and chunks are anti-aliased.
         painter.set_render_hint(RenderHint::Antialiasing, true);
         painter.set_brush(Brush::Color(track_bg));
         painter.set_pen(border_pen);
@@ -554,8 +554,8 @@ impl Widget for ProgressBar {
         painter.set_pen(Pen::new(self.text_color, 1.0));
         match self.orientation {
             Orientation::Horizontal => {
-                // The aligned offset is not clamped (qpainter.cpp:7426-7429); overflow is clipped
-                // to the bar rect (qpainter.cpp:7442-7446).
+                // The aligned offset is not clamped; overflow is clipped
+                // to the bar rect.
                 let x = if self.alignment.contains(Alignment::RIGHT) {
                     w - text_w - 4.0
                 } else if self.alignment.contains(Alignment::H_CENTER) {

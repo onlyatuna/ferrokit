@@ -368,7 +368,7 @@ impl Widget for ScrollBar {
     }
 
     fn paint_event(&mut self, painter: &mut Painter) {
-        // Track and thumb are anti-aliased (`qfusionstyle.cpp:2108-2111`, `qstylesheetstyle.cpp:4370-4373`).
+        // Track and thumb are anti-aliased.
         painter.set_render_hint(RenderHint::Antialiasing, true);
         let geom = self.base.geometry();
         let rect_f = RectF::new(0.0, 0.0, geom.width as f32, geom.height as f32);

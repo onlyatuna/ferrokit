@@ -18,8 +18,8 @@ use std::rc::{Rc, Weak};
 pub type WidgetRef = Rc<RefCell<Box<dyn Widget>>>;
 pub type WidgetWeak = Weak<RefCell<Box<dyn Widget>>>;
 
-/// `QWidget::setEnabled`, the only way to enable or disable a widget: it records the explicit
-/// state, passes the effective one down the tree (qwidget.cpp:3405-3476) and sends the events
+/// the widget, the only way to enable or disable a widget: it records the explicit
+/// state, passes the effective one down the tree and sends the events
 /// before it returns, in Qt's order: each widget whose state changed gets `EnabledChange` after
 /// those below it, and a disabled focus widget gets `FocusOut` (and the next one `FocusIn`)
 /// before its own `EnabledChange`. A widget is not enabled under a disabled parent, and a child
@@ -38,7 +38,7 @@ pub fn set_widget_enabled(widget: &WidgetRef, enabled: bool) {
         notices.push(EnabledNotice::Changed(widget.clone()));
     }
     send_enabled_notices(notices);
-    // The cursor shown over a widget follows its enabled state (qwidget.cpp:3412-3417).
+    // The cursor shown over a widget follows its enabled state.
     if let Ok(w) = widget.try_borrow() {
         crate::window::refresh_cursor_of(&**w);
     }
@@ -120,10 +120,10 @@ fn tell_child_resized(parent: &WidgetRef, child: ObjectId) {
     });
 }
 
-/// `QWidget::setVisible` for a widget its owner holds: records the flag, then sends the events the
-/// change of shown state implies (qwidget.cpp:8401-8443). Showing sends `Show` to the children
-/// first, then to the widget (`show_helper`, qwidget.cpp:8074-8130); hiding sends `Hide` to the
-/// widget first, then to its children (`hide_helper`, qwidget.cpp:8238-8289). A change that leaves
+/// the widget for a widget its owner holds: records the flag, then sends the events the
+/// change of shown state implies. Showing sends `Show` to the children
+/// first, then to the widget (`show_helper`); hiding sends `Hide` to the
+/// widget first, then to its children (`hide_helper`). A change that leaves
 /// the widget's shown state as it was sends nothing, so a child of a hidden window gets no event.
 /// As in `set_widget_enabled`, a widget still borrowed by the caller gets no event.
 pub fn set_widget_visible(widget: &WidgetRef, visible: bool) {
@@ -149,7 +149,7 @@ pub fn set_widget_visible(widget: &WidgetRef, visible: bool) {
     }
 }
 
-/// `hide_helper`'s focus handover (qwidget.cpp:8226-8238): when the window's focus widget is
+/// `hide_helper`'s focus handover: when the window's focus widget is
 /// `widget` or below it, the focus moves on with `focusNextChild()`, or is cleared when no widget
 /// is next, so a hidden widget does not keep receiving key events. A hidden window keeps its focus
 /// widget, as the loop stops at `isWindow()`: that is the root its focus state works on, not any
@@ -173,7 +173,7 @@ fn move_focus_off_hidden(widget: &WidgetRef) {
     send_enabled_notices(notices);
 }
 
-/// `QWidget::isVisible`: the widget and its ancestors are shown, and so is the window it belongs
+/// the widget: the widget and its ancestors are shown, and so is the window it belongs
 /// to. A widget that belongs to no window counts as shown when it is visible.
 fn is_shown(widget: &WidgetRef) -> bool {
     let w = widget.borrow();
@@ -187,7 +187,7 @@ fn is_shown(widget: &WidgetRef) -> bool {
     }
 }
 
-/// `show_helper`'s child loop (qwidget.cpp:8074-8130): every child that is not explicitly hidden
+/// `show_helper`'s child loop: every child that is not explicitly hidden
 /// gets its `Show` after its own children, before the parent's.
 pub(crate) fn show_children_first(widget: &WidgetRef) {
     let Ok(children) = widget.try_borrow().map(|w| w.children()) else {
@@ -206,7 +206,7 @@ pub(crate) fn show_children_first(widget: &WidgetRef) {
     }
 }
 
-/// `hide_helper`'s child loop (qwidget.cpp:8238-8289): every child that is not explicitly hidden
+/// `hide_helper`'s child loop: every child that is not explicitly hidden
 /// gets its `Hide` before its own children do.
 pub(crate) fn hide_children(widget: &WidgetRef) {
     let Ok(children) = widget.try_borrow().map(|w| w.children()) else {
@@ -254,11 +254,11 @@ pub fn adopt_tree(root: &WidgetRef) {
     }
 }
 
-/// The minimum and maximum `QLayout::activate` gives the owner of top-level layout `layout`
-/// (qlayout.cpp:1006-1095); `None` leaves that bound alone. `window` is `mw->isWindow()`;
+/// The minimum and maximum the layout gives the owner of top-level layout `layout`
+/// `None` leaves that bound alone. `window` is `mw->isWindow`;
 /// `explicit_min` and `current_min` are the owner's explicit minimum axes and current minimum,
 /// which `SetDefaultConstraint` keeps. The layout's total sizes are its own sizes: ferrokit widgets
-/// have no contents margins or menu bar to add (qlayout.cpp:615-678).
+/// have no contents margins or menu bar to add.
 pub(crate) fn size_constraint_bounds(
     layout: &dyn Layout,
     window: bool,
@@ -266,8 +266,8 @@ pub(crate) fn size_constraint_bounds(
     current_min: Size,
 ) -> (Option<Size>, Option<Size>) {
     use crate::layout::SizeConstraint::*;
-    // `QLayout::totalSizeHint`: a height-for-width layout's hint height is its height at the hint
-    // width (qlayout.cpp:648-650).
+    // the layout: a height-for-width layout's hint height is its height at the hint
+    // width.
     let total_size_hint = || {
         let hint = layout.size_hint();
         if layout.has_height_for_width() {
@@ -313,13 +313,13 @@ pub(crate) fn size_constraint_bounds(
     }
 }
 
-/// The bounding step of `QLayout::activate` (qlayout.cpp:996-1129) for `owner`'s top-level layout:
+/// The bounding step of the layout for `owner`'s top-level layout:
 /// the size constraint's minimum and maximum go through `set_minimum_size` / `set_maximum_size`
 /// (`set_fixed_size` when they are equal), which grow or shrink `owner`, and the explicit flags
 /// are put back afterwards, so the bounds stay the layout's. A widget without a parent is a window
 /// (`isWindow`). The root of a native [`Window`](crate::window::Window) is bounded by the window
 /// instead (`Window::sync_top_level_minimum`), since its size is the native window's. The holder of
-/// a nested layout is not an owner (`!topLevel`, qlayout.cpp:985-986).
+/// a nested layout is not an owner (`!topLevel`).
 pub fn apply_size_constraint<W: Widget + ?Sized>(owner: &W) {
     let window = owner.parent_widget().is_none();
     if window && owner.window_id().is_some() {
@@ -352,7 +352,7 @@ pub fn apply_size_constraint<W: Widget + ?Sized>(owner: &W) {
 }
 
 /// Sends `StyleChange` (`WidgetBase::style_changed`) to every widget below `children`, depth
-/// first: `QStyleSheetStyle::updateObjects` (qstylesheetstyle.cpp:2780).
+/// first: stylesheet resolution.
 ///
 /// A widget that is mutably borrowed is the one currently being driven; it is skipped, as
 /// `resolve_style` also stops at it. Its caller is the one changing it. A widget that is only
@@ -442,9 +442,9 @@ pub trait Widget: QObject + 'static {
         self.widget_base().max_size.get()
     }
 
-    /// `QWidget::setMinimumSize` (qwidget.cpp:4005-4028): stores the bound, marks each non-zero axis
-    /// explicit (qwidget.cpp:3971), runs `updateGeometry`, and grows the widget to the bound if it
-    /// is currently smaller. An unchanged bound is a no-op (qwidget.cpp:3967-3968).
+    /// the widget: stores the bound, marks each non-zero axis
+    /// explicit, runs `updateGeometry`, and grows the widget to the bound if it
+    /// is currently smaller. An unchanged bound is a no-op.
     fn set_minimum_size(&self, size: Size) {
         let min = Size::new(
             size.width.clamp(0, WIDGET_SIZE_MAX),
@@ -468,8 +468,8 @@ pub trait Widget: QObject + 'static {
         }
     }
 
-    /// `QWidget::setMaximumSize` (qwidget.cpp:4065-4087): stores the bound (negatives clamp to 0),
-    /// marks each bounded axis explicit (qwidget.cpp:4053-4054), runs `updateGeometry`, and shrinks
+    /// the widget: stores the bound (negatives clamp to 0),
+    /// marks each bounded axis explicit, runs `updateGeometry`, and shrinks
     /// the widget to the bound if it is currently larger. An unchanged bound is a no-op.
     fn set_maximum_size(&self, size: Size) {
         let max = Size::new(
@@ -495,14 +495,14 @@ pub trait Widget: QObject + 'static {
         }
     }
 
-    /// `QWidget::setFixedSize` (qwidget.cpp:4155-4170): sets the minimum and maximum to `size` and
+    /// the widget: sets the minimum and maximum to `size` and
     /// resizes to it. The size policy is not changed.
     fn set_fixed_size(&self, size: Size) {
         self.set_minimum_size(size);
         self.set_maximum_size(size);
     }
 
-    /// `QWidget::hasHeightForWidth` (qwidget.cpp:10495-10499): the layout's answer when the widget
+    /// the widget: the layout's answer when the widget
     /// has a layout, else the size policy's `heightForWidth` flag.
     fn has_height_for_width(&self) -> bool {
         match self.widget_base().layout.borrow().as_ref() {
@@ -511,7 +511,7 @@ pub trait Widget: QObject + 'static {
         }
     }
 
-    /// `QWidget::heightForWidth` (qwidget.cpp:10482-10487): the layout's answer when the widget has
+    /// the widget: the layout's answer when the widget has
     /// a layout, else -1.
     fn height_for_width(&self, width: i32) -> i32 {
         match self.widget_base().layout.borrow().as_ref() {
@@ -524,12 +524,12 @@ pub trait Widget: QObject + 'static {
         self.widget_base().size_policy()
     }
 
-    /// `QWidget::setSizePolicy`: stores the policy and, if it changed, runs `updateGeometry`.
+    /// the widget: stores the policy and, if it changed, runs `updateGeometry`.
     fn set_size_policy(&self, policy: QSizePolicy) {
         self.widget_base().set_size_policy(policy);
     }
 
-    /// `QWidget::updateGeometry`: this widget's size hint or policy changed, so the parent's
+    /// the widget: this widget's size hint or policy changed, so the parent's
     /// layout has to run again.
     fn update_geometry(&self) {
         self.widget_base().update_geometry();
@@ -538,7 +538,7 @@ pub trait Widget: QObject + 'static {
 
     fn set_visible(&self, visible: bool);
 
-    /// The signal (`QMenu::aboutToShow` / `aboutToHide`) a change to `visible` announces before it
+    /// The signal (the menu / `aboutToHide`) a change to `visible` announces before it
     /// takes effect. `set_widget_visible` emits it with no widget borrowed, so a slot may use the
     /// widget; `set_visible` then does not emit it again.
     fn announce_visibility(&self, _visible: bool) -> Option<ferrokit_core::signal::Signal<()>> {
@@ -546,14 +546,14 @@ pub trait Widget: QObject + 'static {
     }
     fn is_enabled(&self) -> bool;
 
-    /// `QWidget::update()`. Call it on the widget's own thread only: the widget is not `Sync`
+    /// the widget. Call it on the widget's own thread only: the widget is not `Sync`
     /// and `update` touches non-atomic state (see [`WidgetBase::update_rect`]), so calling it
     /// concurrently from another thread is not safe. To request a repaint from another thread,
     /// post an `EventKind::UpdateRequest` to the widget's thread with
     /// `ferrokit_core::event_loop::post_event_to_thread`; no dedicated cross-thread update API
     /// exists yet.
     fn update(&self);
-    /// `QWidget::update(const QRect &)` (`qwidget.cpp:11340`).
+    /// the widget.
     fn update_rect(&self, rect: Rect) {
         self.widget_base().update_rect(rect);
     }
@@ -575,8 +575,8 @@ pub trait Widget: QObject + 'static {
 
     fn set_layout(&mut self, _layout: Box<dyn Layout>) {}
 
-    /// `QWidget::isActiveWindow` (qwidget.cpp:6967): the window this widget belongs to is
-    /// `QApplication::activeWindow()`. A widget tree that belongs to no `Window` is not.
+    /// the widget: the window this widget belongs to is
+    /// the widget application. A widget tree that belongs to no `Window` is not.
     fn is_active_window(&self) -> bool {
         let mut id = self.window_id();
         let mut parent = self.parent_widget();
@@ -593,7 +593,7 @@ pub trait Widget: QObject + 'static {
         id.is_some() && id == crate::application::Application::active_window()
     }
 
-    /// `QLayout::activate` on this widget's top-level layout (qlayout.cpp:980-1133): the layout's
+    /// the layout on this widget's top-level layout: the layout's
     /// size constraint bounds this widget first ([`apply_size_constraint`]), then the layout runs on
     /// the resulting rectangle. Child widgets with layouts follow.
     fn update_layout(&self) {
@@ -630,7 +630,7 @@ pub trait Widget: QObject + 'static {
         }
     }
 
-    /// Virtual paint event handler (`QWidget::paintEvent` equivalent).
+    /// Virtual paint event handler (the widget equivalent).
     ///
     /// Called when the widget needs to repaint its content.
     /// The painter is pre-translated to the widget's local coordinates `(0, 0)`.
@@ -638,14 +638,14 @@ pub trait Widget: QObject + 'static {
 
     /// The part of this widget (its own coordinates) inside which its children are drawn; `None`
     /// is the whole widget. A scroll area returns its viewport: `QScrollArea::setWidget`
-    /// reparents the content to the viewport (qscrollarea.cpp:242-243), so it paints clipped to
-    /// it (`QWidgetPrivate::clipRect`, qwidget.cpp:1904-1922).
+    /// reparents the content to the viewport, so it paints clipped to
+    /// it (widget internals).
     fn children_clip_rect(&self) -> Option<Rect> {
         None
     }
 
     /// Paints after the children, on top of them. A scroll area draws its scroll bars here: they
-    /// are siblings of the viewport created after it (qabstractscrollarea.cpp:254, 258, 266), so
+    /// are siblings of the viewport created after it (258, 266), so
     /// they stack above it.
     fn paint_over_children(&mut self, _painter: &mut Painter) {}
 
@@ -663,13 +663,13 @@ pub trait Widget: QObject + 'static {
 
     fn resize_event(&self, _new_size: Size, _old_size: Size) {}
 
-    /// `QWidget::showEvent`: the widget was shown (`Show`, sent for `set_widget_visible(true)`,
+    /// the widget: the widget was shown (`Show`, sent for `set_widget_visible(true)`,
     /// for a window shown with its children, and for the children of a window or widget that is
     /// shown). Runs with the widget borrowed mutably; `QObject::event` of a widget that handles
     /// events itself calls it for `EventKind::Show`.
     fn show_event(&mut self) {}
 
-    /// `QWidget::hideEvent`: the widget was hidden (`Hide`), by itself or because its parent or
+    /// the widget: the widget was hidden (`Hide`), by itself or because its parent or
     /// window was hidden. Runs with the widget borrowed mutably; `QObject::event` of a widget
     /// that handles events itself calls it for `EventKind::Hide`.
     fn hide_event(&mut self) {}
@@ -684,7 +684,7 @@ pub trait Widget: QObject + 'static {
     }
 
     /// Whether this focus widget takes the Tab/Shift+Tab/Backtab key press `key`/`modifiers`
-    /// itself instead of letting it move the focus. Qt handles Tab inside `QWidget::event`, which
+    /// itself instead of letting it move the focus. Qt handles Tab inside the widget, which
     /// a widget can override (`QKeySequenceEdit::event` does). The default is `false`.
     fn wants_tab_key(&self, _key: u32, _modifiers: u32) -> bool {
         false
@@ -700,7 +700,7 @@ pub trait Widget: QObject + 'static {
         AccessibleRole::Custom
     }
 
-    /// `QWidget::accessibleName`, falling back to the object name.
+    /// the widget, falling back to the object name.
     fn accessible_name(&self) -> String {
         let explicit = self.widget_base().accessible_name.borrow();
         if explicit.is_empty() {
@@ -710,17 +710,17 @@ pub trait Widget: QObject + 'static {
         }
     }
 
-    /// `QWidget::setAccessibleName`.
+    /// the widget.
     fn set_accessible_name(&self, name: &str) {
         *self.widget_base().accessible_name.borrow_mut() = name.to_owned();
     }
 
-    /// `QWidget::accessibleDescription`.
+    /// the widget.
     fn accessible_description(&self) -> String {
         self.widget_base().accessible_description.borrow().clone()
     }
 
-    /// `QWidget::setAccessibleDescription`.
+    /// the widget.
     fn set_accessible_description(&self, description: &str) {
         *self.widget_base().accessible_description.borrow_mut() = description.to_owned();
     }
@@ -753,10 +753,10 @@ pub trait Widget: QObject + 'static {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 
-    /// `QWidget::setStyleSheet`: the sheet applies to this widget and its subtree, so a
+    /// the widget: the sheet applies to this widget and its subtree, so a
     /// `StyleChange` (repaint, `updateGeometry`, own layout invalid) goes to this widget and to
-    /// every descendant, as `QStyleSheetStyle::repolish(w)` does (`updateObjects`,
-    /// qstylesheetstyle.cpp:2780).
+    /// every descendant, as stylesheet resolution does (`updateObjects`,
+    /// ).
     fn set_style_sheet(&self, qss: &str) {
         self.widget_base().set_style_sheet(qss);
         // This widget gets its StyleChange through `&self`, so only its filters see it here (the
@@ -790,12 +790,12 @@ pub trait Widget: QObject + 'static {
         self.widget_base().property(name)
     }
 
-    /// `QWidget::toolTip`: the text shown when the cursor rests on the widget. Empty means none.
+    /// the widget: the text shown when the cursor rests on the widget. Empty means none.
     fn tool_tip(&self) -> String {
         self.widget_base().tool_tip.borrow().clone()
     }
 
-    /// `QWidget::setToolTip` (qwidget.cpp:11793-11800): stores the text, then always sends
+    /// the widget: stores the text, then always sends
     /// `ToolTipChange`, even when the text is unchanged. The event goes through the object
     /// filters and then [`event`](QObject::event) like `FontChange` does in `Button::set_font`,
     /// and needs `&mut self` for that, so no shared borrow of the widget is alive while it runs.
@@ -807,7 +807,7 @@ pub trait Widget: QObject + 'static {
         notify_borrowed(self, &mut Event::new(EventKind::ToolTipChange));
     }
 
-    /// `QWidget::toolTipDuration`: how long the tip stays, in ms; -1 (the default) derives it from
+    /// the widget: how long the tip stays, in ms; -1 (the default) derives it from
     /// the text length.
     fn tool_tip_duration(&self) -> i32 {
         self.widget_base().tool_tip_duration.get()
@@ -818,7 +818,7 @@ pub trait Widget: QObject + 'static {
     }
 
     /// `Qt::WA_AlwaysShowToolTips` on a window widget: its widgets show tool tips even when the
-    /// window is not the active one (`QApplication::event`, qapplication.cpp:1710-1735).
+    /// window is not the active one (the widget application).
     fn always_show_tool_tips(&self) -> bool {
         self.widget_base().always_show_tool_tips.get()
     }
@@ -826,27 +826,27 @@ pub trait Widget: QObject + 'static {
         self.widget_base().always_show_tool_tips.set(on);
     }
 
-    /// `QWidget::testAttribute` (`qwidget.cpp:11431-11445`).
+    /// the widget.
     fn test_attribute(&self, attr: WidgetAttribute) -> bool {
         self.widget_base().test_attribute(attr)
     }
 
-    /// `QWidget::setAttribute` (`qwidget.cpp:11432-11480`).
+    /// the widget.
     fn set_attribute(&self, attr: WidgetAttribute, on: bool) {
         self.widget_base().set_attribute(attr, on);
     }
 
-    /// `QWidget::acceptDrops` (`testAttribute(Qt::WA_AcceptDrops)`).
+    /// the widget (`testAttribute(Qt::WA_AcceptDrops)`).
     fn accept_drops(&self) -> bool {
         self.widget_base().accept_drops()
     }
 
-    /// `QWidget::setAcceptDrops` (`setAttribute(Qt::WA_AcceptDrops, on)`).
+    /// the widget (`setAttribute(Qt::WA_AcceptDrops, on)`).
     fn set_accept_drops(&self, on: bool) {
         self.widget_base().set_accept_drops(on);
     }
 
-    /// `QWidget::cursor` (qwidget.cpp:4972-4982): the widget's own cursor, else its parent's, else
+    /// the widget: the widget's own cursor, else its parent's, else
     /// the arrow for a window. A parent that is mutably borrowed right now reads as the arrow.
     fn cursor(&self) -> CursorShape {
         let base = self.widget_base();
@@ -862,7 +862,7 @@ pub trait Widget: QObject + 'static {
         }
     }
 
-    /// `QWidget::setCursor` (qwidget.cpp:4984-4998): the pointer takes this shape over the widget
+    /// the widget: the pointer takes this shape over the widget
     /// (and over its children without a cursor of their own); when the pointer is over the
     /// widget now the window shows it at once. Sends `CursorChange` to the widget's event
     /// filters; the widget's own `event` needs `&mut` and does not see it, as with
@@ -875,7 +875,7 @@ pub trait Widget: QObject + 'static {
         filters_consume(self.object_data(), &mut Event::new(EventKind::CursorChange));
     }
 
-    /// `QWidget::unsetCursor` (qwidget.cpp:5007-5018): the widget uses its parent's cursor again.
+    /// the widget: the widget uses its parent's cursor again.
     fn unset_cursor(&self) {
         let base = self.widget_base();
         base.cursor.set(None);
@@ -886,13 +886,13 @@ pub trait Widget: QObject + 'static {
         filters_consume(self.object_data(), &mut Event::new(EventKind::CursorChange));
     }
 
-    /// `QWidget::mask`: the region set by [`Widget::set_mask`], in widget coordinates; empty when
-    /// the widget has no mask (`qwidget.cpp:10246`).
+    /// the widget: the region set by [`Widget::set_mask`], in widget coordinates; empty when
+    /// the widget has no mask.
     fn mask(&self) -> Region {
         self.widget_base().mask()
     }
 
-    /// `QWidget::setMask(const QRegion &)` (`qwidget.cpp:13027-13077`): only the parts of the widget
+    /// the widget: only the parts of the widget
     /// inside `region` are visible, receive mouse events and are painted. An empty region
     /// removes the mask. On a window's root widget the mask is a real window region
     /// (`QWindow::setMask`, `QWindowsWindow::setMask`: `SetWindowRgn` on Windows), and the content
@@ -901,31 +901,31 @@ pub trait Widget: QObject + 'static {
         self.widget_base().set_mask(region);
     }
 
-    /// `QWidget::clearMask` (`qwidget.cpp:13123-13129`).
+    /// the widget.
     fn clear_mask(&self) {
         if self.widget_base().has_mask() {
             self.widget_base().set_mask(&Region::new());
         }
     }
 
-    /// `QWidget::underMouse`: the cursor is over this widget or a child of it (`WA_UnderMouse`).
+    /// the widget: the cursor is over this widget or a child of it (`WA_UnderMouse`).
     fn under_mouse(&self) -> bool {
         self.widget_base().under_mouse.get()
     }
 
-    /// `QWidget::raise`: puts the widget on top of its siblings. On a window (a widget that is a
+    /// the widget: puts the widget on top of its siblings. On a window (a widget that is a
     /// window's root) it puts the window above the other top-level windows in the window system's
     /// stacking order, without activating it ([`activate_window`](Self::activate_window)).
     fn raise(&self) {
         restack(self, true);
     }
 
-    /// `QWidget::lower`: puts the widget below its siblings.
+    /// the widget: puts the widget below its siblings.
     fn lower(&self) {
         restack(self, false);
     }
 
-    /// `QWidget::activateWindow`: asks the window system to make the window this widget is in the
+    /// the widget: asks the window system to make the window this widget is in the
     /// active one. Nothing happens while the window is hidden or for a widget in no window. The
     /// window system decides: on Windows the foreground lock lets only the foreground process take
     /// the foreground, so for a background process this can do no more than flash the window's
@@ -937,8 +937,8 @@ pub trait Widget: QObject + 'static {
         }
     }
 
-    /// `QWidget::ensurePolished`: sends `Polish` once, then polishes the children, then tells the
-    /// parent with `ChildPolished` (qwidget.cpp:10209-10235). A child that is borrowed right now
+    /// the widget: sends `Polish` once, then polishes the children, then tells the
+    /// parent with `ChildPolished`. A child that is borrowed right now
     /// is skipped; it polishes itself when asked again.
     fn ensure_polished(&self) {
         let base = self.widget_base();
@@ -969,7 +969,7 @@ pub trait Widget: QObject + 'static {
         }
     }
 
-    /// `QWidget::isAncestorOf`: `child` is a descendant of this widget (not the widget itself).
+    /// the widget: `child` is a descendant of this widget (not the widget itself).
     fn is_ancestor_of(&self, child: &dyn Widget) -> bool {
         let me = self.id();
         let mut parent = child.parent_widget().and_then(|p| p.upgrade());
@@ -986,32 +986,32 @@ pub trait Widget: QObject + 'static {
         false
     }
 
-    /// `QWidget::mapToParent`.
+    /// the widget.
     fn map_to_parent(&self, pos: Point) -> Point {
         let g = self.geometry();
         Point::new(pos.x + g.x, pos.y + g.y)
     }
 
-    /// `QWidget::mapFromParent`.
+    /// the widget.
     fn map_from_parent(&self, pos: Point) -> Point {
         let g = self.geometry();
         Point::new(pos.x - g.x, pos.y - g.y)
     }
 
-    /// `QWidget::mapToGlobal`: through every ancestor, then the client origin of the native
+    /// the widget: through every ancestor, then the client origin of the native
     /// window. A widget not in a shown window maps relative to its tree root.
     fn map_to_global(&self, pos: Point) -> Point {
         let (origin, offset) = tree_origin(self);
         Point::new(pos.x + offset.x + origin.x, pos.y + offset.y + origin.y)
     }
 
-    /// `QWidget::mapFromGlobal`.
+    /// the widget.
     fn map_from_global(&self, pos: Point) -> Point {
         let (origin, offset) = tree_origin(self);
         Point::new(pos.x - offset.x - origin.x, pos.y - offset.y - origin.y)
     }
 
-    /// `QWidget::mapTo` (qwidget.cpp:4218-4236): `pos` in the coordinates of `ancestor`, which has
+    /// the widget: `pos` in the coordinates of `ancestor`, which has
     /// to be this widget or one of its parents (`mapTo(this)` is `pos`). Without such a parent
     /// the walk ends at the top-level widget, as in Qt, which warns.
     ///
@@ -1039,7 +1039,7 @@ pub trait Widget: QObject + 'static {
         p
     }
 
-    /// `QWidget::mapFrom` (qwidget.cpp:4252-4270): the inverse of [`map_to`](Self::map_to).
+    /// the widget: the inverse of [`map_to`](Self::map_to).
     fn map_from(&self, ancestor: &WidgetRef, pos: Point) -> Point {
         let parent = self.parent_widget().and_then(|w| w.upgrade());
         if !in_parent_chain(parent.clone(), ancestor) {
@@ -1061,31 +1061,31 @@ pub trait Widget: QObject + 'static {
         p
     }
 
-    /// `QWidget::grabMouse`: the widget gets every mouse event of its window until
+    /// the widget: the widget gets every mouse event of its window until
     /// `release_mouse`, wherever the cursor is; the window grabs the mouse from the window system
     /// as well (`SetCapture` on Windows). The previous grabber lets go first.
     fn grab_mouse(&self) {
         grab_mouse_for(self, None);
     }
 
-    /// `QWidget::grabMouse(const QCursor &)`: like [`grab_mouse`](Self::grab_mouse), and `cursor` is
+    /// the widget: like [`grab_mouse`](Self::grab_mouse), and `cursor` is
     /// the application override cursor until the grab is released.
     fn grab_mouse_with_cursor(&self, cursor: CursorShape) {
         grab_mouse_for(self, Some(cursor));
     }
 
-    /// `QWidget::releaseMouse`: a no-op when this widget does not hold the grab.
+    /// the widget: a no-op when this widget does not hold the grab.
     fn release_mouse(&self) {
         release_mouse_for(self);
     }
 
-    /// `QWidget::mouseGrabber() == this`.
+    /// the widget.
     fn is_mouse_grabber(&self) -> bool {
         MOUSE_GRABBER.with(|g| g.get()) == Some(self.id())
     }
 }
 
-/// The `pos`, `size` and `geometry` properties `QPropertyAnimation` drives (`QWidget::pos`,
+/// The `pos`, `size` and `geometry` properties `QPropertyAnimation` drives (the widget,
 /// `size`, `geometry`), as a `QObject::property` would read them.
 pub fn widget_property<W: Widget + ?Sized>(
     w: &W,
@@ -1101,7 +1101,7 @@ pub fn widget_property<W: Widget + ?Sized>(
     }
 }
 
-/// Writes `pos` (`QWidget::move`), `size` (`resize`) or `geometry` (`setGeometry`). Returns
+/// Writes `pos` (the widget), `size` (`resize`) or `geometry` (`setGeometry`). Returns
 /// false for any other name or a value of the wrong type, so the caller falls through to the
 /// default `QObject::setProperty`.
 pub fn set_widget_property<W: Widget + ?Sized>(
@@ -1147,7 +1147,7 @@ macro_rules! widget_object_properties {
 pub(crate) use widget_object_properties;
 
 impl dyn Widget {
-    /// Runs `f` on the installed layout when it is a `L` (`QWidget::layout()` plus a downcast).
+    /// Runs `f` on the installed layout when it is a `L` (the widget plus a downcast).
     /// Takes `&self`, so it works on a widget that is only shared; `None` when there is no layout,
     /// it is another type, or it is already being mutated (a layout handler running).
     pub fn with_layout_as<L: Layout, R>(&self, f: impl FnOnce(&mut L) -> R) -> Option<R> {
@@ -1155,7 +1155,7 @@ impl dyn Widget {
         layout.as_any_mut().downcast_mut::<L>().map(f)
     }
 
-    /// `with_layout_as` for a `QBoxLayout` (`insertWidget`, `setDirection`, `takeAt`, ...).
+    /// `with_layout_as` for a `BoxLayout` (`insertWidget`, `setDirection`, `takeAt`,...).
     pub fn with_box_layout<R>(
         &self,
         f: impl FnOnce(&mut crate::layout::BoxLayout) -> R,
@@ -1165,17 +1165,17 @@ impl dyn Widget {
 }
 
 thread_local! {
-    /// `QWidgetPrivate::mouseGrabber`: the widget that called `grab_mouse`.
+    /// widget internals: the widget that called `grab_mouse`.
     static MOUSE_GRABBER: Cell<Option<ObjectId>> = const { Cell::new(None) };
 }
 
-/// The widget holding the mouse grab (`QWidget::mouseGrabber`), if any.
+/// The widget holding the mouse grab (the widget), if any.
 pub fn mouse_grabber_id() -> Option<ObjectId> {
     MOUSE_GRABBER.with(|g| g.get())
 }
 
 thread_local! {
-    /// `mouseGrabWithCursor` (qwidget.cpp:12641): the grab was made with `grab_mouse_with_cursor`,
+    /// `mouseGrabWithCursor`: the grab was made with `grab_mouse_with_cursor`,
     /// so releasing it restores the override cursor.
     static MOUSE_GRAB_WITH_CURSOR: Cell<bool> = const { Cell::new(false) };
     /// The window that grabbed the mouse for the grabber, so a grabber destroyed without
@@ -1183,7 +1183,7 @@ thread_local! {
     static MOUSE_GRAB_WINDOW: Cell<Option<ObjectId>> = const { Cell::new(None) };
 }
 
-/// `QWidget::mouseGrabber`: the widget holding the mouse grab, if it is in a window's tree.
+/// the widget: the widget holding the mouse grab, if it is in a window's tree.
 pub fn mouse_grabber() -> Option<WidgetRef> {
     let id = mouse_grabber_id()?;
     crate::window::window_roots()
@@ -1191,7 +1191,7 @@ pub fn mouse_grabber() -> Option<WidgetRef> {
         .find_map(|root| crate::focus::find_widget_by_id(&root, id))
 }
 
-/// `grabMouseForWidget` (qwidget.cpp:12650-12670): the previous grabber lets go first, an optional
+/// `grabMouseForWidget`: the previous grabber lets go first, an optional
 /// override cursor is pushed, the window grabs the mouse (`QWindow::setMouseGrabEnabled`) and the
 /// widget becomes the grabber. A widget that is in no window records the grab but has no window to
 /// grab with.
@@ -1211,7 +1211,7 @@ fn grab_mouse_for<W: Widget + ?Sized>(w: &W, cursor: Option<CursorShape>) {
     MOUSE_GRABBER.with(|g| g.set(Some(w.id())));
 }
 
-/// `releaseMouseGrabOfWidget` (qwidget.cpp:12672-12686) for the widget that holds the grab; any
+/// `releaseMouseGrabOfWidget` for the widget that holds the grab; any
 /// other widget does nothing.
 pub(crate) fn release_mouse_for<W: Widget + ?Sized>(w: &W) {
     release_grab_of_id(w.id());
@@ -1236,7 +1236,7 @@ pub(crate) fn release_grab_of_id(id: ObjectId) {
     }
 }
 
-/// `QWidget::hide` of `widget` (qwidget.cpp:8198-8260 hides the native window of the grab): a mouse
+/// the widget of `widget` ( hides the native window of the grab): a mouse
 /// grab held by `widget` or by a widget below it ends, because a hidden widget receives no mouse
 /// events and Windows drops the capture of a hidden window.
 pub(crate) fn release_grab_in_subtree(widget: &WidgetRef) {
@@ -1328,13 +1328,13 @@ fn tree_origin<W: Widget + ?Sized>(w: &W) -> (Point, Point) {
     (origin, offset)
 }
 
-/// `QWidget::raise` / `lower` (qwidget.cpp:12036-12066): moves the widget to the end (or start) of
+/// the widget / `lower`: moves the widget to the end (or start) of
 /// its parent's child list, repaints it and sends `ZOrderChange`. A widget without a parent is a
 /// window root: raising it raises the native window, and nothing else changes here.
 fn restack<W: Widget + ?Sized>(w: &W, to_top: bool) {
     let Some(parent) = w.parent_widget().and_then(|p| p.upgrade()) else {
         // A window root has no siblings: raising it orders its window among the top-level windows
-        // (`QWidget::raise` -> `QPlatformWindow::raise`). Lowering a window is not offered.
+        // (the widget -> `QPlatformWindow::raise`). Lowering a window is not offered.
         if to_top && let Some(window) = crate::window::window_id_if_root(w) {
             crate::window::raise_window(window);
         }
@@ -1428,7 +1428,7 @@ pub struct WidgetBase {
     pub has_focus: Cell<bool>,
     /// The focus slot of the window that last gave this widget focus (`FocusManager`).
     pub(crate) focus_state: RefCell<Weak<crate::focus::FocusState>>,
-    /// `QWidgetPrivate::focus_child`: the descendant that last got focus (`QWidget::focusWidget`).
+    /// widget internals: the descendant that last got focus (the widget).
     pub(crate) focus_child: RefCell<WidgetWeak>,
     pub size_policy: Cell<QSizePolicy>,
     pub style_sheet: RefCell<Option<QStyleSheetStyle>>,
@@ -1438,11 +1438,11 @@ pub struct WidgetBase {
     pub always_show_tool_tips: Cell<bool>,
     /// `WA_MouseTracking`: buttonless mouse moves are delivered to this widget.
     pub mouse_tracking: Cell<bool>,
-    /// `WA_TransparentForMouseEvents` (`QWidget::testAttribute(Qt::WA_TransparentForMouseEvents)`).
+    /// `WA_TransparentForMouseEvents` (the widget).
     pub transparent_for_mouse_events: Cell<bool>,
-    /// `WA_NoMousePropagation` (`QWidget::testAttribute(Qt::WA_NoMousePropagation)`).
+    /// `WA_NoMousePropagation` (the widget).
     pub no_mouse_propagation: Cell<bool>,
-    /// `QWidgetPrivate::extra->mask`; empty is no mask (`extra->hasMask = !mask.isEmpty()`).
+    /// widget internals; empty is no mask (`extra->hasMask = !mask.isEmpty`).
     mask: RefCell<Region>,
     /// The window region of this widget as a window's root is not what the platform window holds
     /// yet (the platform window was borrowed when the mask was set, or the root replaced the
@@ -1450,13 +1450,13 @@ pub struct WidgetBase {
     mask_stale: Cell<bool>,
     /// `WA_MouseNoMask`: mouse events are delivered over the whole widget, masked or not.
     mouse_no_mask: Cell<bool>,
-    /// `QWidget::minimumSize` / `maximumSize` (`setMinimumSize`, `setMaximumSize`, and the owner's
+    /// effective minimum size / `maximumSize` (`setMinimumSize`, `setMaximumSize`, and the owner's
     /// layout through its size constraint).
     pub min_size: Cell<Size>,
     pub max_size: Cell<Size>,
-    /// `QWidgetPrivate::extra->explicitMinSize` / `explicitMaxSize` (qwidget_p.h:156-157) as
+    /// widget internals / `explicitMaxSize` as
     /// (horizontal, vertical): the axes the user bounded. A bound the owner's layout sets is not
-    /// explicit (qlayout.cpp:1126-1129).
+    /// explicit.
     pub explicit_min: Cell<(bool, bool)>,
     pub explicit_max: Cell<(bool, bool)>,
     /// The deferral epoch of `LayoutScheduler` this tree root last scanned for layouts left dirty
@@ -1465,20 +1465,19 @@ pub struct WidgetBase {
     /// The last `remove_child` met a child that is borrowed, so it could not tell whether that
     /// child was the one to remove. The caller that has the parent handle retries later.
     pub(crate) removal_incomplete: Cell<bool>,
-    /// `WA_UnderMouse`: toggled by `Enter` / `Leave` delivery (qapplication.cpp:3246-3254).
+    /// `WA_UnderMouse`: toggled by `Enter` / `Leave` delivery.
     pub(crate) under_mouse: Cell<bool>,
-    /// `QWidgetPrivate::polished`: `ensure_polished` already ran.
+    /// widget internals: `ensure_polished` already ran.
     pub(crate) polished: Cell<bool>,
-    /// `QWidget::accessibleName` / `accessibleDescription`.
+    /// the widget / `accessibleDescription`.
     pub(crate) accessible_name: RefCell<String>,
     pub(crate) accessible_description: RefCell<String>,
-    /// `QWidgetPrivate::extra->curs`: the cursor `set_cursor` stored (`QWidget::setCursor`).
+    /// widget internals: the cursor `set_cursor` stored (the widget).
     pub(crate) cursor: Cell<Option<CursorShape>>,
     /// `Qt::WA_SetCursor`: the widget has a cursor of its own. Set by `set_cursor`; `unset_cursor`
     /// clears it, except on a window, which keeps it and then shows the arrow
-    /// (qwidget.cpp:5011-5013).
     pub(crate) cursor_attr: Cell<bool>,
-    /// `Qt::WA_AcceptDrops` (`QWidget::acceptDrops` / `setAcceptDrops`).
+    /// `Qt::WA_AcceptDrops` (the widget / `setAcceptDrops`).
     pub(crate) accept_drops: Cell<bool>,
 }
 
@@ -1549,7 +1548,7 @@ impl WidgetBase {
     pub fn set_geometry(&self, rect: Rect) {
         let min = self.min_size.get();
         let max = self.max_size.get();
-        // `QWidgetPrivate::setGeometry_sys` (qwidget.cpp:7301-7304):
+        // widget internals:
         // Width and height are first capped at the maximum, then raised to the minimum.
         // Minimum wins if min > max.
         let width = rect.width.min(max.width).max(min.width);
@@ -1588,10 +1587,10 @@ impl WidgetBase {
     }
 
     /// Repaints the vacated footprint `old` (parent coordinates) of a visible widget that moved or
-    /// resized: the parent's dirty region gets it. `QWidgetPrivate::setGeometry_sys`
-    /// (qwidget.cpp:7297-7410) calls `moveRect` (:7380) or `invalidateBackingStore_resizeHelper`
+    /// resized: the parent's dirty region gets it. widget internals
+    /// calls `moveRect` (7380) or `invalidateBackingStore_resizeHelper`
     /// (:7382) on the old position; `moveRect` subtracts the new rect from the parent's region
-    /// (qwidgetrepaintmanager.cpp:411-419). Only the parent is invalidated. A parent that is
+    /// . Only the parent is invalidated. A parent that is
     /// mutably borrowed on the current stack is skipped; its own layout or update pass repaints it.
     pub fn invalidate_vacated_rect(&self, old: Rect) {
         if old.is_empty() || !self.is_visible_in_tree() {
@@ -1616,16 +1615,16 @@ impl WidgetBase {
         }
         if !visible {
             // `hide_sys` repaints the area the widget leaves while it still counts as visible
-            // (qwidget.cpp:8312-8319); once hidden, `update` does nothing.
+            // once hidden, `update` does nothing.
             self.update();
         }
         self.visible.set(visible);
-        // `QWidget::setVisible` invalidates the parent layout (qwidget.cpp:8465-8468); showing
+        // the widget invalidates the parent layout; showing
         // repaints the widget (`show_sys`).
         self.update_geometry();
     }
 
-    /// `QWidget::isVisible`: this widget and every ancestor are shown. An ancestor that is
+    /// the widget: this widget and every ancestor are shown. An ancestor that is
     /// mutably borrowed right now (it is driving this call) counts as shown.
     fn is_visible_in_tree(&self) -> bool {
         if !self.visible.get() {
@@ -1648,7 +1647,7 @@ impl WidgetBase {
         self.enabled.get()
     }
 
-    /// `QWidget::setMouseTracking` (`WA_MouseTracking`).
+    /// the widget (`WA_MouseTracking`).
     pub fn set_mouse_tracking(&self, on: bool) {
         self.mouse_tracking.set(on);
     }
@@ -1657,7 +1656,7 @@ impl WidgetBase {
         self.mouse_tracking.get()
     }
 
-    /// `QWidget::setAttribute(Qt::WA_TransparentForMouseEvents)`.
+    /// the widget.
     pub fn set_transparent_for_mouse_events(&self, on: bool) {
         self.transparent_for_mouse_events.set(on);
     }
@@ -1666,7 +1665,7 @@ impl WidgetBase {
         self.transparent_for_mouse_events.get()
     }
 
-    /// `QWidget::setAttribute(Qt::WA_NoMousePropagation)`.
+    /// the widget.
     pub fn set_no_mouse_propagation(&self, on: bool) {
         self.no_mouse_propagation.set(on);
     }
@@ -1675,27 +1674,27 @@ impl WidgetBase {
         self.no_mouse_propagation.get()
     }
 
-    /// `QWidget::acceptDrops` (`WA_AcceptDrops`).
+    /// the widget (`WA_AcceptDrops`).
     pub fn accept_drops(&self) -> bool {
         self.accept_drops.get()
     }
 
-    /// `QWidget::setAcceptDrops` (`WA_AcceptDrops`).
+    /// the widget (`WA_AcceptDrops`).
     pub fn set_accept_drops(&self, on: bool) {
         self.accept_drops.set(on);
     }
 
-    /// `QWidget::mask`.
+    /// the widget.
     pub fn mask(&self) -> Region {
         self.mask.borrow().clone()
     }
 
-    /// `QWidgetPrivate::extra->hasMask`.
+    /// widget internals.
     pub fn has_mask(&self) -> bool {
         !self.mask.borrow().is_empty()
     }
 
-    /// The mask half of `QWidgetPrivate::pointInsideRectAndMask` (`qwidget_p.h:895`): `pos`, in
+    /// The mask half of widget internals: `pos`, in
     /// widget coordinates, is inside the mask, or the widget has none or `WA_MouseNoMask` is set.
     pub fn mask_accepts(&self, pos: Point) -> bool {
         self.mouse_no_mask.get() || {
@@ -1704,9 +1703,9 @@ impl WidgetBase {
         }
     }
 
-    /// `QWidgetPrivate::pointInsideRectAndMask`: `pos`, in widget coordinates, is inside the
+    /// widget internals: `pos`, in widget coordinates, is inside the
     /// widget's rect and, unless `WA_MouseNoMask` is set, inside its mask. Mouse hit testing
-    /// goes through it (`QWidget::childAt`).
+    /// goes through it (the widget).
     pub fn point_inside_rect_and_mask(&self, pos: Point) -> bool {
         let g = self.geometry.get();
         Rect::new(0, 0, g.width, g.height).contains(pos) && self.mask_accepts(pos)
@@ -1720,7 +1719,7 @@ impl WidgetBase {
         self.window_id.get()
     }
 
-    /// `QWidget::setMask(const QRegion &)` (`qwidget.cpp:13027-13077`).
+    /// the widget.
     pub fn set_mask(&self, region: &Region) {
         let old = {
             let mut mask = self.mask.borrow_mut();
@@ -1791,7 +1790,7 @@ impl WidgetBase {
         self.mask_stale.set(true);
     }
 
-    /// `QWidget::testAttribute`.
+    /// the widget.
     pub fn test_attribute(&self, attr: WidgetAttribute) -> bool {
         match attr {
             WidgetAttribute::Disabled => !self.enabled.get(),
@@ -1807,7 +1806,7 @@ impl WidgetBase {
         }
     }
 
-    /// `QWidget::setAttribute`.
+    /// the widget.
     pub fn set_attribute(&self, attr: WidgetAttribute, on: bool) {
         match attr {
             WidgetAttribute::Disabled => {
@@ -1847,7 +1846,7 @@ impl WidgetBase {
     }
 
     /// QSS pseudo-states of the widget's state, as `pseudoClass(QStyle::State)` derives them
-    /// (qstylesheetstyle.cpp:1756-1773): `:enabled` and `:hover` only while enabled, `:disabled`
+    /// : `:enabled` and `:hover` only while enabled, `:disabled`
     /// otherwise, `:pressed` for a sunken widget and `:focus` while it has keyboard focus.
     pub fn style_pseudo_states<'a>(
         &self,
@@ -1872,7 +1871,7 @@ impl WidgetBase {
         &buf[..n]
     }
 
-    /// `QWidgetPrivate::setEnabled_helper`. Returns whether the state changed; `notices` collects
+    /// widget internals. Returns whether the state changed; `notices` collects
     /// the events to send once the widgets are released.
     fn set_enabled_helper(&self, enable: bool, notices: &mut Vec<EnabledNotice>) -> bool {
         let parent_disabled = self
@@ -1883,7 +1882,7 @@ impl WidgetBase {
             return false;
         }
         self.enabled.set(enable);
-        // Disabling the focus widget takes the focus away (qwidget.cpp:3442-3446). The flag and the
+        // Disabling the focus widget takes the focus away. The flag and the
         // window's focus id change now; the events follow in `set_widget_enabled` or, when it
         // could not send them, `FocusManager::process_pending`.
         if !enable
@@ -1916,7 +1915,7 @@ impl WidgetBase {
                 notices.push(EnabledNotice::Changed(child_ref.clone()));
             }
         }
-        // `QWidget::changeEvent(EnabledChange)` repaints (qwidget.cpp:9491-9492).
+        // the widget repaints.
         self.update();
         true
     }
@@ -1928,7 +1927,7 @@ impl WidgetBase {
         self.update_rect(Rect::new(0, 0, g.width, g.height));
     }
 
-    /// `QWidget::update(const QRect &)`: adds `rect` (widget coordinates) to the pending dirty
+    /// the widget: adds `rect` (widget coordinates) to the pending dirty
     /// region. Pending dirt accumulates; a smaller rect never replaces a larger pending one.
     ///
     /// Call it on the widget's own thread only. It reads and writes state that is not `Sync`
@@ -1938,7 +1937,7 @@ impl WidgetBase {
     /// widget's thread with `ferrokit_core::event_loop::post_event_to_thread`; no dedicated
     /// cross-thread update API exists yet.
     pub fn update_rect(&self, rect: Rect) {
-        // `QWidgetPrivate::update` ignores a widget that is not visible (qwidget.cpp:11367-11368).
+        // widget internals ignores a widget that is not visible.
         if !self.is_visible_in_tree() {
             return;
         }
@@ -2006,7 +2005,7 @@ impl WidgetBase {
         self.size_policy.get()
     }
 
-    /// `QWidget::setSizePolicy`: nothing happens when the policy is unchanged.
+    /// the widget: nothing happens when the policy is unchanged.
     pub fn set_size_policy(&self, policy: QSizePolicy) {
         if self.size_policy.get() == policy {
             return;
@@ -2015,7 +2014,7 @@ impl WidgetBase {
         self.update_geometry();
     }
 
-    /// `QWidget::updateGeometry` (`QWidgetPrivate::updateGeometry_helper`, qwidget.cpp:10571):
+    /// the widget (widget internals):
     /// asks the parent's layout to run again, since this widget's size hint or policy changed.
     /// A widget without a parent has no layout above it, so there is no request to make.
     ///
@@ -2028,7 +2027,7 @@ impl WidgetBase {
         self.update();
     }
 
-    /// What `QWidget::event` does for `StyleChange` / `FontChange` (qwidget.cpp:9502-9510):
+    /// What the widget does for `StyleChange` / `FontChange`:
     /// Repaint, geometry update and layout invalidation.
     pub fn style_changed(&self) {
         self.update_geometry();
@@ -2146,7 +2145,7 @@ impl WidgetBase {
 }
 
 impl Drop for WidgetBase {
-    /// A destroyed widget ends its mouse grab (`QWidget::~QWidget` -> `releaseMouse`).
+    /// A destroyed widget ends its mouse grab (the widget -> `releaseMouse`).
     fn drop(&mut self) {
         let id = self.object_data.id();
         release_grab_of_id(id);
@@ -2221,7 +2220,7 @@ impl EmptyWidget {
         self
     }
 
-    /// The style sheet rule of this widget as a plain `QWidget`, in the `:hover` state or not.
+    /// The style sheet rule of this widget as a plain a widget, in the `:hover` state or not.
     fn resolved_style(&self, hover: bool) -> crate::style::stylesheet::ResolvedStyle {
         let mut buf = [""; 4];
         let props = self.base.properties.borrow();
@@ -2236,7 +2235,7 @@ impl EmptyWidget {
     }
 
     /// `Enter` / `Leave` repaint the widget when a `:hover` rule changes how it looks
-    /// (`QWidget::event` HoverEnter/HoverLeave -> `update`, with `WA_Hover` set by the style).
+    /// (the widget HoverEnter/HoverLeave -> `update`, with `WA_Hover` set by the style).
     fn repaint_on_hover_change(&self) {
         let (on, off) = (self.resolved_style(true), self.resolved_style(false));
         if on.background_color != off.background_color
@@ -2254,7 +2253,7 @@ impl EmptyWidget {
     }
 
     /// Runs `handler` for every `Show` this widget receives (what overriding
-    /// `QWidget::showEvent` does). It runs with the widget borrowed mutably, so it must not use
+    /// the widget does). It runs with the widget borrowed mutably, so it must not use
     /// this widget; it may use others. It must not hide a widget whose own show or hide handler
     /// is running (two handlers hiding each other would borrow a widget twice and panic).
     pub fn set_show_handler<F: FnMut() + 'static>(&self, handler: F) {
@@ -2262,7 +2261,7 @@ impl EmptyWidget {
     }
 
     /// Runs `handler` for every `Hide` this widget receives (what overriding
-    /// `QWidget::hideEvent` does), whether the widget was hidden itself or with its parent or
+    /// the widget does), whether the widget was hidden itself or with its parent or
     /// window. It runs with the widget borrowed mutably, so it must not use this widget; it may
     /// use others. It must not hide a widget whose own show or hide handler is running (two
     /// handlers hiding each other would borrow a widget twice and panic).
@@ -2326,7 +2325,7 @@ impl QObject for EmptyWidget {
                 ..
             } => {
                 self.wheel_event(Point::new(*x, *y), *angle_delta_y, *modifiers);
-                // The default `wheel_event` does nothing, like `QWidget::wheelEvent`, which
+                // The default `wheel_event` does nothing, like the widget, which
                 // ignores the event so that it reaches the parent (a scroll area).
                 false
             }
@@ -2409,7 +2408,7 @@ impl Widget for EmptyWidget {
                 self.resize_event(new_size, old_size);
             }
             // A layout-owning child re-lays out its children when its size changes, as Qt's
-            // QLayout::widgetEvent does on Resize, when the layout is already activated (qlayout.cpp:528-530).
+            // QLayout::widgetEvent does on Resize, when the layout is already activated.
             // A parentless widget is a window root, which Window lays out itself (window.rs:859-860);
             // fitting it here as well ran that pass twice (test_layout_metric_caching aligned container).
             if let Some(mut layout) = self.layout_ref_mut()
@@ -2436,7 +2435,7 @@ impl Widget for EmptyWidget {
         self.base.min_size.get()
     }
 
-    /// `QWidget::minimumSizeHint` of a widget with a layout: the layout's minimum size.
+    /// the widget of a widget with a layout: the layout's minimum size.
     fn minimum_size_hint(&self) -> Size {
         if let Some(layout) = self.base.layout.borrow().as_ref() {
             layout.minimum_size()
@@ -2506,7 +2505,7 @@ impl Widget for EmptyWidget {
     fn set_parent_widget(&self, parent: Option<WidgetWeak>) {
         let has_parent = parent.is_some();
         *self.base.parent.borrow_mut() = parent;
-        // The owner margin depends on whether this widget is a window (`QLayoutPrivate::getMargin`).
+        // The owner margin depends on whether this widget is a window (default owner layout margin lookup).
         if let Some(mut layout) = self.layout_ref_mut() {
             layout.set_default_margin(owner_layout_margin(has_parent));
         }
@@ -2580,8 +2579,8 @@ impl Widget for EmptyWidget {
     }
 
     fn paint_event(&mut self, painter: &mut Painter) {
-        // A style sheet rule on a plain `QWidget` paints its background and border
-        // (`WA_StyledBackground`, qstylesheetstyle.cpp `drawPrimitive(PE_Widget)`).
+        // A style sheet rule on a plain a widget paints its background and border
+        // (`WA_StyledBackground`, `drawPrimitive(PE_Widget)`).
         let style = self.resolved_style(self.base.under_mouse.get());
         let border = style
             .border_width

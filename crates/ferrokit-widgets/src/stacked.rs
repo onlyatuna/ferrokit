@@ -14,11 +14,11 @@ pub struct StackedLayout {
     widgets: Vec<WidgetRef>,
     current_index: usize,
     dirty: bool,
-    /// `QLayoutPrivate::horizontalConstraint` / `verticalConstraint` (both axes alike).
+    /// `layout internals` / `verticalConstraint` (both axes alike).
     size_constraint: SizeConstraint,
     /// An item of another layout (`set_nested`).
     nested: bool,
-    /// `QLayoutPrivate::insideSpacing`: the explicit spacing, -1 when unset (qlayout.cpp:246-262).
+    /// `layout internals`: the explicit spacing, -1 when unset.
     spacing: i32,
 }
 
@@ -46,7 +46,7 @@ impl StackedLayout {
     }
 
     /// Inserts a widget at the specified index in the stack (`QStackedLayout::insertWidget`,
-    /// qstackedlayout.cpp:230-260): a page inserted at or before the current one keeps the current
+    /// ): a page inserted at or before the current one keeps the current
     /// page current, and a page that does not become current is hidden.
     pub fn insert_widget(&mut self, index: usize, widget: WidgetRef) {
         let changes = self.insert_state(index, widget);
@@ -54,7 +54,7 @@ impl StackedLayout {
     }
 
     /// Removes the widget at index from the stack (`QStackedLayout::takeAt`,
-    /// qstackedlayout.cpp:240-262): removing the current page shows its neighbour, removing an
+    /// ): removing the current page shows its neighbour, removing an
     /// earlier one keeps the current page current, and the removed page is hidden last.
     pub fn remove_widget(&mut self, index: usize) -> Option<WidgetRef> {
         let (removed, changes) = self.remove_state(index);
@@ -112,7 +112,6 @@ impl StackedLayout {
 
     /// `set_current_index` without the page switch (see `insert_state`): the old and the new
     /// page, for `switch_page`. `None` when `index` is out of range or already current
-    /// (qstackedlayout.cpp:295-297).
     pub(crate) fn set_current_state(
         &mut self,
         index: usize,
@@ -168,13 +167,13 @@ impl StackedLayout {
         self.widgets.get(self.current_index).cloned()
     }
 
-    /// `QLayout::setSpacing` (qlayout.cpp:257-262).
+    /// the layout.
     pub fn set_spacing(&mut self, spacing: i32) {
         self.spacing = spacing;
         self.update_layout();
     }
 
-    /// `QLayout::spacing` (qlayout.cpp:246-255).
+    /// the layout.
     pub fn spacing(&self) -> i32 {
         self.spacing
     }
@@ -209,10 +208,9 @@ impl Layout for StackedLayout {
         self.add_widget(widget);
     }
 
-    /// `QLayout::setAlignment`: finds the page, then does nothing visible, because
+    /// the layout: finds the page, then does nothing visible, because
     /// `QStackedLayout::setGeometry` gives the current page the whole rectangle with
     /// `widget->setGeometry(rect)` and never consults the item's alignment
-    /// (qstackedlayout.cpp:453-467).
     fn set_alignment(&mut self, widget: &WidgetRef, _alignment: crate::layout::Alignment) -> bool {
         self.widgets
             .iter()
@@ -244,7 +242,7 @@ impl Layout for StackedLayout {
         self.spacing()
     }
 
-    /// `QStackedLayout::sizeHint` (qstackedlayout.cpp:417-433): the component-wise maximum over
+    /// `QStackedLayout::sizeHint`: the component-wise maximum over
     /// every page, current or not; an `Ignored` axis counts as 0. The contents margins are not
     /// added.
     fn size_hint(&self) -> Size {
@@ -268,7 +266,7 @@ impl Layout for StackedLayout {
         page
     }
 
-    /// `QStackedLayout::minimumSize` (qstackedlayout.cpp:438-448): the maximum of `qSmartMinSize`
+    /// `QStackedLayout::minimumSize`: the maximum of `smart_min_size`
     /// over every page. The contents margins are not added.
     fn minimum_size(&self) -> Size {
         let mut page = Size::new(0, 0);
@@ -309,9 +307,9 @@ impl Layout for StackedLayout {
         }
     }
 
-    /// `QStackedLayout::setGeometry` (qstackedlayout.cpp:453-468), StackOne mode: only the current
+    /// `QStackedLayout::setGeometry`, StackOne mode: only the current
     /// page is placed, with `widget->setGeometry(rect)` on the whole rectangle. Contents margins are
-    /// not applied, other pages keep their geometry, and `QWidget::setGeometry` clamps the size to
+    /// not applied, other pages keep their geometry, and the widget clamps the size to
     /// the page's own minimum and maximum size.
     fn activate(&mut self) {
         if let Some((widget, rect)) = self.take_placement() {
@@ -330,7 +328,7 @@ pub(crate) fn apply_visibility(changes: Vec<(WidgetRef, bool)>) {
     }
 }
 
-/// The page switch of `QStackedLayout::setCurrentIndex` (qstackedlayout.cpp:302-336): when the
+/// The page switch of `QStackedLayout::setCurrentIndex`: when the
 /// focus is on `prev` it is cleared before `prev` is hidden, and once `next` is shown it moves
 /// into `next`, so it never leaves the stack.
 pub(crate) fn switch_page(prev: Option<&WidgetRef>, next: &WidgetRef) {

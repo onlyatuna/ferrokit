@@ -52,7 +52,7 @@ pub const FRAME_SHAPE_MASK: i32 = 0x000f;
 /// Mask selecting the shadow bits of a combined frame style (`QFrame::Shadow_Mask`).
 pub const FRAME_SHADOW_MASK: i32 = 0x00f0;
 
-/// Default style frame width used by `StyledPanel` (`QStyle::PM_DefaultFrameWidth`).
+/// Default style frame width used by `StyledPanel` (the style).
 pub const DEFAULT_STYLED_FRAME_WIDTH: i32 = 2;
 
 impl FrameShape {
@@ -461,7 +461,7 @@ impl Frame {
         self.relayout();
     }
 
-    /// Area inside the frame (`QWidget::contentsRect` for frames).
+    /// Area inside the frame (the widget for frames).
     pub fn contents_rect(&self) -> Rect {
         self.style.contents_rect(self.frame_rect())
     }
@@ -670,7 +670,7 @@ impl Widget for Frame {
     fn set_parent_widget(&self, parent: Option<WidgetWeak>) {
         let has_parent = parent.is_some();
         self.base.set_parent_widget(parent);
-        // The owner margin depends on whether this frame is a window (`QLayoutPrivate::getMargin`).
+        // The owner margin depends on whether this frame is a window (default owner layout margin lookup).
         if let Some(mut layout) = self.layout_ref_mut() {
             layout.set_default_margin(owner_layout_margin(has_parent));
         }

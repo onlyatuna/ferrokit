@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Qt Style Sheet (QSS) Engine matching `qtbase/src/widgets/styles/qstylesheetstyle.cpp`.
+//! Qt Style Sheet (QSS) Engine matching `reference.
 //!
 //! Provides cascading style resolution, specificity scoring, and resolved style metrics
 //! for widgets, labels, buttons, and progress bars.
@@ -50,7 +50,7 @@ impl ResolvedStyle {
     }
 
     /// Horizontal and vertical extent that `QRenderRule::boxSize` adds around a content size:
-    /// border plus padding on both sides of each axis (`qstylesheetstyle.cpp:1116-1121`).
+    /// border plus padding on both sides of each axis.
     pub fn box_extra(&self) -> (i32, i32) {
         let border = self.border_width.unwrap_or(0.0).max(0.0);
         let [pt, pr, pb, pl] = self.padding.unwrap_or([0.0; 4]);
@@ -60,8 +60,8 @@ impl ResolvedStyle {
         )
     }
 
-    /// `QWidget::minimumSize()` set by `QStyleSheetStyle::setGeometry`: `min-width`/`min-height`
-    /// name the content box, so the box extent is added (`qstylesheetstyle.cpp:2595-2602`).
+    /// the widget set by stylesheet resolution: `min-width`/`min-height`
+    /// name the content box, so the box extent is added.
     /// An axis without a `min-*` declaration is 0.
     pub fn min_box_size(&self) -> (i32, i32) {
         let (ex, ey) = self.box_extra();
@@ -74,9 +74,9 @@ impl ResolvedStyle {
         )
     }
 
-    /// `QWidget::maximumSize()` set by `QStyleSheetStyle::setGeometry`, likewise for
-    /// `max-width`/`max-height` (`qstylesheetstyle.cpp:2603-2612`). An axis without a `max-*`
-    /// declaration is `QWIDGETSIZE_MAX`.
+    /// the widget set by stylesheet resolution, likewise for
+    /// `max-width`/`max-height`. An axis without a `max-*`
+    /// declaration is `WIDGET_SIZE_MAX`.
     pub fn max_box_size(&self) -> (i32, i32) {
         let (ex, ey) = self.box_extra();
         // `width`/`height` only lower the maximum of an axis that also has a `max-*` declaration.
@@ -88,7 +88,7 @@ impl ResolvedStyle {
         )
     }
 
-    /// `QRenderRule::adjustSize` (`qstylesheetstyle.cpp:561-574`): a content size with `width`/
+    /// `QRenderRule::adjustSize`: a content size with `width`/
     /// `height` taking the place of the given axis, clamped to `max-*`, then expanded to `min-*`.
     pub fn adjust_size(&self, (w, h): (i32, i32)) -> (i32, i32) {
         let mut w = self.width.unwrap_or(w);
@@ -146,7 +146,7 @@ impl QStyleSheetStyle {
 
     /// Resolves a widget through every style sheet that applies to it, lowest precedence first.
     ///
-    /// As in `QStyleSheetStyle::styleRules`, a matching rule is weighted by the depth of the
+    /// As in stylesheet resolution, a matching rule is weighted by the depth of the
     /// sheet it came from, then by its selector's specificity, then by its position: the
     /// application sheet, then each ancestor from the outermost inwards, then the widget's own
     /// sheet. Declarations are applied in that order, so a later sheet overrides an earlier one
@@ -236,9 +236,9 @@ fn selector_matches(selector: &QCssBasicSelector, ctx: &WidgetStyleContext) -> b
 }
 
 /// Whether a widget of Qt class `type_name` matches the type selector `class`, as
-/// `QStyleSheetStyleSelector::nodeNameEquals` decides it (qstylesheetstyle.cpp:1579-1601). A
-/// tip (`QTipLabel`) matches `QToolTip` only (1585-1586). Any other widget matches its own class,
-/// every class it inherits from, `QWidget` and `QObject`. The base-class pairs are the ones ferrokit
+/// `QStyleSheetStyleSelector::nodeNameEquals` decides it. A
+/// tip (`QTipLabel`) matches `the tooltip controller` only (1585-1586). Any other widget matches its own class,
+/// every class it inherits from, a widget and `QObject`. The base-class pairs are the ones ferrokit
 /// models; a class ferrokit does not know matches its own name and the base classes above.
 fn node_name_equals(type_name: &str, class: &str) -> bool {
     if type_name == "QToolTip" {

@@ -91,7 +91,7 @@ impl Button {
 
     pub fn set_text(&mut self, text: impl Into<String>) {
         let text = text.into();
-        // QAbstractButton::setText returns early when the text is unchanged (qabstractbutton.cpp:496-497).
+        // QAbstractButton::setText returns early when the text is unchanged.
         if text == self.text {
             return;
         }
@@ -102,7 +102,7 @@ impl Button {
 
     pub fn set_font(&mut self, font: Font) {
         self.font = font;
-        // FontChange (qwidget.cpp:4894-4895) precedes the update work (qwidget.cpp:9502).
+        // FontChange precedes the update work.
         notify_borrowed(self, &mut Event::new(EventKind::FontChange));
         self.update_geometry();
         self.update();
@@ -377,7 +377,7 @@ impl Widget for Button {
             let base_h = styled.height.max(min_h);
             Size::new(base_w, base_h)
         } else {
-            // Qt's `QStyleSheetStyle::sizeFromContents(CT_PushButton)` + `rule.boxSize(sz)`:
+            // Qt's stylesheet resolution + `rule.boxSize(sz)`:
             // `min-width` applies to the content box, and padding + border are added around it.
             // `rule.adjustSize(csz)`: `width`/`height` replace the text size as the content size.
             let text_w = style.width.unwrap_or(text_w);
@@ -402,7 +402,7 @@ impl Widget for Button {
         }
     }
 
-    /// `QPushButton::minimumSizeHint` returns `sizeHint()` (`qpushbutton.cpp:398-401`).
+    /// `QPushButton::minimumSizeHint` returns `sizeHint`.
     fn minimum_size_hint(&self) -> Size {
         self.size_hint()
     }

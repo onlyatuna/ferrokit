@@ -19,36 +19,36 @@ pub struct Label {
     font: Font,
     color: Color,
     background_color: Option<Color>,
-    /// `QLabel::alignment`, `Qt::AlignLeft | Qt::AlignVCenter` by default (qlabel_p.h:112).
+    /// the label, `Qt::AlignLeft | Qt::AlignVCenter` by default.
     alignment: Alignment,
-    /// `QLabel::wordWrap`: lays the text out to the label width.
+    /// the label: lays the text out to the label width.
     word_wrap: bool,
     /// Rich text (`Qt::RichText`). `AutoText` resolves to rich through `Qt::mightBeRichText`.
     rich: bool,
-    /// `QLabel::margin`: space in pixels between the frame and the content on every side.
+    /// the label: space in pixels between the frame and the content on every side.
     margin: i32,
-    /// The Qt class the style sheet matches this label as: `QLabel`, or `QToolTip` for a tip.
+    /// The Qt class the style sheet matches this label as: `QLabel`, or `the tooltip controller` for a tip.
     type_name: &'static str,
-    /// `QLabelPrivate::isTextLabel`: whether `setText` ever changed the text. A label that did
+    /// label internals: whether `setText` ever changed the text. A label that did
     /// not (`QLabel()` and `QLabel("")`, whose `setText("")` returns early) is not a text label:
     /// its size is `averageCharWidth() x lineSpacing()` whatever its font.
     is_text_label: bool,
 }
 
-/// `QApplication`'s default font family on Windows (`Microsoft JhengHei UI`).
+/// the widget application's default font family on Windows (`Microsoft JhengHei UI`).
 ///
 /// A `QLabel` whose style sheet does not set `font-family` keeps this family, so it is the
 /// face every label renders with unless a rule names one explicitly.
 pub const APP_DEFAULT_FAMILY: &str = "Microsoft JhengHei UI";
 
-/// Family the `QWidget`-scoped style-sheet rule resolves to: the first installed family in the
+/// Family the a widget-scoped style-sheet rule resolves to: the first installed family in the
 /// `'Segoe UI', 'SF Pro Display', 'Microsoft JhengHei', sans-serif` stack.
 pub const SHEET_FAMILY: &str = "Segoe UI";
 
 impl Label {
     pub fn new(text: impl Into<String>) -> Self {
         let text_str = text.into();
-        // `QLabel` uses the `QApplication` default font unless a style-sheet rule names a
+        // `QLabel` uses the the widget application default font unless a style-sheet rule names a
         // family. That default is Microsoft JhengHei UI on Windows, and the table style sheet
         // sets no `font-family`, so both its ASCII and CJK labels render with it.
         let font = Font::new(APP_DEFAULT_FAMILY, 13.0);
@@ -79,7 +79,7 @@ impl Label {
 
     pub fn set_text(&mut self, text: impl Into<String>) {
         let text = text.into();
-        // QLabel::setText returns early when the text is unchanged (qlabel.cpp:244-245).
+        // QLabel::setText returns early when the text is unchanged.
         if text == self.text {
             return;
         }
@@ -102,15 +102,15 @@ impl Label {
         &self.font
     }
 
-    /// Returns the effective font including stylesheet styling (`QWidget::font`).
+    /// Returns the effective font including stylesheet styling (the widget).
     pub fn effective_font(&self) -> Font {
         self.styled_font(&self.resolved_style())
     }
 
     pub fn set_font(&mut self, font: Font) {
         self.font = font;
-        // FontChange (qwidget.cpp:4894-4895) is sent before `QWidget::event` does its update and
-        // updateGeometry work (qwidget.cpp:9502).
+        // FontChange is sent before the widget does its update and
+        // updateGeometry work.
         notify_borrowed(self, &mut Event::new(EventKind::FontChange));
         self.update_geometry();
         self.update();
@@ -127,7 +127,7 @@ impl Label {
 
     pub fn set_alignment(&mut self, alignment: Alignment) {
         self.alignment = alignment;
-        // `QLabel::setAlignment` -> updateLabel(): the text indent follows the alignment.
+        // the label -> updateLabel: the text indent follows the alignment.
         self.update_geometry();
         self.update();
     }
@@ -136,7 +136,7 @@ impl Label {
         self.word_wrap
     }
 
-    /// `QLabel::setWordWrap`: wraps the text at the label width.
+    /// the label: wraps the text at the label width.
     pub fn set_word_wrap(&mut self, on: bool) {
         self.word_wrap = on;
         self.update_geometry();
@@ -150,7 +150,7 @@ impl Label {
         self.update();
     }
 
-    /// `QLabel::setMargin`: space between the frame and the content on every side.
+    /// the label: space between the frame and the content on every side.
     pub fn set_margin(&mut self, margin: i32) {
         self.margin = margin;
         self.update_geometry();
@@ -164,7 +164,7 @@ impl Label {
     }
 
     /// Left, right, top and bottom space `QLabel` keeps around its text under a style sheet:
-    /// the border plus the padding of each edge (`QStyleSheetStyle::subElementRect`).
+    /// the border plus the padding of each edge (stylesheet resolution).
     fn box_insets(
         style: &crate::style::stylesheet::ResolvedStyle,
         margin: f32,
@@ -179,13 +179,13 @@ impl Label {
         )
     }
 
-    /// `QLabel`'s text indent: the advance of `'x'`, which `QLabelPrivate::sizeForWidth` adds on
-    /// each aligned side (Left or Right horizontally, Top or Bottom vertically, qlabel.cpp:558-568)
+    /// `QLabel`'s text indent: the advance of `'x'`, which label internals adds on
+    /// each aligned side (Left or Right horizontally, Top or Bottom vertically)
     /// of a label that has a frame (`frameWidth() != 0`, which a style sheet makes the widest edge
     /// of border plus padding). A label without a box has none. (Measured against PySide6:
     /// `padding-left: 5px` adds 5 + 6 to a left-aligned 12px label and 5 to a centred one;
-    /// `padding: 0px 2px` adds 4 to the centred table cells.) `QLabelPrivate::documentRect` insets
-    /// the text by half of it on the aligned sides (qlabel.cpp:1474-1488).
+    /// `padding: 0px 2px` adds 4 to the centred table cells.) label internals insets
+    /// the text by half of it on the aligned sides.
     fn indent(
         style: &crate::style::stylesheet::ResolvedStyle,
         metrics: &FontMetrics,
@@ -200,14 +200,14 @@ impl Label {
         metrics.horizontal_advance_exact("x", font).round()
     }
 
-    /// The alignment the text is laid out by: `QStyle::visualAlignment` in the text's direction
-    /// (`QLabelPrivate::textDirection`, qlabel.cpp:996, 1456-1464), which is left-to-right for the
+    /// The alignment the text is laid out by: the style in the text's direction
+    /// (label internals, 1456-1464), which is left-to-right for the
     /// text ferrokit lays out.
     fn visual_alignment(&self) -> Alignment {
         self.alignment.visual(LayoutDirection::LeftToRight)
     }
 
-    /// The indent `sizeForWidth` adds horizontally and vertically for `align` (qlabel.cpp:558-568).
+    /// The indent `sizeForWidth` adds horizontally and vertically for `align`.
     fn indent_extra(indent: f32, align: Alignment) -> (f32, f32) {
         let h = align.contains(Alignment::LEFT) || align.contains(Alignment::RIGHT);
         let v = align.contains(Alignment::TOP) || align.contains(Alignment::BOTTOM);
@@ -332,8 +332,8 @@ impl Label {
         }
     }
 
-    /// Natural size of the text without box, margin or indent (`QLabelPrivate::sizeForWidth`,
-    /// qlabel.cpp:575-625). `hextra` is the horizontal space the box and indent take. `width` is
+    /// Natural size of the text without box, margin or indent (label internals,
+    /// ). `hextra` is the horizontal space the box and indent take. `width` is
     /// the width the label is asked for: `None` is `sizeForWidth(-1)` (a wrapping text takes the
     /// width it would like), `Some(w)` wraps at `w` (less the box).
     fn text_size(
@@ -345,7 +345,7 @@ impl Label {
     ) -> (f32, f32) {
         if !self.is_text_label {
             // A label that never had text is not a text label: `QSize(averageCharWidth(),
-            // lineSpacing())` (qlabel.cpp:626-628).
+            // lineSpacing)`.
             return (metrics.rounded_average_char_width(), metrics.line_spacing());
         }
         if !self.word_wrap {
@@ -354,7 +354,6 @@ impl Label {
             }
             // Plain and unwrapped: the `layout_height` line of each `\n`-separated line, stacked
             // as `qt_format_text` does: the leading between lines, each line's top rounded up
-            // (qpainter.cpp:7370-7388).
             let text = self.plain_text();
             let lines: Vec<&str> = text.split('\n').collect();
             let leading = FontMetrics::layout_leading(font);
@@ -374,7 +373,7 @@ impl Label {
             return self.document_size(font, Some(wrap));
         }
         if self.rich {
-            // `QTextDocument::adjustSize` gives the ideal width (qlabel.cpp:580).
+            // `QTextDocument::adjustSize` gives the ideal width.
             let mut doc = self.document(font);
             doc.adjust_size();
             let size = doc.size();
@@ -382,7 +381,7 @@ impl Label {
         }
         // Plain word-wrap: `tryWidth` from 80 average characters (`QFontMetrics::averageCharWidth`,
         // a whole number), narrowed while the text stays short of 4 and 2 line spacings; the
-        // rectangle `fm.boundingRect` returns is whole pixels (qlabel.cpp:603-613).
+        // rectangle `fm.boundingRect` returns is whole pixels.
         let line = metrics.line_spacing();
         let w = (metrics.rounded_average_char_width() * 80.0).min(self.maximum_size().width as f32)
             - hextra;
@@ -400,12 +399,12 @@ impl Label {
         br
     }
 
-    /// `QLabelPrivate::sizeForWidth`: the size of the label asked to be `width` wide, or its size
-    /// hint when `None`. The text size plus the box, expanded to `minimumSize()` (qlabel.cpp:620).
+    /// label internals: the size of the label asked to be `width` wide, or its size
+    /// hint when `None`. The text size plus the box, expanded to `minimumSize`.
     /// `max-height` is not a hint.
     fn size_for_width(&self, width: Option<i32>) -> Size {
         let style = self.resolved_style();
-        // `if (q->minimumWidth() > 0) w = qMax(w, q->minimumWidth())` (qlabel.cpp:536-537): with a
+        // `if (q->minimumWidth > 0) w = qMax(w, q->minimumWidth)`: with a
         // minimum width a size hint is a wrap at that width, never the label's own choice (the
         // tryWidth of `w == -1`), and the width the narrowest-word probe asks for is the minimum.
         let minimum_width = self
@@ -538,7 +537,7 @@ impl Widget for Label {
         Size::new(style_w.min(explicit.width), style_h.min(explicit.height))
     }
 
-    /// `QLabel::minimumSizeHint` (`qlabel.cpp:809-833`): the height of one line (`sizeForWidth` of
+    /// the label: the height of one line (`sizeForWidth` of
     /// an unbounded width, never above the size hint's) by the width of the widest word
     /// (`sizeForWidth(0)`). A label that does not wrap is as wide as its text either way, so this
     /// is its size hint.
@@ -668,7 +667,7 @@ impl Widget for Label {
         let align = self.visual_alignment();
         let indent = Self::indent(&style, &metrics, &font);
         let (h_indent, _) = Self::indent_extra(indent, align);
-        // `QLabelPrivate::documentRect` (qlabel.cpp:1474-1488): half the indent on each aligned side.
+        // label internals: half the indent on each aligned side.
         let half_indent = (indent / 2.0).floor();
         let inset = |flag: Alignment| {
             if align.contains(flag) {
@@ -685,7 +684,7 @@ impl Widget for Label {
         let content_h = (geom.height as f32 - box_t - box_b).max(0.0);
         let content = RectF::new(box_l, box_t, content_w, content_h);
         // The aligned offset is not clamped: centred and right text overflow symmetrically
-        // (qpainter.cpp:7426-7429). Overflow is clipped to the content rect (qpainter.cpp:7442-7446).
+        // . Overflow is clipped to the content rect.
         let x_for = |text_w: f32| {
             if align.contains(Alignment::RIGHT) {
                 box_l + content_w - text_w
@@ -695,7 +694,7 @@ impl Widget for Label {
                 box_l
             }
         };
-        // Plain text: Bottom, else VCenter, else the top, unclamped (qpainter.cpp:7419-7424).
+        // Plain text: Bottom, else VCenter, else the top, unclamped.
         let y_for = |text_h: f32| {
             if align.contains(Alignment::BOTTOM) {
                 box_t + content_h - text_h
@@ -711,8 +710,8 @@ impl Widget for Label {
 
         if self.rich || self.word_wrap {
             // Rich and word-wrapped text is drawn by its `TextDocument`, wrapped to the width the
-            // frame leaves (qlabel.cpp:575-584). `QLabelPrivate::layoutRect` places it vertically:
-            // VCenter, else Bottom, else the top, never above the rect (qlabel.cpp:1624-1637).
+            // frame leaves. label internals places it vertically:
+            // VCenter, else Bottom, else the top, never above the rect.
             let mut doc = self.document(&font);
             if self.word_wrap {
                 doc.set_text_width((geom.width as f32 - box_l0 - box_r0 - h_indent).max(0.0));

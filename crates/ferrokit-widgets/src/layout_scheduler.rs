@@ -63,7 +63,7 @@ impl LayoutScheduler {
     }
     /// Runs `widget`'s own layout when it has been invalidated and nothing else is going to.
     ///
-    /// `QLayout::invalidate` posts a `LayoutRequest` to the widget that owns the layout. ferrokit
+    /// the layout posts a `LayoutRequest` to the widget that owns the layout. ferrokit
     /// queues the request on the parent (`WidgetBase::request_layout`); a widget without one, a
     /// window's root, would otherwise stay invalid until its size changed.
     pub fn activate_if_dirty(widget: &WidgetRef) {
@@ -149,8 +149,8 @@ impl LayoutScheduler {
                         .layout_ref_mut()
                         .is_some_and(|layout| layout.is_dirty());
                     if dirty {
-                        // `QLayout::activate` bounds the owner by the size constraint first
-                        // (qlayout.cpp:996-1129); fitting an activated layout is `doResize`.
+                        // the layout bounds the owner by the size constraint first
+                        // fitting an activated layout is `doResize`.
                         crate::widget::apply_size_constraint(&**widget);
                     }
                     let g = widget.geometry();
@@ -162,11 +162,11 @@ impl LayoutScheduler {
                         metrics_rebuilt = dirty;
                     }
                     if metrics_rebuilt {
-                        // `QLayout::activate` ends with `mw->updateGeometry()` (qlayout.cpp:1131):
+                        // the layout ends with `mw->updateGeometry`:
                         // the owner's size hint may have changed, so its parent's layout runs
                         // next, one level per pass, until the window's root (no parent). A pass
                         // that only fits an activated layout to a new size is `doResize`
-                        // (qlayout.cpp:528-533): the metrics are unchanged and nothing above is told.
+                        // : the metrics are unchanged and nothing above is told.
                         widget.update_geometry();
                     }
                     widget.update();

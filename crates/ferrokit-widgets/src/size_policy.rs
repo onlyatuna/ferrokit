@@ -111,7 +111,7 @@ impl QSizePolicy {
     }
 
     /// Sets `retainSizeWhenHidden` (`QSizePolicy::setRetainSizeWhenHidden`): a hidden widget keeps
-    /// its layout slot (`QWidgetItem::isEmpty`, qlayoutitem.cpp:691-693).
+    /// its layout slot (widget item emptiness).
     pub fn with_retain_size_when_hidden(mut self, retain: bool) -> Self {
         self.retain_size_when_hidden = retain;
         self

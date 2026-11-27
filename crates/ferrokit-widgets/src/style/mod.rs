@@ -123,7 +123,7 @@ impl Style for DefaultStyle {
                 option.border_radius,
             );
         } else {
-            // Button frame and focus ring are anti-aliased (`qfusionstyle.cpp:679-754`).
+            // Button frame and focus ring are anti-aliased.
             painter.set_render_hint(RenderHint::Antialiasing, true);
             painter.set_brush(Brush::Color(background));
             painter.set_pen(Pen::new(option.border_color, 1.0));
