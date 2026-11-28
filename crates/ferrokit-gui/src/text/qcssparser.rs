@@ -1,18 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Qt-compatible CSS/QSS Parser and Abstract Syntax Tree.
-//!
-//! Mirrors `reference and.
-//! Parses CSS 2.1 subset used by Qt Style Sheets (QSS) including:
-//! - Selectors: Type (`QProgressBar`), ID (`#HeaderTitle`), Pseudo-state (`:hover`),
-//!   Sub-control (`::chunk`), Attribute (`[state="muted"]`).
-//! - Box Model: `min-height`, `max-height`, `min-width`, `max-width`, `margin`, `padding`,
-//!   `border`, `border-radius`.
-//! - Appearance: `background-color`, `color`, `font-size`, `font-weight`, `font-family`,
-//!   `letter-spacing`, `text-align`.
+//! CSS/QSS parser and abstract syntax tree.
 
 use tiny_skia::Color;
 
-/// Supported CSS Property enumeration.
+/// Supported CSS property enumeration.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum QCssProperty {
     BackgroundColor,
@@ -55,9 +46,10 @@ impl std::str::FromStr for QCssProperty {
 }
 
 impl QCssProperty {
+    /// Maps a CSS property name (trimmed, ASCII case-insensitive) to a [`QCssProperty`].
     pub fn from_name(name: &str) -> Self {
-        let name = name.trim().to_ascii_lowercase();
-        match name.as_str() {
+        let lower = name.trim().to_ascii_lowercase();
+        match lower.as_str() {
             "background-color" | "background" => Self::BackgroundColor,
             "color" => Self::Color,
             "border" => Self::Border,
@@ -86,7 +78,7 @@ impl QCssProperty {
             "font-family" => Self::FontFamily,
             "letter-spacing" => Self::LetterSpacing,
             "text-align" => Self::TextAlign,
-            other => Self::Custom(other.to_string()),
+            _ => Self::Custom(lower),
         }
     }
 }
@@ -99,17 +91,16 @@ pub struct QCssBorder {
     pub color: Option<Color>,
 }
 
-/// Parsed CSS Value.
+/// Parsed CSS value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum QCssValue {
     Color(Color),
     Length(f32),
     Number(f32),
     String(String),
-    /// `font-family: a, 'b c', d` (`setFontFamilyFromValues`): the families in order.
     FontFamilies(Vec<String>),
     Identifier(String),
-    Edges([f32; 4]), // [top, right, bottom, left]
+    Edges([f32; 4]),
     Border(QCssBorder),
 }
 
@@ -123,27 +114,22 @@ pub struct QCssDeclaration {
 /// Basic selector component matching an individual element.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct QCssBasicSelector {
-    /// Type selector (e.g. `QProgressBar`, `QLabel`, `QPushButton`, `QWidget`).
     pub element_name: Option<String>,
-    /// ID selector (e.g. `CentralWidget`, `HeaderTitle`, `LayoutToggleBtn`).
     pub id: Option<String>,
-    /// Pseudo-states (e.g. `hover`, `pressed`, `selected`, `disabled`).
     pub pseudo_states: Vec<String>,
-    /// Sub-control (e.g. `chunk`, `groove`, `item`, `separator`).
     pub sub_control: Option<String>,
-    /// Attribute selectors (e.g. `[state="muted"]`).
     pub attributes: Vec<(String, String)>,
 }
 
 impl QCssBasicSelector {
-    /// Computes selector specificity (ID = 100, Attribute/Pseudo = 10, Type = 1).
+    /// Computes the cascade specificity score for this basic selector.
     pub fn specificity(&self) -> u32 {
-        let mut score = 0;
+        let mut score = 0u32;
         if self.id.is_some() {
             score += 100;
         }
-        score += (self.pseudo_states.len() as u32) * 10;
-        score += (self.attributes.len() as u32) * 10;
+        score += 10 * self.pseudo_states.len() as u32;
+        score += 10 * self.attributes.len() as u32;
         if self.sub_control.is_some() {
             score += 10;
         }
@@ -161,14 +147,13 @@ pub struct QCssRule {
     pub declarations: Vec<QCssDeclaration>,
 }
 
-/// An AST representation of a parsed Qt Style Sheet.
+/// An AST representation of a parsed style sheet.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct QCssStyleSheet {
     pub rules: Vec<QCssRule>,
 }
 
 impl QCssStyleSheet {
-    /// Parses a QSS string into an AST.
     pub fn parse(input: &str) -> Self {
         QCssParser::parse(input)
     }
@@ -178,327 +163,106 @@ impl QCssStyleSheet {
     }
 }
 
-/// Parser implementation for QSS stylesheet syntax.
+/// Parser implementation for stylesheet syntax.
 pub struct QCssParser;
 
 impl QCssParser {
+    /// Parses a stylesheet string into a [`QCssStyleSheet`] AST.
     pub fn parse(input: &str) -> QCssStyleSheet {
-        let clean = strip_comments(input);
+        let stripped = strip_comments(input);
         let mut rules = Vec::new();
+        let bytes = stripped.as_bytes();
+        let mut i = 0;
+        let mut rule_start = 0;
+        let mut quote: Option<u8> = None;
 
-        let mut pos = 0;
-        let bytes = clean.as_bytes();
-        let len = bytes.len();
-
-        while pos < len {
-            // Find opening brace '{'
-            let Some(brace_open) = clean[pos..].find('{') else {
-                break;
-            };
-            let selector_str = clean[pos..pos + brace_open].trim();
-            pos += brace_open + 1;
-
-            // Find closing brace '}'
-            let Some(brace_close) = clean[pos..].find('}') else {
-                break;
-            };
-            let body_str = clean[pos..pos + brace_close].trim();
-            pos += brace_close + 1;
-
-            if selector_str.is_empty() && body_str.is_empty() {
+        while i < bytes.len() {
+            let b = bytes[i];
+            if let Some(q) = quote {
+                if b == b'\\' && i + 1 < bytes.len() {
+                    i += 2;
+                    continue;
+                }
+                if b == q {
+                    quote = None;
+                }
+                i += 1;
                 continue;
             }
 
-            let selectors = parse_selectors(selector_str);
-            let declarations = parse_declarations(body_str);
-
-            if !selectors.is_empty() && !declarations.is_empty() {
-                rules.push(QCssRule {
-                    selectors,
-                    declarations,
-                });
+            if b == b'\'' || b == b'"' {
+                quote = Some(b);
+                i += 1;
+                continue;
             }
+
+            if b == b'{' {
+                let selector_text = &stripped[rule_start..i];
+                let block_start = i + 1;
+                i += 1;
+                let mut block_quote: Option<u8> = None;
+                let mut block_end = bytes.len();
+
+                while i < bytes.len() {
+                    let bb = bytes[i];
+                    if let Some(q) = block_quote {
+                        if bb == b'\\' && i + 1 < bytes.len() {
+                            i += 2;
+                            continue;
+                        }
+                        if bb == q {
+                            block_quote = None;
+                        }
+                        i += 1;
+                        continue;
+                    }
+                    if bb == b'\'' || bb == b'"' {
+                        block_quote = Some(bb);
+                        i += 1;
+                        continue;
+                    }
+                    if bb == b'}' {
+                        block_end = i;
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+
+                let decl_text = &stripped[block_start..block_end];
+                let selectors = parse_selector_list(selector_text);
+                let declarations = parse_declaration_list(decl_text);
+                if !selectors.is_empty() && !declarations.is_empty() {
+                    rules.push(QCssRule {
+                        selectors,
+                        declarations,
+                    });
+                }
+                rule_start = i;
+                continue;
+            }
+
+            i += 1;
         }
 
         QCssStyleSheet { rules }
     }
 }
 
-/// Strips `/* ... */` comments from CSS input.
-fn strip_comments(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if ch == '/' && chars.peek() == Some(&'*') {
-            chars.next(); // consume '*'
-            while let Some(c) = chars.next() {
-                if c == '*' && chars.peek() == Some(&'/') {
-                    chars.next(); // consume '/'
-                    break;
-                }
-            }
-        } else {
-            out.push(ch);
-        }
-    }
-
-    out
-}
-
-/// Parses comma-separated selectors (e.g. `QLabel#HeaderTitle, QLabel#MetricTitle`).
-fn parse_selectors(input: &str) -> Vec<QCssBasicSelector> {
-    let mut result = Vec::new();
-    for part in input.split(',') {
-        let part = part.trim();
-        if !part.is_empty() {
-            result.push(parse_basic_selector(part));
-        }
-    }
-    result
-}
-
-/// Parses an individual selector item (e.g. `QPushButton#LayoutToggleBtn:hover`).
-fn parse_basic_selector(input: &str) -> QCssBasicSelector {
-    let mut sel = QCssBasicSelector::default();
-    let mut remaining = input.trim().to_string();
-
-    // 1. Extract attribute selectors `[key="val"]`
-    while let Some(start) = remaining.find('[') {
-        if let Some(end) = remaining[start..].find(']') {
-            let full_end = start + end;
-            let attr_part = &remaining[start + 1..full_end];
-            if let Some((k, v)) = attr_part.split_once('=') {
-                let key = k.trim().to_string();
-                let val = v.trim().trim_matches('"').trim_matches('\'').to_string();
-                sel.attributes.push((key, val));
-            }
-            remaining.replace_range(start..=full_end, "");
-        } else {
-            break;
-        }
-    }
-
-    let s = remaining.trim();
-    // 2. Extract sub-control (e.g. `::chunk`, `::item`)
-    let (s, sub_control) = if let Some(idx) = s.find("::") {
-        let (left, right) = s.split_at(idx);
-        let sub = right.trim_start_matches("::").trim();
-        (left.trim(), Some(sub.to_string()))
-    } else {
-        (s, None)
-    };
-    sel.sub_control = sub_control;
-
-    // 3. Extract pseudo-states (e.g. `:hover`, `:disabled`)
-    let mut parts: Vec<&str> = s.split(':').collect();
-    let main_part = parts.remove(0).trim();
-    for p in parts {
-        let p = p.trim();
-        if !p.is_empty() {
-            sel.pseudo_states.push(p.to_ascii_lowercase());
-        }
-    }
-
-    // 4. Extract ID (e.g. `#CentralWidget`) and Type (e.g. `QLabel`)
-    if let Some((elem, id)) = main_part.split_once('#') {
-        let elem = elem.trim();
-        let id = id.trim();
-        if !elem.is_empty() {
-            sel.element_name = Some(elem.to_string());
-        }
-        if !id.is_empty() {
-            sel.id = Some(id.to_string());
-        }
-    } else if main_part.starts_with('#') {
-        let id = main_part.trim_start_matches('#').trim();
-        if !id.is_empty() {
-            sel.id = Some(id.to_string());
-        }
-    } else if !main_part.is_empty() {
-        sel.element_name = Some(main_part.to_string());
-    }
-
-    sel
-}
-
-/// Parses declarations inside `{ ... }`.
-fn parse_declarations(input: &str) -> Vec<QCssDeclaration> {
-    let mut decls = Vec::new();
-    for item in input.split(';') {
-        let item = item.trim();
-        if item.is_empty() {
-            continue;
-        }
-        let Some((prop_str, val_str)) = item.split_once(':') else {
-            continue;
-        };
-        let prop = QCssProperty::from_name(prop_str.trim());
-        let val = parse_value(&prop, val_str.trim());
-        decls.push(QCssDeclaration {
-            property: prop,
-            value: val,
-        });
-    }
-    decls
-}
-
-/// Parses value string according to property context.
-fn parse_value(property: &QCssProperty, val_str: &str) -> QCssValue {
-    let val_str = val_str.trim();
-
-    // Check border shorthand
-    if matches!(property, QCssProperty::Border) {
-        if val_str.eq_ignore_ascii_case("none") {
-            return QCssValue::Border(QCssBorder {
-                width: 0.0,
-                style: "none".to_string(),
-                color: None,
-            });
-        }
-        return parse_border(val_str);
-    }
-
-    // `font-family` is a comma separated list (`QFont::setFamilies`), each name optionally quoted.
-    if matches!(property, QCssProperty::FontFamily) {
-        let families: Vec<String> = split_font_families(val_str);
-        if !families.is_empty() {
-            return QCssValue::FontFamilies(families);
-        }
-    }
-
-    // Check padding / margin multi-values
-    if matches!(property, QCssProperty::Padding | QCssProperty::Margin)
-        && let Some(edges) = parse_edges(val_str)
-    {
-        return QCssValue::Edges(edges);
-    }
-
-    // Try color
-    if matches!(
-        property,
-        QCssProperty::BackgroundColor | QCssProperty::Color | QCssProperty::BorderColor
-    ) && let Some(c) = parse_color(val_str)
-    {
-        return QCssValue::Color(c);
-    }
-
-    // Try length / numeric
-    if let Some(len) = parse_length(val_str) {
-        return QCssValue::Length(len);
-    }
-
-    // Try pure number
-    if let Ok(num) = val_str.parse::<f32>() {
-        return QCssValue::Number(num);
-    }
-
-    if val_str.len() >= 2
-        && ((val_str.starts_with('\'') && val_str.ends_with('\''))
-            || (val_str.starts_with('"') && val_str.ends_with('"')))
-    {
-        return QCssValue::String(val_str[1..val_str.len() - 1].to_string());
-    }
-
-    QCssValue::Identifier(val_str.to_string())
-}
-
-/// Splits a `font-family` value at the commas outside quotes and strips one pair of quotes per name.
-fn split_font_families(val_str: &str) -> Vec<String> {
-    let mut families = Vec::new();
-    let mut current = String::new();
-    let mut quote: Option<char> = None;
-    for ch in val_str.chars() {
-        match quote {
-            Some(q) if ch == q => quote = None,
-            Some(_) => current.push(ch),
-            None if ch == '\'' || ch == '"' => quote = Some(ch),
-            None if ch == ',' => {
-                families.push(std::mem::take(&mut current));
-            }
-            None => current.push(ch),
-        }
-    }
-    families.push(current);
-    families
-        .into_iter()
-        .map(|f| f.trim().to_string())
-        .filter(|f| !f.is_empty())
-        .collect()
-}
-
-/// Parses border shorthand: `1px solid rgba(255, 255, 255, 0.14)`.
-fn parse_border(val_str: &str) -> QCssValue {
-    let mut width = 1.0;
-    let mut style = "solid".to_string();
-
-    // Extract rgba/rgb function if present
-    let (rem, extracted_color) = if let Some(rgb_idx) = val_str.find("rgb") {
-        if let Some(close_idx) = val_str[rgb_idx..].find(')') {
-            let col_str = &val_str[rgb_idx..rgb_idx + close_idx + 1];
-            let col = parse_color(col_str);
-            let mut remaining = val_str[..rgb_idx].to_string();
-            remaining.push_str(&val_str[rgb_idx + close_idx + 1..]);
-            (remaining, col)
-        } else {
-            (val_str.to_string(), None)
-        }
-    } else {
-        (val_str.to_string(), None)
-    };
-    let mut color = extracted_color;
-
-    for tok in rem.split_whitespace() {
-        let tok = tok.trim();
-        if let Some(l) = parse_length(tok) {
-            width = l;
-        } else if tok.eq_ignore_ascii_case("solid")
-            || tok.eq_ignore_ascii_case("none")
-            || tok.eq_ignore_ascii_case("dashed")
-            || tok.eq_ignore_ascii_case("dotted")
-        {
-            style = tok.to_ascii_lowercase();
-        } else if color.is_none() {
-            color = parse_color(tok);
-        }
-    }
-
-    QCssValue::Border(QCssBorder {
-        width,
-        style,
-        color,
-    })
-}
-
-/// Parses edge boxes: 1, 2, or 4 numbers (e.g. `1px 4px` -> [1.0, 4.0, 1.0, 4.0]).
-fn parse_edges(val_str: &str) -> Option<[f32; 4]> {
-    let tokens: Vec<f32> = val_str
-        .split_whitespace()
-        .filter_map(|t| parse_length(t).or_else(|| t.parse::<f32>().ok()))
-        .collect();
-
-    match tokens.len() {
-        1 => Some([tokens[0], tokens[0], tokens[0], tokens[0]]),
-        2 => Some([tokens[0], tokens[1], tokens[0], tokens[1]]), // top/bottom, left/right
-        3 => Some([tokens[0], tokens[1], tokens[2], tokens[1]]), // top, left/right, bottom
-        4 => Some([tokens[0], tokens[1], tokens[2], tokens[3]]), // top, right, bottom, left
-        _ => None,
-    }
-}
-
-/// Parses CSS length like `5px`, `9.5px`, `10.5px`, `12pt`.
+/// Parses a CSS length value (`px` or `pt`, converted to logical pixels).
 pub fn parse_length(input: &str) -> Option<f32> {
     let s = input.trim();
-    if let Some(val) = s.strip_suffix("px") {
-        val.trim().parse::<f32>().ok()
-    } else if let Some(val) = s.strip_suffix("pt") {
-        val.trim().parse::<f32>().ok().map(|pt| pt * 1.333_333)
+    let lower = s.to_ascii_lowercase();
+    if let Some(num) = lower.strip_suffix("px") {
+        num.trim().parse::<f32>().ok()
+    } else if let Some(num) = lower.strip_suffix("pt") {
+        num.trim().parse::<f32>().ok().map(|v| v * 1.333_333)
     } else {
         None
     }
 }
 
-/// Parses standard CSS color strings: `#RGB`, `#RRGGBB`, `#AARRGGBB`, `rgb(...)`, `rgba(...)`, `transparent`.
+/// Parses a CSS color value (`transparent`, `#hex`, `rgb(...)`, `rgba(...)`, or named colors).
 pub fn parse_color(input: &str) -> Option<Color> {
     let s = input.trim();
     if s.eq_ignore_ascii_case("transparent") {
@@ -506,14 +270,14 @@ pub fn parse_color(input: &str) -> Option<Color> {
     }
 
     if let Some(hex) = s.strip_prefix('#') {
-        if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
         }
         return match hex.len() {
             3 => {
-                let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()?;
-                let g = u8::from_str_radix(&hex[1..2].repeat(2), 16).ok()?;
-                let b = u8::from_str_radix(&hex[2..3].repeat(2), 16).ok()?;
+                let r = u8::from_str_radix(&hex[0..1], 16).ok()? * 17;
+                let g = u8::from_str_radix(&hex[1..2], 16).ok()? * 17;
+                let b = u8::from_str_radix(&hex[2..3], 16).ok()? * 17;
                 Some(Color::from_rgba8(r, g, b, 255))
             }
             6 => {
@@ -533,69 +297,577 @@ pub fn parse_color(input: &str) -> Option<Color> {
         };
     }
 
-    if s.starts_with("rgb(") && s.ends_with(')') {
-        let inside = &s[4..s.len() - 1];
-        let parts: Vec<&str> = inside.split(',').collect();
-        if parts.len() == 3 {
-            let r = parts[0].trim().parse::<u8>().ok()?;
-            let g = parts[1].trim().parse::<u8>().ok()?;
-            let b = parts[2].trim().parse::<u8>().ok()?;
-            return Some(Color::from_rgba8(r, g, b, 255));
+    if s.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("rgb(")) && s.ends_with(')') {
+        let inner = &s[4..s.len() - 1];
+        let mut parts = inner.split(',');
+        let r = parts.next()?.trim().parse::<u8>().ok()?;
+        let g = parts.next()?.trim().parse::<u8>().ok()?;
+        let b = parts.next()?.trim().parse::<u8>().ok()?;
+        if parts.next().is_some() {
+            return None;
         }
+        return Some(Color::from_rgba8(r, g, b, 255));
     }
 
-    if s.starts_with("rgba(") && s.ends_with(')') {
-        let inside = &s[5..s.len() - 1];
-        let parts: Vec<&str> = inside.split(',').collect();
-        if parts.len() == 4 {
-            let r = parts[0].trim().parse::<u8>().ok()?;
-            let g = parts[1].trim().parse::<u8>().ok()?;
-            let b = parts[2].trim().parse::<u8>().ok()?;
-            let a_str = parts[3].trim();
-            let a = if let Ok(f) = a_str.parse::<f32>() {
-                if f <= 1.0 {
-                    // `int alpha = toReal * 255.`: truncated, not rounded.
-                    (f * 255.0).clamp(0.0, 255.0) as u8
-                } else {
-                    f.clamp(0.0, 255.0) as u8
-                }
+    if s.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("rgba(")) && s.ends_with(')') {
+        let inner = &s[5..s.len() - 1];
+        let mut parts = inner.split(',');
+        let r = parts.next()?.trim().parse::<u8>().ok()?;
+        let g = parts.next()?.trim().parse::<u8>().ok()?;
+        let b = parts.next()?.trim().parse::<u8>().ok()?;
+        let a_str = parts.next()?.trim();
+        if parts.next().is_some() {
+            return None;
+        }
+        let a = if let Ok(f) = a_str.parse::<f32>() {
+            if f <= 1.0 {
+                (f * 255.0).clamp(0.0, 255.0) as u8
             } else {
-                a_str.parse::<u8>().ok()?
-            };
-            return Some(Color::from_rgba8(r, g, b, a));
-        }
+                f.clamp(0.0, 255.0) as u8
+            }
+        } else {
+            a_str.parse::<u8>().ok()?
+        };
+        return Some(Color::from_rgba8(r, g, b, a));
     }
 
-    // Common named colors
     match s.to_ascii_lowercase().as_str() {
-        "black" => Some(Color::BLACK),
-        "white" => Some(Color::WHITE),
+        "black" => Some(Color::from_rgba8(0, 0, 0, 255)),
+        "white" => Some(Color::from_rgba8(255, 255, 255, 255)),
         "red" => Some(Color::from_rgba8(255, 0, 0, 255)),
         "green" => Some(Color::from_rgba8(0, 128, 0, 255)),
         "blue" => Some(Color::from_rgba8(0, 0, 255, 255)),
         _ => None,
     }
 }
+
+/// Strips `/* ... */` comments while preserving quoted `'...'` and `"..."` strings.
+fn strip_comments(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    let mut quote: Option<u8> = None;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            let ch = input[i..].chars().next().unwrap();
+            if b == b'\\' && i + 1 < bytes.len() {
+                out.push(ch);
+                i += ch.len_utf8();
+                let next_ch = input[i..].chars().next().unwrap();
+                out.push(next_ch);
+                i += next_ch.len_utf8();
+                continue;
+            }
+            if b == q {
+                quote = None;
+            }
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+
+        if b == b'\'' || b == b'"' {
+            quote = Some(b);
+            out.push(b as char);
+            i += 1;
+            continue;
+        }
+
+        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = if i + 1 < bytes.len() {
+                i + 2
+            } else {
+                bytes.len()
+            };
+            continue;
+        }
+
+        let ch = input[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+
+    out
+}
+
+/// Splits `input` on `delim` outside quotes, brackets `[...]`, and parentheses `(...)`.
+fn split_top_level(input: &str, delim: u8, track_brackets: bool, track_parens: bool) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    let mut start = 0;
+    let mut quote: Option<u8> = None;
+    let mut bracket_depth = 0usize;
+    let mut paren_depth = 0usize;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if b == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+
+        if b == b'\'' || b == b'"' {
+            quote = Some(b);
+            i += 1;
+            continue;
+        }
+
+        if track_brackets {
+            if b == b'[' {
+                bracket_depth += 1;
+            } else if b == b']' {
+                bracket_depth = bracket_depth.saturating_sub(1);
+            }
+        }
+
+        if track_parens {
+            if b == b'(' {
+                paren_depth += 1;
+            } else if b == b')' {
+                paren_depth = paren_depth.saturating_sub(1);
+            }
+        }
+
+        if b == delim && bracket_depth == 0 && paren_depth == 0 {
+            parts.push(&input[start..i]);
+            start = i + 1;
+        }
+
+        i += 1;
+    }
+
+    parts.push(&input[start..]);
+    parts
+}
+
+fn strip_matching_quotes(s: &str) -> &str {
+    let trimmed = s.trim();
+    if trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+    {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    }
+}
+
+fn parse_selector_list(input: &str) -> Vec<QCssBasicSelector> {
+    split_top_level(input, b',', true, false)
+        .into_iter()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(parse_basic_selector)
+        .collect()
+}
+
+fn parse_basic_selector(raw: &str) -> Option<QCssBasicSelector> {
+    let mut attributes = Vec::new();
+    let mut remaining = String::with_capacity(raw.len());
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    let mut quote: Option<u8> = None;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            let ch = raw[i..].chars().next().unwrap();
+            if b == q {
+                quote = None;
+            }
+            remaining.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+        if b == b'\'' || b == b'"' {
+            quote = Some(b);
+            remaining.push(b as char);
+            i += 1;
+            continue;
+        }
+        if b == b'[' {
+            let attr_start = i + 1;
+            i += 1;
+            let mut attr_quote: Option<u8> = None;
+            let mut attr_end = bytes.len();
+            while i < bytes.len() {
+                let ab = bytes[i];
+                if let Some(q) = attr_quote {
+                    if ab == b'\\' && i + 1 < bytes.len() {
+                        i += 2;
+                        continue;
+                    }
+                    if ab == q {
+                        attr_quote = None;
+                    }
+                    i += 1;
+                    continue;
+                }
+                if ab == b'\'' || ab == b'"' {
+                    attr_quote = Some(ab);
+                    i += 1;
+                    continue;
+                }
+                if ab == b']' {
+                    attr_end = i;
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            let attr_inner = &raw[attr_start..attr_end];
+            if let Some((k, v)) = attr_inner.split_once('=') {
+                let key = k.trim();
+                let val = strip_matching_quotes(v);
+                if !key.is_empty() {
+                    attributes.push((key.to_string(), val.to_string()));
+                }
+            }
+            continue;
+        }
+
+        let ch = raw[i..].chars().next().unwrap();
+        remaining.push(ch);
+        i += ch.len_utf8();
+    }
+
+    let mut sub_control = None;
+    let mut extra_pseudos: Vec<String> = Vec::new();
+    let before_sub = if let Some((left, right)) = remaining.split_once("::") {
+        let mut right_parts = right.split(':');
+        if let Some(sc) = right_parts.next() {
+            let sc_trimmed = sc.trim();
+            if !sc_trimmed.is_empty() {
+                sub_control = Some(sc_trimmed.to_string());
+            }
+        }
+        for p in right_parts {
+            let pt = p.trim().to_ascii_lowercase();
+            if !pt.is_empty() {
+                extra_pseudos.push(pt);
+            }
+        }
+        left
+    } else {
+        remaining.as_str()
+    };
+
+    let mut colon_parts = before_sub.split(':');
+    let main_part = colon_parts.next().unwrap_or("").trim();
+
+    let mut element_name = None;
+    let mut id = None;
+    if !main_part.is_empty() {
+        if let Some((elem_part, id_part)) = main_part.split_once('#') {
+            let elem_t = elem_part.trim();
+            let id_t = id_part.trim();
+            if !elem_t.is_empty() {
+                element_name = Some(elem_t.to_string());
+            }
+            if !id_t.is_empty() {
+                id = Some(id_t.to_string());
+            }
+        } else {
+            element_name = Some(main_part.to_string());
+        }
+    }
+
+    let mut pseudo_states: Vec<String> = colon_parts
+        .map(|p| p.trim().to_ascii_lowercase())
+        .filter(|p| !p.is_empty())
+        .collect();
+    pseudo_states.extend(extra_pseudos);
+
+    if element_name.is_none()
+        && id.is_none()
+        && pseudo_states.is_empty()
+        && sub_control.is_none()
+        && attributes.is_empty()
+    {
+        None
+    } else {
+        Some(QCssBasicSelector {
+            element_name,
+            id,
+            pseudo_states,
+            sub_control,
+            attributes,
+        })
+    }
+}
+
+fn parse_declaration_list(input: &str) -> Vec<QCssDeclaration> {
+    let mut decls = Vec::new();
+    for item in split_top_level(input, b';', false, true) {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Some((prop_raw, val_raw)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let prop_trimmed = prop_raw.trim();
+        let val_trimmed = val_raw.trim();
+        if prop_trimmed.is_empty() || val_trimmed.is_empty() {
+            continue;
+        }
+        let property = QCssProperty::from_name(prop_trimmed);
+        let value = parse_value(&property, val_trimmed);
+        decls.push(QCssDeclaration { property, value });
+    }
+    decls
+}
+
+fn parse_value(property: &QCssProperty, val: &str) -> QCssValue {
+    match property {
+        QCssProperty::Border => {
+            if val.eq_ignore_ascii_case("none") {
+                return QCssValue::Border(QCssBorder {
+                    width: 0.0,
+                    style: "none".to_string(),
+                    color: None,
+                });
+            }
+            let (extracted_color, rest) = extract_functional_color(val);
+            let mut width = 1.0f32;
+            let mut style = "solid".to_string();
+            let mut color = extracted_color;
+
+            for tok in rest.split_whitespace() {
+                if let Some(len) = parse_length(tok) {
+                    width = len;
+                } else {
+                    let lower = tok.to_ascii_lowercase();
+                    if matches!(lower.as_str(), "solid" | "none" | "dashed" | "dotted") {
+                        style = lower;
+                    } else if color.is_none()
+                        && let Some(c) = parse_color(tok)
+                    {
+                        color = Some(c);
+                    }
+                }
+            }
+
+            return QCssValue::Border(QCssBorder {
+                width,
+                style,
+                color,
+            });
+        }
+        QCssProperty::FontFamily => {
+            let families: Vec<String> = split_top_level(val, b',', false, false)
+                .into_iter()
+                .map(|part| strip_matching_quotes(part).trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !families.is_empty() {
+                return QCssValue::FontFamilies(families);
+            }
+        }
+        QCssProperty::Padding | QCssProperty::Margin => {
+            let nums: Option<Vec<f32>> = val
+                .split_whitespace()
+                .map(|tok| parse_length(tok).or_else(|| tok.parse::<f32>().ok()))
+                .collect();
+            if let Some(v) = nums {
+                let edges = match v.as_slice() {
+                    [a] => Some([*a, *a, *a, *a]),
+                    [a, b] => Some([*a, *b, *a, *b]),
+                    [a, b, c] => Some([*a, *b, *c, *b]),
+                    [a, b, c, d] => Some([*a, *b, *c, *d]),
+                    _ => None,
+                };
+                if let Some(edges) = edges {
+                    return QCssValue::Edges(edges);
+                }
+            }
+        }
+        QCssProperty::BackgroundColor | QCssProperty::Color | QCssProperty::BorderColor => {
+            if let Some(c) = parse_color(val) {
+                return QCssValue::Color(c);
+            }
+        }
+        _ => {}
+    }
+
+    if let Some(len) = parse_length(val) {
+        QCssValue::Length(len)
+    } else if let Ok(num) = val.parse::<f32>() {
+        QCssValue::Number(num)
+    } else if val.len() >= 2
+        && ((val.starts_with('"') && val.ends_with('"'))
+            || (val.starts_with('\'') && val.ends_with('\'')))
+    {
+        QCssValue::String(val[1..val.len() - 1].to_string())
+    } else {
+        QCssValue::Identifier(val.to_string())
+    }
+}
+
+/// Extracts an `rgb(...)` or `rgba(...)` substring if present, returning `(parsed_color, remaining_text)`.
+fn extract_functional_color(val: &str) -> (Option<Color>, String) {
+    let lower = val.to_ascii_lowercase();
+    let start = lower.find("rgba(").or_else(|| lower.find("rgb("));
+    if let Some(s_idx) = start
+        && let Some(rel_end) = lower[s_idx..].find(')')
+    {
+        let e_idx = s_idx + rel_end + 1;
+        if let Some(color) = parse_color(&val[s_idx..e_idx]) {
+            let mut rest = String::with_capacity(val.len());
+            rest.push_str(&val[..s_idx]);
+            rest.push(' ');
+            rest.push_str(&val[e_idx..]);
+            return (Some(color), rest);
+        }
+    }
+    (None, val.to_string())
+}
+
 #[cfg(test)]
-mod hardening_tests {
+mod tests {
     use super::*;
 
     #[test]
-    fn parse_color_rejects_non_ascii_hex_without_panicking() {
-        assert_eq!(parse_color("#aé"), None);
-        assert_eq!(parse_color("#é1"), None);
-        assert_eq!(parse_color("#+f+f+f"), None);
+    fn non_ascii_hex_rejected_without_panic() {
+        assert_eq!(parse_color("#ééé"), None);
+        assert_eq!(parse_color("#+12345"), None);
+        assert_eq!(parse_color("#12345"), None);
+        assert_eq!(
+            parse_color("#abc"),
+            Some(Color::from_rgba8(0xaa, 0xbb, 0xcc, 255))
+        );
+        assert_eq!(
+            parse_color("#80112233"),
+            Some(Color::from_rgba8(0x11, 0x22, 0x33, 0x80))
+        );
     }
 
     #[test]
-    fn parse_lone_quote_as_identifier_without_panicking() {
+    fn lone_quote_stays_identifier() {
+        let prop = QCssProperty::Custom("custom-prop".to_string());
         assert_eq!(
-            parse_value(&QCssProperty::Color, "'"),
-            QCssValue::Identifier("'".into())
+            parse_value(&prop, "\""),
+            QCssValue::Identifier("\"".to_string())
         );
         assert_eq!(
-            parse_value(&QCssProperty::Color, "\""),
-            QCssValue::Identifier("\"".into())
+            parse_value(&prop, "'"),
+            QCssValue::Identifier("'".to_string())
+        );
+        assert_eq!(
+            parse_value(&prop, "\"hi\""),
+            QCssValue::String("hi".to_string())
+        );
+    }
+
+    #[test]
+    fn comments_stripped_preserving_quoted_strings() {
+        let css = r#"
+            /* leading comment */
+            QLabel {
+                /* inside rule */
+                content: "/* not a comment */";
+                color: red; /* trailing */
+            }
+        "#;
+        let sheet = QCssParser::parse(css);
+        assert_eq!(sheet.rules.len(), 1);
+        let decls = &sheet.rules[0].declarations;
+        assert_eq!(decls.len(), 2);
+        assert_eq!(
+            decls[0].value,
+            QCssValue::String("/* not a comment */".to_string())
+        );
+        assert_eq!(
+            decls[1].value,
+            QCssValue::Color(Color::from_rgba8(255, 0, 0, 255))
+        );
+    }
+
+    #[test]
+    fn border_shorthand_parsing() {
+        let sheet = QCssParser::parse(
+            "QFrame { border: 2px dashed rgba(10, 20, 30, 0.5); } QLabel { border: none; }",
+        );
+        assert_eq!(sheet.rules.len(), 2);
+        assert_eq!(
+            sheet.rules[0].declarations[0].value,
+            QCssValue::Border(QCssBorder {
+                width: 2.0,
+                style: "dashed".to_string(),
+                color: Some(Color::from_rgba8(10, 20, 30, 127)),
+            })
+        );
+        assert_eq!(
+            sheet.rules[1].declarations[0].value,
+            QCssValue::Border(QCssBorder {
+                width: 0.0,
+                style: "none".to_string(),
+                color: None,
+            })
+        );
+    }
+
+    #[test]
+    fn font_family_list_parsing() {
+        let sheet =
+            QCssParser::parse(r#"QWidget { font-family: "Segoe UI", 'Noto Sans', monospace; }"#);
+        assert_eq!(
+            sheet.rules[0].declarations[0].value,
+            QCssValue::FontFamilies(vec![
+                "Segoe UI".to_string(),
+                "Noto Sans".to_string(),
+                "monospace".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn edges_parsing_one_to_four_values() {
+        let sheet = QCssParser::parse(
+            "A { padding: 4px; } B { padding: 4px 8px; } C { margin: 1px 2px 3px; } D { margin: 1px 2px 3px 4px; }",
+        );
+        assert_eq!(
+            sheet.rules[0].declarations[0].value,
+            QCssValue::Edges([4.0, 4.0, 4.0, 4.0])
+        );
+        assert_eq!(
+            sheet.rules[1].declarations[0].value,
+            QCssValue::Edges([4.0, 8.0, 4.0, 8.0])
+        );
+        assert_eq!(
+            sheet.rules[2].declarations[0].value,
+            QCssValue::Edges([1.0, 2.0, 3.0, 2.0])
+        );
+        assert_eq!(
+            sheet.rules[3].declarations[0].value,
+            QCssValue::Edges([1.0, 2.0, 3.0, 4.0])
+        );
+    }
+
+    #[test]
+    fn rgba_alpha_truncation() {
+        // 0.5 * 255.0 = 127.5 -> truncated to 127, not rounded to 128
+        assert_eq!(
+            parse_color("rgba(10, 20, 30, 0.5)"),
+            Some(Color::from_rgba8(10, 20, 30, 127))
+        );
+        assert_eq!(
+            parse_color("rgba(10, 20, 30, 128)"),
+            Some(Color::from_rgba8(10, 20, 30, 128))
         );
     }
 }
