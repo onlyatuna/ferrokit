@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: LGPL-3.0-only
-//! Qt Style Sheet (QSS) Engine matching `reference.
-//!
-//! Provides cascading style resolution, specificity scoring, and resolved style metrics
-//! for widgets, labels, buttons, and progress bars.
+//! Stylesheet cascade and box-model resolution engine.
 
 use std::sync::Arc;
 
@@ -24,33 +21,34 @@ pub struct ResolvedStyle {
     pub max_height: Option<i32>,
     pub min_width: Option<i32>,
     pub max_width: Option<i32>,
-    /// QSS `width`/`height`: the contents size (`QRenderRule::contentsSize`); independent of
-    /// `min_*`/`max_*`.
     pub width: Option<i32>,
     pub height: Option<i32>,
     pub font_size: Option<f32>,
     pub font_weight: Option<u16>,
-    /// `font-family` list in declaration order (`QFont::setFamilies`); see [`Self::font_family`].
     pub font_families: Option<Vec<String>>,
     pub letter_spacing: Option<f32>,
-    pub padding: Option<[f32; 4]>, // [top, right, bottom, left]
+    pub padding: Option<[f32; 4]>,
     pub margin: Option<[f32; 4]>,
     pub text_align: Option<String>,
 }
 
 impl ResolvedStyle {
-    /// The family a `font-family` list selects: the first installed one (`QFontDatabase` matches
-    /// `QFont::families()` in order), else the first listed (the font database then falls back).
+    /// Returns the first font family in `font_families` registered in the global font database,
+    /// falling back to the first listed family if none are found.
     pub fn font_family(&self) -> Option<String> {
-        let list = self.font_families.as_ref()?;
-        let installed = ferrokit_gui::text::font_database::with_global_font_database(|db| {
-            list.iter().find(|f| db.has_family(f)).cloned()
-        });
-        installed.or_else(|| list.first().cloned())
+        self.font_families.as_ref().and_then(|list| {
+            list.iter()
+                .find(|f| {
+                    ferrokit_gui::text::font_database::with_global_font_database(|db| {
+                        db.has_family(f)
+                    })
+                })
+                .cloned()
+                .or_else(|| list.first().cloned())
+        })
     }
 
-    /// Horizontal and vertical extent that `QRenderRule::boxSize` adds around a content size:
-    /// border plus padding on both sides of each axis.
+    /// Computes total horizontal and vertical extra box size from border width and padding.
     pub fn box_extra(&self) -> (i32, i32) {
         let border = self.border_width.unwrap_or(0.0).max(0.0);
         let [pt, pr, pb, pl] = self.padding.unwrap_or([0.0; 4]);
@@ -60,12 +58,9 @@ impl ResolvedStyle {
         )
     }
 
-    /// the widget set by stylesheet resolution: `min-width`/`min-height`
-    /// name the content box, so the box extent is added.
-    /// An axis without a `min-*` declaration is 0.
+    /// Computes minimum outer box dimensions including border and padding.
     pub fn min_box_size(&self) -> (i32, i32) {
         let (ex, ey) = self.box_extra();
-        // `width`/`height` only raise the minimum of an axis that also has a `min-*` declaration.
         (
             self.min_width
                 .map_or(0, |m| m.max(self.width.unwrap_or(-1)) + ex),
@@ -74,35 +69,31 @@ impl ResolvedStyle {
         )
     }
 
-    /// the widget set by stylesheet resolution, likewise for
-    /// `max-width`/`max-height`. An axis without a `max-*`
-    /// declaration is `WIDGET_SIZE_MAX`.
+    /// Computes maximum outer box dimensions including border and padding.
     pub fn max_box_size(&self) -> (i32, i32) {
         let (ex, ey) = self.box_extra();
-        // `width`/`height` only lower the maximum of an axis that also has a `max-*` declaration.
         (
             self.max_width
-                .map_or(16777215, |m| m.min(self.width.unwrap_or(16777215)) + ex),
-            self.max_height
-                .map_or(16777215, |m| m.min(self.height.unwrap_or(16777215)) + ey),
+                .map_or(16_777_215, |m| m.min(self.width.unwrap_or(16_777_215)) + ex),
+            self.max_height.map_or(16_777_215, |m| {
+                m.min(self.height.unwrap_or(16_777_215)) + ey
+            }),
         )
     }
 
-    /// `QRenderRule::adjustSize`: a content size with `width`/
-    /// `height` taking the place of the given axis, clamped to `max-*`, then expanded to `min-*`.
+    /// Adjusts a base `(width, height)` pair against resolved `width`, `height`, `max_*`, and `min_*` constraints.
     pub fn adjust_size(&self, (w, h): (i32, i32)) -> (i32, i32) {
-        let mut w = self.width.unwrap_or(w);
-        let mut h = self.height.unwrap_or(h);
-        if let Some(max) = self.max_width {
-            w = w.min(max);
+        let mut rw = self.width.unwrap_or(w);
+        let mut rh = self.height.unwrap_or(h);
+        if let Some(max_w) = self.max_width {
+            rw = rw.min(max_w);
         }
-        if let Some(max) = self.max_height {
-            h = h.min(max);
+        if let Some(max_h) = self.max_height {
+            rh = rh.min(max_h);
         }
-        (
-            w.max(self.min_width.unwrap_or(-1)),
-            h.max(self.min_height.unwrap_or(-1)),
-        )
+        rw = rw.max(self.min_width.unwrap_or(-1));
+        rh = rh.max(self.min_height.unwrap_or(-1));
+        (rw, rh)
     }
 }
 
@@ -116,19 +107,17 @@ pub struct WidgetStyleContext<'a> {
     pub attributes: &'a [(String, String)],
 }
 
-/// Qt Style Sheet engine instance.
+/// Style sheet engine instance.
 #[derive(Debug, Clone, Default)]
 pub struct QStyleSheetStyle {
     sheet: Arc<QCssStyleSheet>,
 }
 
 impl QStyleSheetStyle {
-    /// Creates a style from an existing parsed AST.
     pub fn new(sheet: Arc<QCssStyleSheet>) -> Self {
         Self { sheet }
     }
 
-    /// Parses a QSS string and builds an engine instance.
     pub fn parse(qss: &str) -> Self {
         Self {
             sheet: Arc::new(QCssStyleSheet::parse(qss)),
@@ -139,95 +128,92 @@ impl QStyleSheetStyle {
         self.sheet.is_empty()
     }
 
-    /// Resolves matching styles for a widget context.
     pub fn resolve(&self, ctx: &WidgetStyleContext) -> ResolvedStyle {
         Self::resolve_chain(&[self], ctx)
     }
 
-    /// Resolves a widget through every style sheet that applies to it, lowest precedence first.
-    ///
-    /// As in stylesheet resolution, a matching rule is weighted by the depth of the
-    /// sheet it came from, then by its selector's specificity, then by its position: the
-    /// application sheet, then each ancestor from the outermost inwards, then the widget's own
-    /// sheet. Declarations are applied in that order, so a later sheet overrides an earlier one
-    /// whatever the selector specificity, and `padding-left` composes with a `padding` set by
-    /// another sheet.
+    /// Resolves a slice of stylesheets in cascade order (later sheets have higher `depth`).
     pub fn resolve_chain(sheets: &[&QStyleSheetStyle], ctx: &WidgetStyleContext) -> ResolvedStyle {
         let mut matched: Vec<(usize, u32, &QCssDeclaration)> = Vec::new();
+
         for (depth, sheet) in sheets.iter().enumerate() {
             for rule in &sheet.sheet.rules {
-                let best = rule
+                let max_spec = rule
                     .selectors
                     .iter()
-                    .filter(|selector| selector_matches(selector, ctx))
-                    .map(|selector| selector.specificity())
+                    .filter(|sel| matches_selector(sel, ctx))
+                    .map(QCssBasicSelector::specificity)
                     .max();
-                if let Some(score) = best {
-                    matched.extend(rule.declarations.iter().map(|decl| (depth, score, decl)));
+                if let Some(score) = max_spec {
+                    for decl in &rule.declarations {
+                        matched.push((depth, score, decl));
+                    }
                 }
             }
         }
 
-        // Stable: equal weights keep rule order, so the later rule wins.
-        matched.sort_by_key(|&(depth, score, _)| (depth, score));
+        matched.sort_by_key(|(depth, score, _)| (*depth, *score));
 
-        let mut resolved = ResolvedStyle::default();
+        let mut style = ResolvedStyle::default();
         for (_, _, decl) in matched {
-            apply_declaration(&mut resolved, decl);
+            apply_declaration(&mut style, decl);
         }
-        resolved
+        style
     }
 
-    /// Cascades a local stylesheet with a fallback (the application stylesheet).
+    /// Resolves an optional `local` stylesheet over an optional `fallback` stylesheet.
     pub fn resolve_cascaded(
         local: Option<&QStyleSheetStyle>,
         fallback: Option<&QStyleSheetStyle>,
         ctx: &WidgetStyleContext,
     ) -> ResolvedStyle {
-        let sheets: Vec<&QStyleSheetStyle> = fallback.into_iter().chain(local).collect();
-        Self::resolve_chain(&sheets, ctx)
+        let mut chain: Vec<&QStyleSheetStyle> = Vec::with_capacity(2);
+        if let Some(fb) = fallback {
+            chain.push(fb);
+        }
+        if let Some(loc) = local {
+            chain.push(loc);
+        }
+        Self::resolve_chain(&chain, ctx)
     }
 }
 
-/// Checks whether a selector matches a widget context.
-fn selector_matches(selector: &QCssBasicSelector, ctx: &WidgetStyleContext) -> bool {
-    // 1. Sub-control match
+fn matches_selector(selector: &QCssBasicSelector, ctx: &WidgetStyleContext) -> bool {
     if selector.sub_control.as_deref() != ctx.sub_control {
         return false;
     }
 
-    // 2. ID match (e.g. `#CentralWidget`)
-    if let Some(id) = &selector.id
+    if let Some(ref id) = selector.id
         && id != ctx.object_name
     {
         return false;
     }
 
-    // 3. Type name match (e.g. `QLabel`, `QProgressBar`): the class or any class it inherits.
-    if let Some(elem) = &selector.element_name
+    if let Some(ref elem) = selector.element_name
         && elem != "*"
-        && !node_name_equals(ctx.type_name, elem)
     {
-        return false;
-    }
-
-    // 4. Pseudo-states match (all selector pseudo-states must be active in ctx)
-    for ps in &selector.pseudo_states {
-        if !ctx.pseudo_states.contains(&ps.as_str()) {
+        let elem_matches = if ctx.type_name == "QToolTip" {
+            elem == "QToolTip"
+        } else {
+            elem == "QObject"
+                || elem == "QWidget"
+                || ctx.type_name == elem
+                || (ctx.type_name == "QLabel" && elem == "QFrame")
+                || (ctx.type_name == "QPushButton" && elem == "QAbstractButton")
+        };
+        if !elem_matches {
             return false;
         }
     }
 
-    // 5. Attributes match (all selector attributes must match)
-    for (k, v) in &selector.attributes {
-        let mut matched = false;
-        for (ck, cv) in ctx.attributes {
-            if ck == k && cv == v {
-                matched = true;
-                break;
-            }
+    for state in &selector.pseudo_states {
+        if !ctx.pseudo_states.iter().any(|s| s == state) {
+            return false;
         }
-        if !matched {
+    }
+
+    for (k, v) in &selector.attributes {
+        if !ctx.attributes.iter().any(|(ak, av)| ak == k && av == v) {
             return false;
         }
     }
@@ -235,26 +221,8 @@ fn selector_matches(selector: &QCssBasicSelector, ctx: &WidgetStyleContext) -> b
     true
 }
 
-/// Whether a widget of Qt class `type_name` matches the type selector `class`, as
-/// `QStyleSheetStyleSelector::nodeNameEquals` decides it. A
-/// tip (`QTipLabel`) matches `the tooltip controller` only (1585-1586). Any other widget matches its own class,
-/// every class it inherits from, a widget and `QObject`. The base-class pairs are the ones ferrokit
-/// models; a class ferrokit does not know matches its own name and the base classes above.
-fn node_name_equals(type_name: &str, class: &str) -> bool {
-    if type_name == "QToolTip" {
-        return class == "QToolTip";
-    }
-    matches!(class, "QObject" | "QWidget")
-        || type_name == class
-        || matches!(
-            (type_name, class),
-            ("QLabel", "QFrame") | ("QPushButton", "QAbstractButton")
-        )
-}
-
-/// Applies an individual declaration to a `ResolvedStyle`.
 fn apply_declaration(style: &mut ResolvedStyle, decl: &QCssDeclaration) {
-    match decl.property {
+    match &decl.property {
         QCssProperty::BackgroundColor => {
             if let QCssValue::Color(c) = decl.value {
                 style.background_color = Some(c);
@@ -263,6 +231,11 @@ fn apply_declaration(style: &mut ResolvedStyle, decl: &QCssDeclaration) {
         QCssProperty::Color => {
             if let QCssValue::Color(c) = decl.value {
                 style.color = Some(c);
+            }
+        }
+        QCssProperty::BorderColor => {
+            if let QCssValue::Color(c) = decl.value {
+                style.border_color = Some(c);
             }
         }
         QCssProperty::Border => match &decl.value {
@@ -278,84 +251,81 @@ fn apply_declaration(style: &mut ResolvedStyle, decl: &QCssDeclaration) {
             }
             _ => {}
         },
-        QCssProperty::BorderColor => {
-            if let QCssValue::Color(c) = decl.value {
-                style.border_color = Some(c);
-            }
-        }
         QCssProperty::BorderWidth => {
-            if let QCssValue::Length(w) = decl.value {
-                style.border_width = Some(w);
-            }
-        }
-        QCssProperty::BorderStyle => {
-            if let QCssValue::Identifier(s) = &decl.value {
-                style.border_style = Some(s.clone());
+            if let QCssValue::Length(v) = decl.value {
+                style.border_width = Some(v);
             }
         }
         QCssProperty::BorderRadius => {
-            if let QCssValue::Length(r) = decl.value {
-                style.border_radius = Some(r);
-            }
-        }
-        QCssProperty::MinHeight => {
-            if let QCssValue::Length(h) = decl.value {
-                style.min_height = Some(h.round() as i32);
-            }
-        }
-        QCssProperty::MaxHeight => {
-            if let QCssValue::Length(h) = decl.value {
-                style.max_height = Some(h.round() as i32);
-            }
-        }
-        QCssProperty::Height => {
-            if let QCssValue::Length(h) = decl.value {
-                let px = h.round() as i32;
-                style.height = Some(px);
-            }
-        }
-        QCssProperty::MinWidth => {
-            if let QCssValue::Length(w) = decl.value {
-                style.min_width = Some(w.round() as i32);
-            }
-        }
-        QCssProperty::MaxWidth => {
-            if let QCssValue::Length(w) = decl.value {
-                style.max_width = Some(w.round() as i32);
-            }
-        }
-        QCssProperty::Width => {
-            if let QCssValue::Length(w) = decl.value {
-                let px = w.round() as i32;
-                style.width = Some(px);
+            if let QCssValue::Length(v) = decl.value {
+                style.border_radius = Some(v);
             }
         }
         QCssProperty::FontSize => {
-            if let QCssValue::Length(s) = decl.value {
-                style.font_size = Some(s);
+            if let QCssValue::Length(v) = decl.value {
+                style.font_size = Some(v);
+            }
+        }
+        QCssProperty::LetterSpacing => {
+            if let QCssValue::Length(v) = decl.value {
+                style.letter_spacing = Some(v);
+            }
+        }
+        QCssProperty::BorderStyle => {
+            if let QCssValue::Identifier(ref s) = decl.value {
+                style.border_style = Some(s.clone());
+            }
+        }
+        QCssProperty::TextAlign => {
+            if let QCssValue::Identifier(ref s) = decl.value {
+                style.text_align = Some(s.clone());
+            }
+        }
+        QCssProperty::MinHeight => {
+            if let QCssValue::Length(v) = decl.value {
+                style.min_height = Some(v.round() as i32);
+            }
+        }
+        QCssProperty::MaxHeight => {
+            if let QCssValue::Length(v) = decl.value {
+                style.max_height = Some(v.round() as i32);
+            }
+        }
+        QCssProperty::Height => {
+            if let QCssValue::Length(v) = decl.value {
+                style.height = Some(v.round() as i32);
+            }
+        }
+        QCssProperty::MinWidth => {
+            if let QCssValue::Length(v) = decl.value {
+                style.min_width = Some(v.round() as i32);
+            }
+        }
+        QCssProperty::MaxWidth => {
+            if let QCssValue::Length(v) = decl.value {
+                style.max_width = Some(v.round() as i32);
+            }
+        }
+        QCssProperty::Width => {
+            if let QCssValue::Length(v) = decl.value {
+                style.width = Some(v.round() as i32);
             }
         }
         QCssProperty::FontWeight => match &decl.value {
             QCssValue::Number(n) => {
                 style.font_weight = Some(n.round() as u16);
             }
-            QCssValue::Identifier(s) => {
-                if s.eq_ignore_ascii_case("bold") {
-                    style.font_weight = Some(700);
-                } else if s.eq_ignore_ascii_case("normal") {
-                    style.font_weight = Some(400);
-                }
+            QCssValue::Identifier(s) if s.eq_ignore_ascii_case("bold") => {
+                style.font_weight = Some(700);
+            }
+            QCssValue::Identifier(s) if s.eq_ignore_ascii_case("normal") => {
+                style.font_weight = Some(400);
             }
             _ => {}
         },
         QCssProperty::FontFamily => {
-            if let QCssValue::FontFamilies(list) = &decl.value {
+            if let QCssValue::FontFamilies(ref list) = decl.value {
                 style.font_families = Some(list.clone());
-            }
-        }
-        QCssProperty::LetterSpacing => {
-            if let QCssValue::Length(ls) = decl.value {
-                style.letter_spacing = Some(ls);
             }
         }
         QCssProperty::Padding => {
@@ -363,46 +333,79 @@ fn apply_declaration(style: &mut ResolvedStyle, decl: &QCssDeclaration) {
                 style.padding = Some(e);
             }
         }
-        QCssProperty::PaddingTop
-        | QCssProperty::PaddingRight
-        | QCssProperty::PaddingBottom
-        | QCssProperty::PaddingLeft => {
-            if let QCssValue::Length(v) = decl.value {
-                // [top, right, bottom, left]
-                let side = match decl.property {
-                    QCssProperty::PaddingTop => 0,
-                    QCssProperty::PaddingRight => 1,
-                    QCssProperty::PaddingBottom => 2,
-                    _ => 3,
-                };
-                style.padding.get_or_insert([0.0; 4])[side] = v;
-            }
-        }
         QCssProperty::Margin => {
             if let QCssValue::Edges(e) = decl.value {
                 style.margin = Some(e);
             }
         }
-        QCssProperty::MarginTop
-        | QCssProperty::MarginRight
-        | QCssProperty::MarginBottom
-        | QCssProperty::MarginLeft => {
-            if let QCssValue::Length(v) = decl.value {
-                // [top, right, bottom, left]
-                let side = match decl.property {
-                    QCssProperty::MarginTop => 0,
-                    QCssProperty::MarginRight => 1,
-                    QCssProperty::MarginBottom => 2,
-                    _ => 3,
-                };
-                style.margin.get_or_insert([0.0; 4])[side] = v;
-            }
-        }
-        QCssProperty::TextAlign => {
-            if let QCssValue::Identifier(s) = &decl.value {
-                style.text_align = Some(s.clone());
-            }
-        }
-        _ => {}
+        QCssProperty::PaddingTop => update_edge(&mut style.padding, 0, &decl.value),
+        QCssProperty::PaddingRight => update_edge(&mut style.padding, 1, &decl.value),
+        QCssProperty::PaddingBottom => update_edge(&mut style.padding, 2, &decl.value),
+        QCssProperty::PaddingLeft => update_edge(&mut style.padding, 3, &decl.value),
+        QCssProperty::MarginTop => update_edge(&mut style.margin, 0, &decl.value),
+        QCssProperty::MarginRight => update_edge(&mut style.margin, 1, &decl.value),
+        QCssProperty::MarginBottom => update_edge(&mut style.margin, 2, &decl.value),
+        QCssProperty::MarginLeft => update_edge(&mut style.margin, 3, &decl.value),
+        QCssProperty::Custom(_) => {}
+    }
+}
+
+fn update_edge(target: &mut Option<[f32; 4]>, index: usize, value: &QCssValue) {
+    if let QCssValue::Length(v) = value {
+        let edges = target.get_or_insert([0.0; 4]);
+        edges[index] = *v;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cascade_specificity_and_depth_order() {
+        let fallback = QStyleSheetStyle::parse(
+            "QWidget { color: black; background-color: white; } #btn { color: red; }",
+        );
+        let local = QStyleSheetStyle::parse(
+            "QPushButton { color: blue; padding: 4px 8px; border: 2px solid green; }",
+        );
+        let ctx = WidgetStyleContext {
+            type_name: "QPushButton",
+            object_name: "btn",
+            pseudo_states: &[],
+            sub_control: None,
+            attributes: &[],
+        };
+        let resolved = QStyleSheetStyle::resolve_cascaded(Some(&local), Some(&fallback), &ctx);
+        assert_eq!(resolved.color, Some(Color::from_rgba8(0, 0, 255, 255)));
+        assert_eq!(
+            resolved.background_color,
+            Some(Color::from_rgba8(255, 255, 255, 255))
+        );
+        assert_eq!(resolved.box_extra(), (20, 12));
+    }
+
+    #[test]
+    fn tooltip_and_inherited_element_matching() {
+        let sheet = QStyleSheetStyle::parse(
+            "QWidget { color: red; } QFrame { background-color: blue; } QToolTip { color: white; }",
+        );
+        let label_ctx = WidgetStyleContext {
+            type_name: "QLabel",
+            ..Default::default()
+        };
+        let label_style = sheet.resolve(&label_ctx);
+        assert_eq!(label_style.color, Some(Color::from_rgba8(255, 0, 0, 255)));
+        assert_eq!(
+            label_style.background_color,
+            Some(Color::from_rgba8(0, 0, 255, 255))
+        );
+
+        let tip_ctx = WidgetStyleContext {
+            type_name: "QToolTip",
+            ..Default::default()
+        };
+        let tip_style = sheet.resolve(&tip_ctx);
+        assert_eq!(tip_style.color, Some(Color::from_rgba8(255, 255, 255, 255)));
     }
 }
